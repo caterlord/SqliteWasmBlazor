@@ -9,6 +9,12 @@ import { pack, unpack, Unpackr } from 'msgpackr';
 // Unpackr preserving int64 as BigInt — JS Number loses precision for values > 2^53-1
 const bigIntUnpackr = new Unpackr({ int64AsType: 'bigint' });
 import { registerEFCoreFunctions } from './ef-core-functions';
+import {
+    storeKeys, getPublicKeys, removeKeys,
+    signWithCachedKey
+} from './crypto-layer';
+import { encryptedExport, encryptedImport, signPermissionsWithCachedKey } from './encrypted-delta';
+import { hashPermissions, type PermissionMap, type EncryptedDeltaEnvelope } from './crypto-permissions';
 
 interface WorkerRequest {
     id: number;
@@ -271,6 +277,103 @@ async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayB
 
         case 'bulkExport':
             return await bulkExport(database!, data as any);
+
+        // ============================================================
+        // CRYPTO OPERATIONS
+        // ============================================================
+
+        case 'cryptoStoreKeys':
+            return JSON.parse(await storeKeys(
+                (data as any).keyId,
+                (data as any).seedBase64,
+                (data as any).ttlMs ?? null
+            ));
+
+        case 'cryptoGetPublicKeys':
+            return JSON.parse(getPublicKeys((data as any).keyId));
+
+        case 'cryptoRemoveKeys':
+            removeKeys((data as any).keyId);
+            return { success: true };
+
+        case 'cryptoSignPermissions': {
+            const permissions = (data as any).permissions as PermissionMap;
+            const { permissionsSignature, adminPublicKey } = signPermissionsWithCachedKey(
+                permissions, (data as any).keyId
+            );
+            return {
+                success: true,
+                permissionsSignatureBase64: bytesToBase64Worker(permissionsSignature),
+                adminPublicKey
+            };
+        }
+
+        // ============================================================
+        // ENCRYPTED BULK OPERATIONS
+        // ============================================================
+
+        case 'encryptedBulkExport': {
+            const exportResult = await bulkExport(database!, data as any);
+            const v2Bytes = (exportResult as any).data as Uint8Array;
+
+            const result = await encryptedExport(
+                v2Bytes,
+                (data as any).keyId,
+                (data as any).recipientPublicKeys as string[]
+            );
+
+            // Serialize recipientEnvelopes to Base64
+            const envelopesBase64: Record<string, string> = {};
+            for (const [pk, wrapped] of Object.entries(result.recipientEnvelopes)) {
+                envelopesBase64[pk] = bytesToBase64Worker(wrapped);
+            }
+
+            return {
+                success: true,
+                ciphertextBase64: bytesToBase64Worker(result.ciphertext),
+                nonceBase64: bytesToBase64Worker(result.nonce),
+                contentSignatureBase64: bytesToBase64Worker(result.contentSignature),
+                senderPublicKey: result.senderPublicKey,
+                recipientEnvelopes: envelopesBase64
+            };
+        }
+
+        case 'encryptedBulkImport': {
+            if (!binaryPayload) {
+                throw new Error('encryptedBulkImport requires binaryPayload (ciphertext)');
+            }
+            const ciphertext = new Uint8Array(binaryPayload);
+            const envelope: EncryptedDeltaEnvelope = {
+                ciphertext,
+                nonce: base64ToBytesWorker((data as any).nonceBase64),
+                contentSignature: base64ToBytesWorker((data as any).contentSignatureBase64),
+                senderPublicKey: (data as any).senderPublicKey,
+                recipientEnvelopes: deserializeEnvelopes((data as any).recipientEnvelopes),
+                permissions: (data as any).permissions as PermissionMap,
+                permissionsSignature: base64ToBytesWorker((data as any).permissionsSignatureBase64),
+                adminPublicKey: (data as any).adminPublicKey
+            };
+
+            const v2Bytes = await encryptedImport(
+                envelope,
+                (data as any).keyId,
+                (data as any).tableName,
+                (data as any).columnNames as string[]
+            );
+
+            // Apply decrypted V2 bytes via existing bulk import
+            const db = openDatabases.get(database!);
+            if (!db) {
+                throw new Error(`Database ${database} not open`);
+            }
+            const objects = bigIntUnpackr.unpackMultiple(v2Bytes);
+            if (objects.length < 1) {
+                throw new Error('encryptedBulkImport: empty decrypted payload');
+            }
+            const header = objects[0] as any;
+            const rows = objects.slice(1) as any[][];
+            return bulkInsertRows(db, header, rows, (data as any).conflictStrategy ?? 0, 'encryptedBulkImport');
+        }
 
         default:
             throw new Error(`Unknown request type: ${type}`);
@@ -1074,6 +1177,35 @@ function buildInsertSql(header: V2Header, conflictStrategy: number): string {
     }
 
     return sql;
+}
+
+// ============================================================
+// CRYPTO HELPERS for worker message handlers
+// ============================================================
+
+function bytesToBase64Worker(bytes: Uint8Array): string {
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+}
+
+function base64ToBytesWorker(base64: string): Uint8Array {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+}
+
+function deserializeEnvelopes(envelopesBase64: Record<string, string>): Record<string, Uint8Array> {
+    const result: Record<string, Uint8Array> = {};
+    for (const [pk, b64] of Object.entries(envelopesBase64)) {
+        result[pk] = base64ToBytesWorker(b64);
+    }
+    return result;
 }
 
 /**

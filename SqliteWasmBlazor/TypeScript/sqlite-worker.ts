@@ -15,6 +15,10 @@ import {
 } from './crypto-layer';
 import { encryptedExport, encryptedImport, signPermissionsWithCachedKey } from './encrypted-delta';
 import { hashPermissions, type PermissionMap, type EncryptedDeltaEnvelope } from './crypto-permissions';
+import {
+    loadMetadata, clearMetadataCache, updatePermissionsFromDelta,
+    setMetadata, getMetadataCache, enforceWritePermission
+} from './delta-metadata';
 
 interface WorkerRequest {
     id: number;
@@ -296,6 +300,20 @@ async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayB
             removeKeys((data as any).keyId);
             return { success: true };
 
+        case 'getMetadata': {
+            const cache = getMetadataCache(database!);
+            return { success: true, metadata: cache };
+        }
+
+        case 'setMetadata': {
+            const db = openDatabases.get(database!);
+            if (!db) {
+                throw new Error(`Database ${database} not open`);
+            }
+            setMetadata(db, database!, (data as any).key, (data as any).value);
+            return { success: true };
+        }
+
         case 'cryptoSignPermissions': {
             const permissions = (data as any).permissions as PermissionMap;
             const { permissionsSignature, adminPublicKey } = signPermissionsWithCachedKey(
@@ -372,7 +390,12 @@ async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayB
             }
             const header = objects[0] as any;
             const rows = objects.slice(1) as any[][];
-            return bulkInsertRows(db, header, rows, (data as any).conflictStrategy ?? 0, 'encryptedBulkImport');
+            const importResult = bulkInsertRows(db, header, rows, (data as any).conflictStrategy ?? 0, 'encryptedBulkImport');
+
+            // Persist permissions from the delta envelope
+            updatePermissionsFromDelta(db, database!, envelope.permissions, envelope.adminPublicKey);
+
+            return importResult;
         }
 
         default:
@@ -440,6 +463,9 @@ async function openDatabase(dbName: string) {
         // Register EF Core scalar and aggregate functions for feature completeness
         // These functions enable full decimal arithmetic and comparison support in EF Core queries
         registerEFCoreFunctions(db, sqlite3);
+
+        // Load delta metadata (permissions, encrypted tables, etc.) if table exists
+        loadMetadata(db, dbName);
     }
 
     return { success: true };
@@ -540,6 +566,12 @@ async function executeSql(dbName: string, sql: string, parameters: Record<string
 
     try {
         logger.debug(MODULE_NAME, 'Executing SQL:', sql.substring(0, 100));
+
+        // Enforce write permissions if delta metadata is active for this database
+        const rejection = enforceWritePermission(dbName, sql);
+        if (rejection) {
+            throw new Error(`Permission denied: ${rejection.reason}`);
+        }
 
         // Convert parameters with type metadata for proper SQLite binding
         const convertedParams = convertParametersForBinding(parameters);
@@ -664,6 +696,7 @@ async function closeDatabase(dbName: string) {
         db.close();
         openDatabases.delete(dbName);
         pragmasSet.delete(dbName); // Clear PRAGMA tracking when database is closed
+        clearMetadataCache(dbName); // Clear cached delta metadata
         logger.info(MODULE_NAME, `Closed database: ${dbName}`);
     }
     return { success: true };

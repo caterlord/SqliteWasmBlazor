@@ -24,9 +24,18 @@ internal class TestFactory
         PopulateTests(factory, databaseService);
     }
 
-    public IEnumerable<(string Category, SqliteWasmTest Test)> GetTests(string? testName = null)
+    public IEnumerable<(string Category, SqliteWasmTest Test)> GetTests(string? testName = null, string? category = null)
     {
-        var tests = testName is null ? _tests : _tests.Where(t => t.Test.Name == testName);
+        IEnumerable<(string Category, SqliteWasmTest Test)> tests = _tests;
+
+        if (testName is not null)
+        {
+            tests = tests.Where(t => t.Test.Name == testName);
+        }
+        else if (category is not null)
+        {
+            tests = tests.Where(t => t.Category == category);
+        }
 
         var valueTuples = tests as (string Category, SqliteWasmTest Test)[] ?? tests.ToArray();
         return valueTuples.Length > 0 ? valueTuples : Enumerable.Empty<(string Category, SqliteWasmTest Test)>();

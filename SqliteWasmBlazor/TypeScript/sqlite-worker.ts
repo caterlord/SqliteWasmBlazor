@@ -14,7 +14,7 @@ import {
     signWithCachedKey
 } from './crypto-layer';
 import { encryptedExport, encryptedImport, signPermissionsWithCachedKey } from './encrypted-delta';
-import { hashPermissions, type PermissionMap, type EncryptedDeltaEnvelope } from './crypto-permissions';
+import { type PermissionMap } from './crypto-permissions';
 import {
     loadMetadata, clearMetadataCache, updatePermissionsFromDelta,
     setMetadata, getMetadataCache, enforceWritePermission
@@ -280,7 +280,7 @@ async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayB
             );
 
         case 'bulkExport':
-            return await bulkExport(database!, data as any);
+            return bulkExport(database!, data as any);
 
         // ============================================================
         // CRYPTO OPERATIONS
@@ -331,69 +331,48 @@ async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayB
         // ============================================================
 
         case 'encryptedBulkExport': {
-            const exportResult = await bulkExport(database!, data as any);
-            const v2Bytes = (exportResult as any).data as Uint8Array;
+            const { header: v2Header, rowBytes } = bulkExportCore(database!, data as any);
 
-            const result = await encryptedExport(
-                v2Bytes,
-                (data as any).keyId,
-                (data as any).recipientPublicKeys as string[]
+            const permissions = (data as any).permissions as PermissionMap;
+            const { permissionsSignature, adminPublicKey } = signPermissionsWithCachedKey(
+                permissions, (data as any).keyId
             );
 
-            // Serialize recipientEnvelopes to Base64
-            const envelopesBase64: Record<string, string> = {};
-            for (const [pk, wrapped] of Object.entries(result.recipientEnvelopes)) {
-                envelopesBase64[pk] = bytesToBase64Worker(wrapped);
-            }
+            const envelopeBytes = await encryptedExport(
+                v2Header, rowBytes,
+                (data as any).keyId,
+                (data as any).recipientPublicKeys as string[],
+                permissions, permissionsSignature, adminPublicKey,
+                pack
+            );
 
-            return {
-                success: true,
-                ciphertextBase64: bytesToBase64Worker(result.ciphertext),
-                nonceBase64: bytesToBase64Worker(result.nonce),
-                contentSignatureBase64: bytesToBase64Worker(result.contentSignature),
-                senderPublicKey: result.senderPublicKey,
-                recipientEnvelopes: envelopesBase64
-            };
+            return { rawBinary: true, data: envelopeBytes };
         }
 
         case 'encryptedBulkImport': {
             if (!binaryPayload) {
-                throw new Error('encryptedBulkImport requires binaryPayload (ciphertext)');
+                throw new Error('encryptedBulkImport requires binaryPayload (SWBV2E envelope)');
             }
-            const ciphertext = new Uint8Array(binaryPayload);
-            const envelope: EncryptedDeltaEnvelope = {
-                ciphertext,
-                nonce: base64ToBytesWorker((data as any).nonceBase64),
-                contentSignature: base64ToBytesWorker((data as any).contentSignatureBase64),
-                senderPublicKey: (data as any).senderPublicKey,
-                recipientEnvelopes: deserializeEnvelopes((data as any).recipientEnvelopes),
-                permissions: (data as any).permissions as PermissionMap,
-                permissionsSignature: base64ToBytesWorker((data as any).permissionsSignatureBase64),
-                adminPublicKey: (data as any).adminPublicKey
-            };
 
-            const v2Bytes = await encryptedImport(
-                envelope,
+            const { v2Header, rowBytes, permissions, adminPublicKey } = await encryptedImport(
+                new Uint8Array(binaryPayload),
                 (data as any).keyId,
                 (data as any).tableName,
-                (data as any).columnNames as string[]
+                (data as any).columnNames as string[],
+                (bytes: Uint8Array) => bigIntUnpackr.unpack(bytes)
             );
 
-            // Apply decrypted V2 bytes via existing bulk import
+            // Apply decrypted rows
             const db = openDatabases.get(database!);
             if (!db) {
                 throw new Error(`Database ${database} not open`);
             }
-            const objects = bigIntUnpackr.unpackMultiple(v2Bytes);
-            if (objects.length < 1) {
-                throw new Error('encryptedBulkImport: empty decrypted payload');
-            }
-            const header = objects[0] as any;
-            const rows = objects.slice(1) as any[][];
-            const importResult = bulkInsertRows(db, header, rows, (data as any).conflictStrategy ?? 0, 'encryptedBulkImport');
 
-            // Persist permissions from the delta envelope
-            updatePermissionsFromDelta(db, database!, envelope.permissions, envelope.adminPublicKey);
+            const rows = bigIntUnpackr.unpackMultiple(rowBytes).map(r => r as any[]);
+            const importResult = bulkInsertRows(db, v2Header as any, rows, (data as any).conflictStrategy ?? 0, 'encryptedBulkImport');
+
+            // Persist permissions from the decrypted envelope
+            updatePermissionsFromDelta(db, database!, permissions, adminPublicKey);
 
             return importResult;
         }
@@ -1339,9 +1318,10 @@ async function bulkImportRaw(dbName: string, payload: Uint8Array, metadata: any)
 }
 
 /**
- * Bulk export: query SQLite, pack V2 header + rows as MessagePack, return as raw binary.
+ * Core export: query SQLite, return V2 header array and packed row bytes separately.
+ * Shared by bulkExport (concatenates) and encryptedBulkExport (encrypts row bytes).
  */
-async function bulkExport(dbName: string, metadata: any) {
+function bulkExportCore(dbName: string, metadata: any): { header: any[]; rowBytes: Uint8Array } {
     const db = openDatabases.get(dbName);
     if (!db) {
         throw new Error(`Database ${dbName} not open`);
@@ -1425,23 +1405,39 @@ async function bulkExport(dbName: string, metadata: any) {
         primaryKeyColumn || '' // [9] primaryKeyColumn
     ];
 
-    const parts: Uint8Array[] = [];
-    parts.push(pack(header));
+    // Pack rows into separate byte arrays
+    const rowParts: Uint8Array[] = [];
     for (const row of rows) {
         const converted = row.map((val, idx) =>
             convertValueFromSqlite(val, csharpTypes[idx], sqlTypes[idx]));
-        parts.push(pack(converted));
+        rowParts.push(pack(converted));
     }
 
-    // Concatenate into single buffer
-    const totalLength = parts.reduce((sum, p) => sum + p.length, 0);
+    // Concatenate row bytes
+    const totalRowLength = rowParts.reduce((sum, p) => sum + p.length, 0);
+    const rowBytes = new Uint8Array(totalRowLength);
+    let rowOffset = 0;
+    for (const part of rowParts) {
+        rowBytes.set(part, rowOffset);
+        rowOffset += part.length;
+    }
+
+    logger.info(MODULE_NAME, `✓ bulkExportCore: ${rows.length} rows, ${totalRowLength} bytes`);
+    return { header, rowBytes };
+}
+
+/**
+ * Bulk export: query SQLite, pack V2 header + rows as MessagePack, return as raw binary.
+ */
+function bulkExport(dbName: string, metadata: any) {
+    const { header, rowBytes } = bulkExportCore(dbName, metadata);
+
+    const packedHeader = pack(header);
+    const totalLength = packedHeader.length + rowBytes.length;
     const result = new Uint8Array(totalLength);
-    let offset = 0;
-    for (const part of parts) {
-        result.set(part, offset);
-        offset += part.length;
-    }
+    result.set(packedHeader, 0);
+    result.set(rowBytes, packedHeader.length);
 
-    logger.info(MODULE_NAME, `✓ bulkExport: ${rows.length} rows, ${totalLength} bytes`);
+    logger.info(MODULE_NAME, `✓ bulkExport: ${totalLength} bytes`);
     return { rawBinary: true, data: result };
 }

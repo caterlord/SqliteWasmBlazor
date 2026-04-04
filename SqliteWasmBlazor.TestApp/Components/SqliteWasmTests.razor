@@ -46,6 +46,9 @@
     [Parameter]
     public string? TestName { get; set; }
 
+    [Parameter]
+    public string? CategoryFilter { get; set; }
+
     private IDbContextFactory<TodoDbContext>? _factory;
     private string? _error;
     private readonly List<(string Category, SqliteWasmTest Test)> _tests = [];
@@ -69,7 +72,7 @@
             try
             {
                 var testFactory = new TestFactory(_factory, DatabaseService);
-                _tests.AddRange(testFactory.GetTests(TestName));
+                _tests.AddRange(testFactory.GetTests(TestName, CategoryFilter));
 
                 _running = true;
                 await InvokeAsync(StateHasChanged);

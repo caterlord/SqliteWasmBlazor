@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
     extractWriteTable, extractInsertColumns, extractUpdateColumns,
     enforceWritePermission
-} from './delta-metadata';
-import { type PermissionMap, hashPermissions } from './crypto-permissions';
+} from '../crypto/delta-metadata';
+import { type PermissionMap, hashPermissions } from '../crypto/crypto-permissions';
 
 // Note: We can't test the full DB persistence in vitest (no SQLite in Node).
 // Those paths are tested via Playwright integration tests.

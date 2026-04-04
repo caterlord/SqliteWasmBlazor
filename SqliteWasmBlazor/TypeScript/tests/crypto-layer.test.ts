@@ -10,7 +10,7 @@ import {
     encryptSymmetricCachedAesGcm, decryptSymmetricCachedAesGcm,
     decryptAsymmetricCachedAesGcm,
     generateRandomBytes, isSupported
-} from './crypto-layer';
+} from '../crypto/crypto-layer';
 
 function toBase64(data: Uint8Array): string {
     return btoa(String.fromCharCode(...data));

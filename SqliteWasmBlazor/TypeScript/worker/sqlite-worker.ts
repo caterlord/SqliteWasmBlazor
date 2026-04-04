@@ -12,13 +12,13 @@ import { registerEFCoreFunctions } from './ef-core-functions';
 import {
     storeKeys, getPublicKeys, removeKeys,
     signWithCachedKey
-} from './crypto-layer';
-import { encryptedExport, encryptedImport, signPermissionsWithCachedKey } from './encrypted-delta';
-import { type PermissionMap } from './crypto-permissions';
+} from '../crypto/crypto-layer';
+import { encryptedExport, encryptedImport, signPermissionsWithCachedKey } from '../crypto/encrypted-delta';
+import { type PermissionMap } from '../crypto/crypto-permissions';
 import {
     loadMetadata, clearMetadataCache, updatePermissionsFromDelta,
     setMetadata, getMetadataCache, enforceWritePermission
-} from './delta-metadata';
+} from '../crypto/delta-metadata';
 
 interface WorkerRequest {
     id: number;

@@ -3,14 +3,14 @@ import { pack, unpack } from 'msgpackr';
 import {
     storeKeys, getPublicKeys, clearAllKeys, generateRandomBytes,
     ed25519Verify, signWithCachedKey
-} from './crypto-layer';
+} from '../crypto/crypto-layer';
 import {
     hashPermissions, verifyContentSignature, verifyPermissionsSignature,
     checkWriteAccess, type PermissionMap, type VerifyFn
-} from './crypto-permissions';
+} from '../crypto/crypto-permissions';
 import {
     encryptedExport, encryptedImport, signPermissionsWithCachedKey
-} from './encrypted-delta';
+} from '../crypto/encrypted-delta';
 
 // ============================================================
 // TEST HELPERS

@@ -100,6 +100,15 @@ export function loadMetadata(db: any, dbName: string): void {
     metadataCache.set(dbName, cache);
 }
 
+function getOrCreateCache(dbName: string): DeltaMetadataCache {
+    let cache = metadataCache.get(dbName);
+    if (!cache) {
+        cache = { permissions: null, adminPublicKey: null, myPublicKey: null, encryptedTables: null };
+        metadataCache.set(dbName, cache);
+    }
+    return cache;
+}
+
 /**
  * Write a single metadata key-value pair to the database and update the cache.
  */

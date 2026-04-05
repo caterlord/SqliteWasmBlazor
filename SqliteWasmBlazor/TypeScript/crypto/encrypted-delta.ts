@@ -203,7 +203,11 @@ export async function encryptedImport(
 
     const senderPublicKey = outer[1] as string;
     const contentSignature = outer[2] as Uint8Array;
-    const recipientEnvelopes = outer[3] as Record<string, Uint8Array>;
+    // msgpackr may return a Map instead of a plain object for MessagePack maps
+    const rawEnvelopes = outer[3];
+    const recipientEnvelopes: Map<string, Uint8Array> = rawEnvelopes instanceof Map
+        ? rawEnvelopes
+        : new Map(Object.entries(rawEnvelopes ?? {}));
     const headerNonce = outer[4] as Uint8Array;
     const encryptedHeader = outer[5] as Uint8Array;
     const dataNonce = outer[6] as Uint8Array;
@@ -216,7 +220,7 @@ export async function encryptedImport(
     }
     const myX25519Pk = pubKeysResult.x25519PublicKeyBase64;
 
-    const wrappedKeyBlob = recipientEnvelopes[myX25519Pk];
+    const wrappedKeyBlob = recipientEnvelopes.get(myX25519Pk);
     if (!wrappedKeyBlob) {
         throw new Error('Delta not encrypted for this recipient');
     }
@@ -251,9 +255,21 @@ export async function encryptedImport(
     const innerHeader = unpackFn(base64ToBytes(headerDecResult.plaintextBase64)) as any[];
 
     const v2Header = innerHeader.slice(0, 10);
-    const permissions = innerHeader[10] as PermissionMap;
     const permissionsSignature = innerHeader[11] as Uint8Array;
     const adminPublicKey = innerHeader[12] as string;
+
+    // msgpackr may return nested Maps — convert to plain PermissionMap
+    const rawPerms = innerHeader[10];
+    const permissions: PermissionMap = {};
+    const permEntries = rawPerms instanceof Map ? rawPerms.entries() : Object.entries(rawPerms ?? {});
+    for (const [pk, diff] of permEntries) {
+        const plainDiff: Record<string, string> = {};
+        const diffEntries = diff instanceof Map ? diff.entries() : Object.entries(diff ?? {});
+        for (const [k, v] of diffEntries) {
+            plainDiff[k] = v as string;
+        }
+        permissions[pk as string] = plainDiff;
+    }
 
     // 5. Verify permissions signature
     if (!verifyPermissionsSignature(permissions, permissionsSignature, adminPublicKey, verifyFn)) {

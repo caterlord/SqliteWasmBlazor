@@ -11,7 +11,8 @@ const bigIntUnpackr = new Unpackr({ int64AsType: 'bigint' });
 import { registerEFCoreFunctions } from './ef-core-functions';
 import {
     storeKeys, getPublicKeys, removeKeys,
-    signWithCachedKey
+    signWithCachedKey,
+    findKeyIdByRecipient
 } from '../crypto/crypto-layer';
 import { encryptedExport, encryptedImport, signPermissionsWithCachedKey } from '../crypto/encrypted-delta';
 import { type PermissionMap } from '../crypto/crypto-permissions';
@@ -1296,9 +1297,20 @@ async function bulkImport(dbName: string, payload: Uint8Array, conflictStrategy:
     // Detect SWBV2E encrypted format
     const firstObj = bigIntUnpackr.unpack(payload);
     if (Array.isArray(firstObj) && firstObj[0] === 'SWBV2E') {
+        // Find the right keyId by matching recipient public keys against cached keys
+        // msgpackr may return a Map instead of a plain object for MessagePack maps
+        const envelopesRaw = firstObj[3];
+        const recipientPks = envelopesRaw instanceof Map
+            ? Array.from(envelopesRaw.keys()) as string[]
+            : Object.keys(envelopesRaw ?? {});
+        const keyId = metadata?.keyId ?? findKeyIdByRecipient(recipientPks);
+        if (!keyId) {
+            throw new Error('No cached key matches any recipient in the encrypted delta');
+        }
+
         const { v2Header, rowBytes, permissions, adminPublicKey } = await encryptedImport(
             payload,
-            (metadata as any)?.keyId ?? dbName,  // keyId from metadata or convention
+            keyId,
             null,   // tableName from decrypted header
             null,   // columnNames — table-level check only
             (bytes: Uint8Array) => bigIntUnpackr.unpack(bytes)

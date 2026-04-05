@@ -31,7 +31,8 @@ internal class EncryptedDeltaExportImportTest(IDbContextFactory<TodoDbContext> f
         // 2. Store keys for Alice in the worker (random seed = mock PRF)
         var aliceSeed = CryptoInterop.GenerateRandomBytes(32);
         var aliceKeysJson = await SqliteWasmWorkerBridge.StoreKeysInWorkerAsync("alice", aliceSeed, 0);
-        var aliceKeys = System.Text.Json.JsonSerializer.Deserialize<CryptoKeysResponse>(aliceKeysJson);
+        var aliceKeys = System.Text.Json.JsonSerializer.Deserialize<CryptoKeysResponse>(aliceKeysJson,
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
 
         if (aliceKeys is null || !aliceKeys.Success)
         {

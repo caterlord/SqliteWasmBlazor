@@ -166,6 +166,23 @@ export function getPublicKeys(keyId: string): string {
 }
 
 /**
+ * Find the keyId whose X25519 public key matches one of the given recipient keys.
+ * Used by auto-detect import to find the right cached key for decryption.
+ */
+export function findKeyIdByRecipient(recipientX25519Pks: string[]): string | null {
+    for (const [keyId, keys] of keyCache.entries()) {
+        if (isExpired(keys)) {
+            continue;
+        }
+        const pk = bytesToBase64(keys.x25519Public);
+        if (recipientX25519Pks.includes(pk)) {
+            return keyId;
+        }
+    }
+    return null;
+}
+
+/**
  * Check if a key exists and is not expired.
  */
 export function hasKey(keyId: string): boolean {

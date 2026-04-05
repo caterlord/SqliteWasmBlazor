@@ -1,0 +1,34 @@
+using System.ComponentModel.DataAnnotations;
+
+namespace SqliteWasmBlazor.CryptoSync;
+
+/// <summary>
+/// Table/column permission per role. Synced system table (admin-only write).
+/// PermissionDiffJson uses the diff format: { "Table": "readonly", "Table.Col": "readwrite" }
+/// </summary>
+public sealed class SyncPermission : ISyncableEntity
+{
+    public Guid Id { get; set; }
+    public SyncRole Role { get; set; }
+
+    [MaxLength(128)]
+    public required string TableName { get; set; }
+
+    /// <summary>
+    /// JSON-serialized permission diff. Empty object {} = full readwrite.
+    /// </summary>
+    [MaxLength(4096)]
+    public required string PermissionDiffJson { get; set; }
+
+    /// <summary>Admin's Ed25519 signature over the permission (Base64).</summary>
+    [MaxLength(128)]
+    public string? AdminSignature { get; set; }
+
+    /// <summary>Admin's Ed25519 public key (Base64) for verification.</summary>
+    [MaxLength(64)]
+    public string? AdminPublicKey { get; set; }
+
+    public DateTime UpdatedAt { get; set; }
+    public bool IsDeleted { get; set; }
+    public DateTime? DeletedAt { get; set; }
+}

@@ -266,7 +266,8 @@ async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayB
             return await bulkImport(
                 database!,
                 new Uint8Array(binaryPayload),
-                (data as any).conflictStrategy ?? 0
+                (data as any).conflictStrategy ?? 0,
+                data as any
             );
 
         case 'bulkImportRaw':
@@ -280,6 +281,22 @@ async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayB
             );
 
         case 'bulkExport':
+            // When keyId is set, do encrypted export (SWBV2E format)
+            if ((data as any).keyId) {
+                const { header: v2Header, rowBytes } = bulkExportCore(database!, data as any);
+                const permissions = ((data as any).permissions ?? {}) as PermissionMap;
+                const { permissionsSignature, adminPublicKey } = signPermissionsWithCachedKey(
+                    permissions, (data as any).keyId
+                );
+                const envelopeBytes = await encryptedExport(
+                    v2Header, rowBytes,
+                    (data as any).keyId,
+                    (data as any).recipientPublicKeys as string[],
+                    permissions, permissionsSignature, adminPublicKey,
+                    pack
+                );
+                return { rawBinary: true, data: envelopeBytes };
+            }
             return bulkExport(database!, data as any);
 
         // ============================================================
@@ -1270,12 +1287,31 @@ function bulkInsertRows(db: any, header: V2Header, rows: any[][], conflictStrate
 /**
  * Bulk import: unpack V2 MessagePack payload (header + individually packed rows).
  */
-async function bulkImport(dbName: string, payload: Uint8Array, conflictStrategy: number) {
+async function bulkImport(dbName: string, payload: Uint8Array, conflictStrategy: number, metadata?: any) {
     const db = openDatabases.get(dbName);
     if (!db) {
         throw new Error(`Database ${dbName} not open`);
     }
 
+    // Detect SWBV2E encrypted format
+    const firstObj = bigIntUnpackr.unpack(payload);
+    if (Array.isArray(firstObj) && firstObj[0] === 'SWBV2E') {
+        const { v2Header, rowBytes, permissions, adminPublicKey } = await encryptedImport(
+            payload,
+            (metadata as any)?.keyId ?? dbName,  // keyId from metadata or convention
+            null,   // tableName from decrypted header
+            null,   // columnNames — table-level check only
+            (bytes: Uint8Array) => bigIntUnpackr.unpack(bytes)
+        );
+
+        const rows = bigIntUnpackr.unpackMultiple(rowBytes).map(r => r as any[]);
+        const importResult = bulkInsertRows(db, v2Header as any, rows, conflictStrategy, 'encryptedBulkImport');
+
+        updatePermissionsFromDelta(db, dbName, permissions, adminPublicKey);
+        return importResult;
+    }
+
+    // Standard V2 format
     const objects = bigIntUnpackr.unpackMultiple(payload);
     if (objects.length < 1) {
         throw new Error('bulkImport: empty payload');

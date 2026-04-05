@@ -26,4 +26,6 @@ public record BulkExportMetadata
     public string? KeyId { get; init; }
     /// <summary>X25519 public keys of recipients for key wrapping.</summary>
     public string[]? RecipientPublicKeys { get; init; }
+    /// <summary>Permission map to include in encrypted header: ed25519pk → { "Table": "readonly", ... }</summary>
+    public Dictionary<string, Dictionary<string, string>>? Permissions { get; init; }
 }

@@ -187,8 +187,8 @@ export async function encryptedExport(
 export async function encryptedImport(
     envelopeBytes: Uint8Array,
     keyId: string,
-    tableName: string,
-    columnNames: string[],
+    tableName: string | null,
+    columnNames: string[] | null,
     unpackFn: (data: Uint8Array) => any
 ): Promise<{ v2Header: any[]; rowBytes: Uint8Array; permissions: PermissionMap; adminPublicKey: string }> {
     const verifyFn: VerifyFn = (data, signature, publicKey) => {
@@ -260,8 +260,10 @@ export async function encryptedImport(
         throw new Error('Permissions signature verification failed');
     }
 
-    // 6. Check sender's write access
-    const accessResult = checkWriteAccess(permissions, senderPublicKey, tableName, columnNames);
+    // 6. Check sender's write access (use V2 header table name if not provided)
+    const effectiveTable = tableName ?? (v2Header[7] as string);
+    const effectiveColumns = columnNames ?? [];
+    const accessResult = checkWriteAccess(permissions, senderPublicKey, effectiveTable, effectiveColumns);
     if (!accessResult.allowed) {
         throw new Error(`Write access denied: ${accessResult.reason}`);
     }

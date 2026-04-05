@@ -12,6 +12,7 @@ using SqliteWasmBlazor.TestApp.TestInfrastructure.Tests.Relationships;
 using SqliteWasmBlazor.TestApp.TestInfrastructure.Tests.Transactions;
 using SqliteWasmBlazor.TestApp.TestInfrastructure.Tests.TypeMarshalling;
 using SqliteWasmBlazor.TestApp.TestInfrastructure.Tests.V2Bulk;
+using SqliteWasmBlazor.TestApp.TestInfrastructure.Tests.EncryptedDelta;
 
 namespace SqliteWasmBlazor.TestApp.TestInfrastructure;
 
@@ -129,6 +130,9 @@ internal class TestFactory
         _tests.Add(("V2 Bulk", new V2BulkConflictDeltaWinsTest(factory, databaseService)));
         _tests.Add(("V2 Bulk Raw", new V2BulkRawImportTest(factory, databaseService)));
         _tests.Add(("V2 Bulk Raw", new V2BulkRawImportConflictTest(factory, databaseService)));
+
+        // Encrypted Delta Tests (SWBV2E format, worker-side crypto)
+        _tests.Add(("Encrypted Delta", new EncryptedDeltaExportImportTest(factory, databaseService)));
     }
 }
 

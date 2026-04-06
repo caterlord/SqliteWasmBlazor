@@ -492,6 +492,103 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
         }
     }
 
+    public async Task<(byte[] EncryptedBlob, byte[] Nonce)> BulkExportEncryptedAsync(
+        string databaseName, BulkExportMetadata exportMetadata,
+        byte[] contentKey, CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+
+        var requestId = Interlocked.Increment(ref _nextRequestId);
+        var tcs = new TaskCompletionSource<byte[]>();
+        _pendingBinaryRequests[requestId] = tcs;
+
+        try
+        {
+            await using var registration = cancellationToken.Register(() =>
+            {
+                _pendingBinaryRequests.TryRemove(requestId, out _);
+                tcs.TrySetCanceled();
+            });
+
+            var dataDict = JsonSerializer.SerializeToNode(exportMetadata, JsonOptions)?.AsObject()
+                ?? new System.Text.Json.Nodes.JsonObject();
+            dataDict["type"] = "bulkExportEncrypted";
+            dataDict["database"] = databaseName;
+            dataDict["contentKeyBase64"] = Convert.ToBase64String(contentKey);
+
+            SendToWorker(JsonSerializer.Serialize(new { id = requestId, data = dataDict }));
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(300_000);
+
+            // Worker returns: [12-byte nonce | encrypted blob]
+            var result = await tcs.Task.WaitAsync(timeoutCts.Token);
+
+            var nonce = result[..12];
+            var encryptedBlob = result[12..];
+            return (encryptedBlob, nonce);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException("Encrypted bulk export timed out.");
+        }
+        finally
+        {
+            _pendingBinaryRequests.TryRemove(requestId, out _);
+        }
+    }
+
+    public async Task<int> BulkImportEncryptedAsync(
+        string databaseName, byte[] encryptedPayload, byte[] nonce,
+        byte[] contentKey, ConflictResolutionStrategy conflictStrategy = ConflictResolutionStrategy.None,
+        Dictionary<string, string[]>? readonlyColumns = null, CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+
+        var requestId = Interlocked.Increment(ref _nextRequestId);
+        var tcs = new TaskCompletionSource<SqlQueryResult>();
+        _pendingRequests[requestId] = tcs;
+
+        try
+        {
+            await using var registration = cancellationToken.Register(() =>
+            {
+                _pendingRequests.TryRemove(requestId, out _);
+                tcs.TrySetCanceled();
+            });
+
+            var metadataJson = JsonSerializer.Serialize(new
+            {
+                id = requestId,
+                data = new
+                {
+                    type = "bulkImportEncrypted",
+                    database = databaseName,
+                    nonceBase64 = Convert.ToBase64String(nonce),
+                    contentKeyBase64 = Convert.ToBase64String(contentKey),
+                    conflictStrategy = (int)conflictStrategy,
+                    readonlyColumns
+                }
+            });
+
+            SendBinaryToWorker(encryptedPayload.AsSpan(), metadataJson);
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(300_000);
+
+            var result = await tcs.Task.WaitAsync(timeoutCts.Token);
+            return result.RowsAffected;
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException("Encrypted bulk import timed out.");
+        }
+        finally
+        {
+            _pendingRequests.TryRemove(requestId, out _);
+        }
+    }
+
     private async Task EnsureInitializedAsync(CancellationToken cancellationToken)
     {
         if (!_isInitialized)

@@ -103,4 +103,33 @@ public interface ISqliteWasmDatabaseService
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>V2 MessagePack bytes (header + serialized rows)</returns>
     Task<byte[]> BulkExportAsync(string databaseName, BulkExportMetadata exportMetadata, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Encrypted bulk export: worker exports, encrypts V2 bytes with content key via SubtleCrypto AES-GCM.
+    /// Plain V2 bytes never leave the worker. Returns encrypted blob + nonce.
+    /// Content key is zeroed in worker after use.
+    /// </summary>
+    /// <param name="databaseName">Source database filename</param>
+    /// <param name="exportMetadata">Export parameters</param>
+    /// <param name="contentKey">32-byte AES-GCM content key. Caller MUST zero after this call returns.</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>(encryptedBlob, nonce) — nonce is 12 bytes</returns>
+    Task<(byte[] EncryptedBlob, byte[] Nonce)> BulkExportEncryptedAsync(string databaseName, BulkExportMetadata exportMetadata,
+        byte[] contentKey, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Encrypted bulk import: worker decrypts with content key, inserts into open table + _crypto_ table.
+    /// Content key is zeroed in worker after use.
+    /// </summary>
+    /// <param name="databaseName">Target database filename</param>
+    /// <param name="encryptedPayload">AES-GCM encrypted V2 bytes</param>
+    /// <param name="nonce">12-byte AES-GCM nonce</param>
+    /// <param name="contentKey">32-byte AES-GCM content key. Caller MUST zero after this call returns.</param>
+    /// <param name="conflictStrategy">Conflict resolution for open table</param>
+    /// <param name="readonlyColumns">Readonly enforcement for open table</param>
+    /// <param name="cancellationToken">Cancellation token</param>
+    /// <returns>Number of rows imported into open table</returns>
+    Task<int> BulkImportEncryptedAsync(string databaseName, byte[] encryptedPayload, byte[] nonce,
+        byte[] contentKey, ConflictResolutionStrategy conflictStrategy = ConflictResolutionStrategy.None,
+        Dictionary<string, string[]>? readonlyColumns = null, CancellationToken cancellationToken = default);
 }

@@ -61,8 +61,11 @@ internal class TestFactory
 
     private void PopulateCryptoTests(IDbContextFactory<CryptoTestContext> cryptoFactory, ISqliteWasmDatabaseService databaseService)
     {
-        var test = new CryptoSyncRoundTripTest(cryptoFactory, databaseService);
-        _entries.Add(new TestEntry("Encrypted Delta", test.Name, () => test.RunTestWithFreshDatabaseAsync()));
+        var test1 = new CryptoSyncRoundTripTest(cryptoFactory, databaseService);
+        _entries.Add(new TestEntry("Encrypted Delta", test1.Name, () => test1.RunTestWithFreshDatabaseAsync()));
+
+        var test2 = new WorkerEncryptedRoundTripTest(cryptoFactory, databaseService);
+        _entries.Add(new TestEntry("Encrypted Delta", test2.Name, () => test2.RunTestWithFreshDatabaseAsync()));
     }
 
     private void PopulateTests(IDbContextFactory<TodoDbContext> factory, ISqliteWasmDatabaseService databaseService)

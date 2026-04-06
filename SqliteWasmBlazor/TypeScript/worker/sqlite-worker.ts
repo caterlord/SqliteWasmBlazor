@@ -273,6 +273,19 @@ async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayB
         case 'bulkExport':
             return await bulkExport(database!, data as any);
 
+        case 'bulkExportEncrypted':
+            return await bulkExportEncrypted(database!, data as any);
+
+        case 'bulkImportEncrypted':
+            if (!binaryPayload) {
+                throw new Error('bulkImportEncrypted requires binaryPayload');
+            }
+            return await bulkImportEncrypted(
+                database!,
+                new Uint8Array(binaryPayload),
+                data as any
+            );
+
         default:
             throw new Error(`Unknown request type: ${type}`);
     }
@@ -1319,4 +1332,111 @@ async function bulkExport(dbName: string, metadata: any) {
 
     logger.info(MODULE_NAME, `✓ bulkExport: ${rows.length} rows, ${totalLength} bytes`);
     return { rawBinary: true, data: result };
+}
+
+// ============================================================
+// ENCRYPTED BULK OPERATIONS (SubtleCrypto AES-GCM, content key zeroed after use)
+// ============================================================
+
+function base64ToBytes(base64: string): Uint8Array {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+}
+
+/**
+ * Encrypted bulk export: export → encrypt V2 bytes with content key → return [nonce | ciphertext].
+ * Plain V2 bytes never leave the worker. Content key zeroed after use.
+ */
+async function bulkExportEncrypted(dbName: string, metadata: any) {
+    // 1. Normal export → V2 bytes
+    const exportResult = bulkExport(dbName, metadata);
+    const v2Bytes = (exportResult as any).data as Uint8Array;
+
+    // 2. Import content key, encrypt, zero
+    const contentKeyBytes = base64ToBytes(metadata.contentKeyBase64);
+    try {
+        const key = await crypto.subtle.importKey('raw', contentKeyBytes, { name: 'AES-GCM' }, false, ['encrypt']);
+
+        const nonce = crypto.getRandomValues(new Uint8Array(12));
+        const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, key, v2Bytes);
+
+        // Return [12-byte nonce | ciphertext] as single binary blob
+        const result = new Uint8Array(12 + ciphertext.byteLength);
+        result.set(nonce, 0);
+        result.set(new Uint8Array(ciphertext), 12);
+
+        logger.info(MODULE_NAME, `✓ bulkExportEncrypted: ${v2Bytes.length} → ${result.length} bytes`);
+        return { rawBinary: true, data: result };
+    } finally {
+        contentKeyBytes.fill(0);
+    }
+}
+
+/**
+ * Encrypted bulk import: decrypt → insert into open table (+ _crypto_ table for blob storage).
+ * Content key zeroed after use.
+ */
+async function bulkImportEncrypted(dbName: string, encryptedPayload: Uint8Array, metadata: any) {
+    const db = openDatabases.get(dbName);
+    if (!db) {
+        throw new Error(`Database ${dbName} not open`);
+    }
+
+    const contentKeyBytes = base64ToBytes(metadata.contentKeyBase64);
+    const nonceBytes = base64ToBytes(metadata.nonceBase64);
+
+    let v2Bytes: Uint8Array;
+    try {
+        const key = await crypto.subtle.importKey('raw', contentKeyBytes, { name: 'AES-GCM' }, false, ['decrypt']);
+        const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonceBytes }, key, encryptedPayload);
+        v2Bytes = new Uint8Array(plaintext);
+    } finally {
+        contentKeyBytes.fill(0);
+    }
+
+    // Parse V2 header to get table name
+    const objects = bigIntUnpackr.unpackMultiple(v2Bytes);
+    if (objects.length < 1) {
+        throw new Error('bulkImportEncrypted: empty decrypted payload');
+    }
+
+    const header = objects[0] as any;
+    const tableName = header[7] as string;
+    const rows = objects.slice(1) as any[][];
+
+    // Store encrypted blob in _crypto_ table (if it exists)
+    const cryptoTableName = `_crypto_${tableName}`;
+    try {
+        // Check if crypto table exists
+        const tableCheck = db.exec({
+            sql: `SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+            bind: [cryptoTableName],
+            returnValue: 'resultRows',
+            rowMode: 'array'
+        });
+
+        if (tableCheck && tableCheck.length > 0) {
+            // Store encrypted blob — use a hash of the payload as ID for dedup
+            const blobId = Array.from(nonceBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+            db.exec({
+                sql: `INSERT OR REPLACE INTO "${cryptoTableName}" (Id, SharingScope, SharingId, EncryptedRow, Nonce) VALUES (?, ?, ?, ?, ?)`,
+                bind: [blobId, 0, 'delta', encryptedPayload, nonceBytes]
+            });
+            logger.info(MODULE_NAME, `✓ Stored encrypted blob in ${cryptoTableName}`);
+        }
+    } catch (e) {
+        // Crypto table insert is best-effort — don't fail the import
+        logger.warn(MODULE_NAME, `Could not store in ${cryptoTableName}:`, e);
+    }
+
+    // Import decrypted rows into open table
+    const conflictStrategy = metadata.conflictStrategy ?? 0;
+    const readonlyColumns = metadata.readonlyColumns as Record<string, string[]> | undefined;
+
+    logger.info(MODULE_NAME, `✓ bulkImportEncrypted: decrypted ${v2Bytes.length} bytes, ${rows.length} rows`);
+    return bulkInsertRows(db, header, rows, conflictStrategy, 'bulkImportEncrypted', readonlyColumns);
 }

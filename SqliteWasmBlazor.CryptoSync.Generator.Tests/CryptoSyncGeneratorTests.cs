@@ -42,14 +42,14 @@ public class CryptoSyncGeneratorTests
         namespace SqliteWasmBlazor.CryptoSync
         {
             public enum SharingScope { Public = 0, Shared = 1, Client = 2 }
-            public interface ISyncableEntity
+            public abstract class SyncableEntity
             {
-                System.Guid Id { get; set; }
-                SharingScope SharingScope { get; set; }
-                string SharingId { get; set; }
-                System.DateTime UpdatedAt { get; set; }
-                bool IsDeleted { get; set; }
-                System.DateTime? DeletedAt { get; set; }
+                public System.Guid Id { get; set; }
+                public SharingScope SharingScope { get; set; }
+                public string SharingId { get; set; } = "";
+                public System.DateTime UpdatedAt { get; set; }
+                public bool IsDeleted { get; set; }
+                public System.DateTime? DeletedAt { get; set; }
             }
             public abstract class CryptoSyncContextBase : Microsoft.EntityFrameworkCore.DbContext
             {
@@ -64,16 +64,10 @@ public class CryptoSyncGeneratorTests
         var source = StubTypes + """
             namespace TestApp
             {
-                public class TodoItem : SqliteWasmBlazor.CryptoSync.ISyncableEntity
+                public class TodoItem : SqliteWasmBlazor.CryptoSync.SyncableEntity
                 {
-                    public System.Guid Id { get; set; }
                     public string Title { get; set; } = "";
                     public bool IsCompleted { get; set; }
-                    public SqliteWasmBlazor.CryptoSync.SharingScope SharingScope { get; set; }
-                    public string SharingId { get; set; } = "";
-                    public System.DateTime UpdatedAt { get; set; }
-                    public bool IsDeleted { get; set; }
-                    public System.DateTime? DeletedAt { get; set; }
                 }
 
                 public partial class MyContext : SqliteWasmBlazor.CryptoSync.CryptoSyncContextBase
@@ -112,16 +106,10 @@ public class CryptoSyncGeneratorTests
         var source = StubTypes + """
             namespace TestApp
             {
-                public class ShoppingItem : SqliteWasmBlazor.CryptoSync.ISyncableEntity
+                public class ShoppingItem : SqliteWasmBlazor.CryptoSync.SyncableEntity
                 {
-                    public System.Guid Id { get; set; }
                     public string Name { get; set; } = "";
                     public decimal Price { get; set; }
-                    public SqliteWasmBlazor.CryptoSync.SharingScope SharingScope { get; set; }
-                    public string SharingId { get; set; } = "";
-                    public System.DateTime UpdatedAt { get; set; }
-                    public bool IsDeleted { get; set; }
-                    public System.DateTime? DeletedAt { get; set; }
                 }
 
                 public partial class ShopContext : SqliteWasmBlazor.CryptoSync.CryptoSyncContextBase
@@ -198,24 +186,8 @@ public class CryptoSyncGeneratorTests
         var source = StubTypes + """
             namespace TestApp
             {
-                public class Item1 : SqliteWasmBlazor.CryptoSync.ISyncableEntity
-                {
-                    public System.Guid Id { get; set; }
-                    public SqliteWasmBlazor.CryptoSync.SharingScope SharingScope { get; set; }
-                    public string SharingId { get; set; } = "";
-                    public System.DateTime UpdatedAt { get; set; }
-                    public bool IsDeleted { get; set; }
-                    public System.DateTime? DeletedAt { get; set; }
-                }
-                public class Item2 : SqliteWasmBlazor.CryptoSync.ISyncableEntity
-                {
-                    public System.Guid Id { get; set; }
-                    public SqliteWasmBlazor.CryptoSync.SharingScope SharingScope { get; set; }
-                    public string SharingId { get; set; } = "";
-                    public System.DateTime UpdatedAt { get; set; }
-                    public bool IsDeleted { get; set; }
-                    public System.DateTime? DeletedAt { get; set; }
-                }
+                public class Item1 : SqliteWasmBlazor.CryptoSync.SyncableEntity { }
+                public class Item2 : SqliteWasmBlazor.CryptoSync.SyncableEntity { }
 
                 public partial class MultiContext : SqliteWasmBlazor.CryptoSync.CryptoSyncContextBase
                 {
@@ -250,15 +222,7 @@ public class CryptoSyncGeneratorTests
         var source = StubTypes + """
             namespace TestApp
             {
-                public class MyEntity : SqliteWasmBlazor.CryptoSync.ISyncableEntity
-                {
-                    public System.Guid Id { get; set; }
-                    public SqliteWasmBlazor.CryptoSync.SharingScope SharingScope { get; set; }
-                    public string SharingId { get; set; } = "";
-                    public System.DateTime UpdatedAt { get; set; }
-                    public bool IsDeleted { get; set; }
-                    public System.DateTime? DeletedAt { get; set; }
-                }
+                public class MyEntity : SqliteWasmBlazor.CryptoSync.SyncableEntity { }
 
                 public partial class TestCtx : SqliteWasmBlazor.CryptoSync.CryptoSyncContextBase
                 {

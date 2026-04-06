@@ -6,9 +6,8 @@ namespace SqliteWasmBlazor.CryptoSync;
 /// Table/column permission per role. System table (admin-defined, seeded via migration).
 /// PermissionDiffJson uses the diff format: { "Table": "readonly", "Table.Col": "readwrite" }
 /// </summary>
-public sealed class SyncPermission : ISyncableEntity
+public sealed class SyncPermission : SyncableEntity
 {
-    public Guid Id { get; set; }
     public SyncRole Role { get; set; }
 
     [MaxLength(128)]
@@ -28,10 +27,6 @@ public sealed class SyncPermission : ISyncableEntity
     [MaxLength(64)]
     public string? AdminPublicKey { get; set; }
 
-    // ISyncableEntity
-    public SharingScope SharingScope { get; set; } = SharingScope.Public;
-    public string SharingId { get; set; } = "system";
-    public DateTime UpdatedAt { get; set; }
-    public bool IsDeleted { get; set; }
-    public DateTime? DeletedAt { get; set; }
+    // SyncableEntity defaults for system table
+    // SharingScope = Public, SharingId = "system" (set in seed data)
 }

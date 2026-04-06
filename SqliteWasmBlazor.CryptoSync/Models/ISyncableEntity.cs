@@ -1,22 +1,22 @@
 namespace SqliteWasmBlazor.CryptoSync;
 
 /// <summary>
-/// Base for ALL entities in a CryptoSync app. Every table syncs. Every table gets a _crypto_ shadow.
-/// The SharingScope determines WHO can decrypt the row (Public/Shared/Client).
+/// Base class for ALL entities in a CryptoSync app. Every table syncs. Every table gets a _crypto_ shadow.
+/// Domain entities inherit this and add their own properties.
 /// </summary>
-public interface ISyncableEntity
+public abstract class SyncableEntity
 {
-    Guid Id { get; set; }
+    public Guid Id { get; set; }
 
     /// <summary>Visibility scope — determines who gets the decryption key.</summary>
-    SharingScope SharingScope { get; set; }
+    public SharingScope SharingScope { get; set; }
 
     /// <summary>Scope identifier for key lookup (e.g. "list-{guid}" for a shared shopping list).</summary>
-    string SharingId { get; set; }
+    public string SharingId { get; set; } = "";
 
-    DateTime UpdatedAt { get; set; }
-    bool IsDeleted { get; set; }
-    DateTime? DeletedAt { get; set; }
+    public DateTime UpdatedAt { get; set; }
+    public bool IsDeleted { get; set; }
+    public DateTime? DeletedAt { get; set; }
 }
 
 /// <summary>

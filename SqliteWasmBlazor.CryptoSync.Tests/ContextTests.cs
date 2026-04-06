@@ -6,11 +6,34 @@ using Xunit;
 namespace SqliteWasmBlazor.CryptoSync.Tests;
 
 /// <summary>
-/// Test context that inherits CryptoSyncContextBase — simulates a real app.
+/// Test entity for generator validation.
 /// </summary>
-public class TestSyncContext : CryptoSyncContextBase
+public class TestItem : ISyncableEntity
+{
+    public Guid Id { get; set; }
+    public string Title { get; set; } = "";
+    public bool IsCompleted { get; set; }
+    public SharingScope SharingScope { get; set; }
+    public string SharingId { get; set; } = "";
+    public DateTime UpdatedAt { get; set; }
+    public bool IsDeleted { get; set; }
+    public DateTime? DeletedAt { get; set; }
+}
+
+/// <summary>
+/// Test context that inherits CryptoSyncContextBase — simulates a real app.
+/// The generator should create Crypto_TestItem + EF config + registry.
+/// </summary>
+public partial class TestSyncContext : CryptoSyncContextBase
 {
     public TestSyncContext(DbContextOptions options) : base(options) { }
+    public DbSet<TestItem> TestItems => Set<TestItem>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        ConfigureCryptoTables(modelBuilder);
+    }
 }
 
 public class ContextTests : IDisposable

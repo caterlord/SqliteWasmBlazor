@@ -90,5 +90,54 @@ public abstract class CryptoSyncContextBase : DbContext
         {
             entity.HasKey(e => e.Id);
         });
+
+        // Seed system table permissions:
+        // Owner (admin) = full CRUD, Editor/Viewer = Read only
+        SeedSystemTablePermissions(modelBuilder);
+    }
+
+    /// <summary>
+    /// Seeds permissions for system tables. Owner = full CRUD, others = Read only.
+    /// Uses deterministic GUIDs derived from role + table name.
+    /// </summary>
+    private static void SeedSystemTablePermissions(ModelBuilder modelBuilder)
+    {
+        var systemTables = new[] { "Contacts", "SentInvitations", "ReceivedInvitations", "SharingKeys", "Permissions" };
+
+        var seeds = new List<SyncPermission>();
+
+        foreach (var table in systemTables)
+        {
+            // Owner: full CRUD
+            seeds.Add(CreateSystemPermission(table, SyncRole.Owner, "{}"));
+
+            // Editor: read only
+            seeds.Add(CreateSystemPermission(table, SyncRole.Editor,
+                $"{{\"{table}\":\"readonly\"}}"));
+
+            // Viewer: read only
+            seeds.Add(CreateSystemPermission(table, SyncRole.Viewer,
+                $"{{\"{table}\":\"readonly\"}}"));
+        }
+
+        modelBuilder.Entity<SyncPermission>().HasData(seeds);
+    }
+
+    private static SyncPermission CreateSystemPermission(string tableName, SyncRole role, string permissionDiffJson)
+    {
+        // Deterministic GUID from role + table
+        using var md5 = System.Security.Cryptography.MD5.Create();
+        var guidBytes = md5.ComputeHash(System.Text.Encoding.UTF8.GetBytes($"SystemPermission:{(int)role}:{tableName}"));
+
+        return new SyncPermission
+        {
+            Id = new Guid(guidBytes),
+            Role = role,
+            TableName = tableName,
+            PermissionDiffJson = permissionDiffJson,
+            SharingScope = SharingScope.Public,
+            SharingId = "system",
+            UpdatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)
+        };
     }
 }

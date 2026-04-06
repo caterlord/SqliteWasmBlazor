@@ -19,6 +19,7 @@ interface WorkerRequest {
         parameters?: Record<string, any>;
     };
     binaryPayload?: ArrayBuffer;
+    binaryHeader?: ArrayBuffer;
 }
 
 interface WorkerResponse {
@@ -173,10 +174,10 @@ self.onmessage = async (event: MessageEvent<WorkerRequest | { type: 'setLogLevel
     }
 
     // Handle regular requests
-    const { id, data, binaryPayload } = event.data as WorkerRequest;
+    const { id, data, binaryPayload, binaryHeader } = event.data as WorkerRequest;
 
     try {
-        const result = await handleRequest(data, binaryPayload);
+        const result = await handleRequest(data, binaryPayload, binaryHeader);
 
         // Check if result contains raw binary data (export operations)
         if (result && typeof result === 'object' && 'rawBinary' in result && result.rawBinary) {
@@ -218,7 +219,7 @@ self.onmessage = async (event: MessageEvent<WorkerRequest | { type: 'setLogLevel
     }
 };
 
-async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayBuffer) {
+async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayBuffer, binaryHeader?: ArrayBuffer) {
     const { type, database, sql, parameters } = data;
 
     switch (type) {
@@ -274,15 +275,19 @@ async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayB
             return await bulkExport(database!, data as any);
 
         case 'bulkExportEncrypted':
-            return await bulkExportEncrypted(database!, data as any);
+            if (!binaryPayload) {
+                throw new Error('bulkExportEncrypted requires binaryPayload (contentKey)');
+            }
+            return await bulkExportEncrypted(database!, new Uint8Array(binaryPayload), data as any);
 
         case 'bulkImportEncrypted':
-            if (!binaryPayload) {
-                throw new Error('bulkImportEncrypted requires binaryPayload');
+            if (!binaryPayload || !binaryHeader) {
+                throw new Error('bulkImportEncrypted requires binaryPayload (ciphertext) + binaryHeader (nonce+key)');
             }
             return await bulkImportEncrypted(
                 database!,
                 new Uint8Array(binaryPayload),
+                new Uint8Array(binaryHeader),
                 data as any
             );
 
@@ -1351,18 +1356,22 @@ function base64ToBytes(base64: string): Uint8Array {
  * Encrypted bulk export: export → encrypt V2 bytes with content key → return [nonce | ciphertext].
  * Plain V2 bytes never leave the worker. Content key zeroed after use.
  */
-async function bulkExportEncrypted(dbName: string, metadata: any) {
+async function bulkExportEncrypted(dbName: string, contentKeyPayload: Uint8Array, metadata: any) {
     // 1. Normal export → V2 bytes
-    const exportResult = bulkExport(dbName, metadata);
+    const exportResult = await bulkExport(dbName, metadata);
     const v2Bytes = (exportResult as any).data as Uint8Array;
 
-    // 2. Import content key, encrypt, zero
-    const contentKeyBytes = base64ToBytes(metadata.contentKeyBase64);
+    if (!(v2Bytes instanceof Uint8Array)) {
+        throw new Error(`bulkExportEncrypted: expected Uint8Array from bulkExport, got ${typeof v2Bytes}`);
+    }
+
+    // 2. Content key from binary payload (32 bytes), zero after use
+    const contentKeyBytes = new Uint8Array(contentKeyPayload.buffer.slice(0, 32));
     try {
-        const key = await crypto.subtle.importKey('raw', contentKeyBytes, { name: 'AES-GCM' }, false, ['encrypt']);
+        const key = await crypto.subtle.importKey('raw', contentKeyBytes.buffer, { name: 'AES-GCM' }, false, ['encrypt']);
 
         const nonce = crypto.getRandomValues(new Uint8Array(12));
-        const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, key, v2Bytes);
+        const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce }, key, v2Bytes.buffer);
 
         // Return [12-byte nonce | ciphertext] as single binary blob
         const result = new Uint8Array(12 + ciphertext.byteLength);
@@ -1380,22 +1389,24 @@ async function bulkExportEncrypted(dbName: string, metadata: any) {
  * Encrypted bulk import: decrypt → insert into open table (+ _crypto_ table for blob storage).
  * Content key zeroed after use.
  */
-async function bulkImportEncrypted(dbName: string, encryptedPayload: Uint8Array, metadata: any) {
+async function bulkImportEncrypted(dbName: string, encryptedPayload: Uint8Array, cryptoHeader: Uint8Array, metadata: any) {
     const db = openDatabases.get(dbName);
     if (!db) {
         throw new Error(`Database ${dbName} not open`);
     }
 
-    const contentKeyBytes = base64ToBytes(metadata.contentKeyBase64);
-    const nonceBytes = base64ToBytes(metadata.nonceBase64);
+    // cryptoHeader: [nonce(12) | contentKey(32)]
+    const nonceBytes = cryptoHeader.slice(0, 12);
+    const contentKeyBytes = cryptoHeader.slice(12, 44);
 
     let v2Bytes: Uint8Array;
     try {
-        const key = await crypto.subtle.importKey('raw', contentKeyBytes, { name: 'AES-GCM' }, false, ['decrypt']);
-        const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonceBytes }, key, encryptedPayload);
+        const key = await crypto.subtle.importKey('raw', contentKeyBytes.buffer, { name: 'AES-GCM' }, false, ['decrypt']);
+        const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonceBytes.buffer }, key, encryptedPayload.buffer);
         v2Bytes = new Uint8Array(plaintext);
     } finally {
         contentKeyBytes.fill(0);
+        nonceBytes.fill(0);
     }
 
     // Parse V2 header to get table name

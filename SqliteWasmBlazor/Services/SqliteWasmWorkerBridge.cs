@@ -510,13 +510,15 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
                 tcs.TrySetCanceled();
             });
 
+            // Send content key as binary payload (Span), metadata as JSON
             var dataDict = JsonSerializer.SerializeToNode(exportMetadata, JsonOptions)?.AsObject()
                 ?? new System.Text.Json.Nodes.JsonObject();
             dataDict["type"] = "bulkExportEncrypted";
             dataDict["database"] = databaseName;
-            dataDict["contentKeyBase64"] = Convert.ToBase64String(contentKey);
 
-            SendToWorker(JsonSerializer.Serialize(new { id = requestId, data = dataDict }));
+            var metadataJson = JsonSerializer.Serialize(new { id = requestId, data = dataDict });
+
+            SendBinaryToWorker(contentKey.AsSpan(), metadataJson);
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(300_000);
@@ -557,6 +559,12 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
                 tcs.TrySetCanceled();
             });
 
+            // Header: [nonce(12) | contentKey(32)] = 44 bytes (small, copied)
+            // Payload: encryptedPayload (large, zero-copy transferred)
+            Span<byte> header = stackalloc byte[44];
+            nonce.AsSpan().CopyTo(header[..12]);
+            contentKey.AsSpan().CopyTo(header[12..]);
+
             var metadataJson = JsonSerializer.Serialize(new
             {
                 id = requestId,
@@ -564,14 +572,13 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
                 {
                     type = "bulkImportEncrypted",
                     database = databaseName,
-                    nonceBase64 = Convert.ToBase64String(nonce),
-                    contentKeyBase64 = Convert.ToBase64String(contentKey),
                     conflictStrategy = (int)conflictStrategy,
                     readonlyColumns
                 }
             });
 
-            SendBinaryToWorker(encryptedPayload.AsSpan(), metadataJson);
+            SendBinaryToWorkerWithHeader(encryptedPayload.AsSpan(), metadataJson, header);
+            header.Clear(); // zero nonce+key from stack
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(300_000);
@@ -894,6 +901,12 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
 
     [JSImport("sendBinaryToWorker", "sqliteWasmWorker")]
     private static partial void SendBinaryToWorker([JSMarshalAs<JSType.MemoryView>] Span<byte> data, string metadataJson);
+
+    [JSImport("sendBinaryToWorker", "sqliteWasmWorker")]
+    private static partial void SendBinaryToWorkerWithHeader(
+        [JSMarshalAs<JSType.MemoryView>] Span<byte> data,
+        string metadataJson,
+        [JSMarshalAs<JSType.MemoryView>] Span<byte> header);
 }
 
 /// <summary>

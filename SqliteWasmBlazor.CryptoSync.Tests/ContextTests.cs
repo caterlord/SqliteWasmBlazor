@@ -134,10 +134,10 @@ public class ContextTests : IDisposable
         _context.Permissions.Add(deleted);
         await _context.SaveChangesAsync();
 
-        // Query filter should exclude deleted
+        // Query filter should exclude deleted — seed data + active, NOT deleted
         var permissions = await _context.Permissions.ToListAsync();
-        Assert.Single(permissions);
-        Assert.Equal("ShoppingItems", permissions[0].TableName);
+        Assert.Contains(permissions, p => p.TableName == "ShoppingItems");
+        Assert.DoesNotContain(permissions, p => p.TableName == "OldTable");
     }
 
     [Fact]

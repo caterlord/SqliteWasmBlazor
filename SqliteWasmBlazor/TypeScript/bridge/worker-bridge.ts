@@ -111,20 +111,27 @@ export function sendToWorker(messageJson: string): void {
 }
 
 // Called from C# to send binary data to worker (import operations)
-export function sendBinaryToWorker(memoryView: IMemoryView, metadataJson: string): void {
+// Optional header: small binary (nonce+key) sent alongside large payload without copying payload.
+export function sendBinaryToWorker(memoryView: IMemoryView, metadataJson: string, headerView?: IMemoryView): void {
     if (!worker) {
         throw new Error('Worker not initialized');
     }
 
-    // Slice MemoryView to get a copy as Uint8Array
     const data = memoryView.slice();
     const metadata = JSON.parse(metadataJson);
 
-    // Post with transferable buffer for zero-copy transfer to worker
-    worker.postMessage(
-        { ...metadata, binaryPayload: data.buffer },
-        [data.buffer]
-    );
+    if (headerView) {
+        const header = headerView.slice();
+        worker.postMessage(
+            { ...metadata, binaryHeader: header.buffer, binaryPayload: data.buffer },
+            [data.buffer]
+        );
+    } else {
+        worker.postMessage(
+            { ...metadata, binaryPayload: data.buffer },
+            [data.buffer]
+        );
+    }
 }
 
 // Logger API - matches C# SqliteWasmLogLevel enum

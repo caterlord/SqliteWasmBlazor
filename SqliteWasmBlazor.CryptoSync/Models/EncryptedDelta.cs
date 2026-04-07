@@ -4,10 +4,21 @@ namespace SqliteWasmBlazor.CryptoSync;
 
 /// <summary>
 /// Encrypted delta envelope for transport (MessagePack serialized).
-/// Contains encrypted V2 payload, per-recipient wrapped keys, and signed permissions.
+/// Contains the encrypted V2 payload and per-recipient wrapped content keys.
 ///
-/// Plaintext (relay-visible): SenderPublicKey, ContentSignature, RecipientEnvelopes
-/// Encrypted: V2 header + row data, permissions
+/// <para>
+/// Plaintext (relay-visible): <see cref="SenderPublicKey"/>, <see cref="ContentSignature"/>,
+/// <see cref="RecipientEnvelopes"/>, <see cref="Nonce"/>.
+/// Encrypted: <see cref="Ciphertext"/> (V2 header + row data).
+/// </para>
+///
+/// <para>
+/// Permissions are NOT shipped in the envelope. Receivers enforce permissions
+/// by querying the locally-applied <c>SyncPermission</c> table during the
+/// staggered apply pass — see <c>permission-check.ts</c>. This prevents senders
+/// from lying about op-kind or table rules and lets a permission change shipped
+/// in the same delta as a domain change take effect first.
+/// </para>
 /// </summary>
 [MessagePackObject]
 public class EncryptedDelta
@@ -31,21 +42,4 @@ public class EncryptedDelta
     /// <summary>Per-recipient wrapped content keys. Key = X25519 public key (Base64), Value = ECIES wrapped key.</summary>
     [Key(4)]
     public Dictionary<string, byte[]> RecipientEnvelopes { get; set; } = new();
-
-    /// <summary>
-    /// Permission map (encrypted in transit, plaintext after decryption).
-    /// Ed25519 public key → permission diff from default.
-    /// Default = full readwrite. Only overrides stored:
-    /// "Table": "readonly", "Table.Column": "readwrite"
-    /// </summary>
-    [Key(5)]
-    public Dictionary<string, Dictionary<string, string>> Permissions { get; set; } = new();
-
-    /// <summary>Ed25519 signature over canonical hash of Permissions.</summary>
-    [Key(6)]
-    public byte[] PermissionsSignature { get; set; } = [];
-
-    /// <summary>Ed25519 public key of the admin who signed permissions (trust chain root).</summary>
-    [Key(7)]
-    public string AdminPublicKey { get; set; } = string.Empty;
 }

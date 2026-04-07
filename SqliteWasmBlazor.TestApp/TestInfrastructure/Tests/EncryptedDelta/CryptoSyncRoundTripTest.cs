@@ -83,11 +83,10 @@ internal class CryptoSyncRoundTripTest(
         await using (var ctx = await CryptoFactory.CreateDbContextAsync())
         {
             var contactService = new ContactService(ctx);
-            var permissionService = new PermissionService(ctx);
-            var orchestrator = new SyncOrchestrator(DatabaseService!, crypto, contactService, permissionService);
+            var orchestrator = new SyncOrchestrator(DatabaseService!, crypto, contactService);
 
             envelopeBytes = await orchestrator.ExportAsync(
-                CryptoDatabaseName, exportMetadata, aliceKeys, aliceKeys);
+                CryptoDatabaseName, exportMetadata, aliceKeys);
         }
 
         if (envelopeBytes.Length == 0)
@@ -115,16 +114,10 @@ internal class CryptoSyncRoundTripTest(
         await using (var ctx = await CryptoFactory.CreateDbContextAsync())
         {
             var contactService = new ContactService(ctx);
-            var permissionService = new PermissionService(ctx);
-            var orchestrator = new SyncOrchestrator(DatabaseService!, crypto, contactService, permissionService);
-
-            var allColumns = new Dictionary<string, string[]>
-            {
-                ["CryptoTestItems"] = ["Title", "Description", "Price", "IsBought"]
-            };
+            var orchestrator = new SyncOrchestrator(DatabaseService!, crypto, contactService);
 
             rowsImported = await orchestrator.ImportAsync(
-                CryptoDatabaseName, envelopeBytes, bobKeys, allColumns);
+                CryptoDatabaseName, envelopeBytes, bobKeys);
         }
 
         if (rowsImported != 2)

@@ -6,8 +6,13 @@ namespace SqliteWasmBlazor.CryptoSync;
 
 /// <summary>
 /// Service for creating and consuming encrypted deltas.
-/// Wraps BulkExport/Import with envelope encryption using ICryptoProvider.
-/// All crypto happens in C# — the worker only handles plain V2 bytes.
+///
+/// Phase D-1: still C#-side encrypt/decrypt of the V2 payload. Phase D-2 will
+/// move this to the worker (<c>BulkExportEncryptedAsync</c> /
+/// <c>BulkImportEncryptedAsync</c>) and reduce this service to envelope assembly
+/// (ECIES wrap/unwrap + signing) only.
+///
+/// Permissions are no longer shipped in the envelope — see <see cref="EncryptedDelta"/>.
 /// </summary>
 public static class EncryptedDeltaService
 {
@@ -18,17 +23,11 @@ public static class EncryptedDeltaService
     /// <param name="v2Bytes">Plain V2 MessagePack bytes from BulkExportAsync</param>
     /// <param name="senderKeys">Sender's derived key pair (Ed25519 for signing, X25519 for self-envelope)</param>
     /// <param name="recipientX25519PublicKeys">X25519 public keys (Base64) of all recipients</param>
-    /// <param name="permissions">Permission map: ed25519pk → diff from default</param>
-    /// <param name="adminEd25519PrivateKey">Admin's Ed25519 private key for signing permissions</param>
-    /// <param name="adminEd25519PublicKey">Admin's Ed25519 public key (Base64)</param>
     public static async ValueTask<EncryptedDelta> EncryptAsync(
         ICryptoProvider crypto,
         byte[] v2Bytes,
         DualKeyPairFull senderKeys,
-        string[] recipientX25519PublicKeys,
-        Dictionary<string, Dictionary<string, string>> permissions,
-        ReadOnlyMemory<byte> adminEd25519PrivateKey,
-        string adminEd25519PublicKey)
+        string[] recipientX25519PublicKeys)
     {
         // Generate random content key
         var contentKey = new byte[32];
@@ -67,18 +66,8 @@ public static class EncryptedDeltaService
                 throw new InvalidOperationException($"Key wrapping failed: {wrapResult.ErrorCode}");
             }
 
-            // Serialize ECIES result as bytes
             var wrapped = SerializeEncryptedMessage(wrapResult.Value!);
             recipientEnvelopes[recipientPk] = wrapped;
-        }
-
-        // Sign permissions
-        var permissionsHash = PermissionHelper.HashPermissions(permissions);
-        var permHashBase64 = Convert.ToBase64String(permissionsHash);
-        var permSignResult = await crypto.SignAsync(permHashBase64, adminEd25519PrivateKey);
-        if (!permSignResult.Success)
-        {
-            throw new InvalidOperationException($"Permission signing failed: {permSignResult.ErrorCode}");
         }
 
         // Clear content key
@@ -90,22 +79,16 @@ public static class EncryptedDeltaService
             Nonce = nonce,
             ContentSignature = contentSignature,
             SenderPublicKey = senderKeys.Ed25519PublicKey,
-            RecipientEnvelopes = recipientEnvelopes,
-            Permissions = permissions,
-            PermissionsSignature = Convert.FromBase64String(permSignResult.Value!),
-            AdminPublicKey = adminEd25519PublicKey
+            RecipientEnvelopes = recipientEnvelopes
         };
     }
 
     /// <summary>
     /// Decrypt an EncryptedDelta envelope back to V2 payload bytes.
-    /// Verifies signatures and checks permissions before decrypting.
+    /// Verifies the content signature, unwraps the recipient's content key,
+    /// and decrypts the payload. Permission enforcement happens later in the
+    /// worker — this method only returns the plaintext bytes.
     /// </summary>
-    /// <param name="crypto">Crypto provider</param>
-    /// <param name="delta">The encrypted delta envelope</param>
-    /// <param name="recipientX25519PrivateKey">Recipient's X25519 private key for unwrapping</param>
-    /// <param name="recipientX25519PublicKey">Recipient's X25519 public key (Base64) to find the envelope</param>
-    /// <returns>Decrypted V2 MessagePack bytes for BulkImportAsync</returns>
     public static async ValueTask<byte[]> DecryptAsync(
         ICryptoProvider crypto,
         EncryptedDelta delta,
@@ -121,23 +104,13 @@ public static class EncryptedDeltaService
             throw new InvalidOperationException("Content signature verification failed");
         }
 
-        // 2. Verify permissions signature
-        var permissionsHash = PermissionHelper.HashPermissions(delta.Permissions);
-        var permHashBase64 = Convert.ToBase64String(permissionsHash);
-        var permSigBase64 = Convert.ToBase64String(delta.PermissionsSignature);
-        var permValid = await crypto.VerifyAsync(permHashBase64, permSigBase64, delta.AdminPublicKey);
-        if (!permValid)
-        {
-            throw new InvalidOperationException("Permissions signature verification failed");
-        }
-
-        // 3. Find our wrapped key
+        // 2. Find our wrapped key
         if (!delta.RecipientEnvelopes.TryGetValue(recipientX25519PublicKey, out var wrappedKeyBytes))
         {
             throw new InvalidOperationException("Delta not encrypted for this recipient");
         }
 
-        // 4. Unwrap content key
+        // 3. Unwrap content key
         var encryptedMsg = DeserializeEncryptedMessage(wrappedKeyBytes);
         var unwrapResult = await crypto.DecryptAsymmetricAsync(encryptedMsg, recipientX25519PrivateKey);
         if (!unwrapResult.Success)
@@ -147,7 +120,7 @@ public static class EncryptedDeltaService
 
         var contentKey = Convert.FromBase64String(unwrapResult.Value!);
 
-        // 5. Decrypt the V2 payload
+        // 4. Decrypt the V2 payload
         var encrypted = new SymmetricEncryptedMessage(
             Convert.ToBase64String(delta.Ciphertext),
             Convert.ToBase64String(delta.Nonce)

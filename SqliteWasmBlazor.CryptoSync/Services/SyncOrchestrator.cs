@@ -1,75 +1,62 @@
 using BlazorPRF.Crypto.Abstractions;
 using BlazorPRF.Crypto.Abstractions.Models;
-using MessagePack;
 
 namespace SqliteWasmBlazor.CryptoSync;
 
 /// <summary>
-/// Orchestrates encrypted delta export and import using dual-table architecture.
+/// Orchestrates encrypted delta export and import using the dual-table architecture.
 ///
-/// Import flow:
-///   1. Decrypt envelope → get plain V2 bytes
-///   2. BulkImport into _crypto_ table (raw blob storage, fast)
-///   3. Decrypt matching scope rows (this client has the key)
-///   4. BulkImport into open table (conflict resolution + readonlyColumns)
+/// <para>
+/// Phase D-1: still C#-side encrypt/decrypt of the V2 payload via
+/// <see cref="EncryptedDeltaService"/>; the worker only handles plain V2 bytes.
+/// Phase D-2 will move the symmetric crypto into the worker
+/// (<c>BulkExportEncryptedAsync</c> / <c>BulkImportEncryptedAsync</c>) and reduce
+/// this orchestrator to envelope assembly + ECIES wrap/unwrap.
+/// Phase D-3 adds in-transaction permission enforcement inside the worker.
+/// </para>
 ///
-/// Export flow:
-///   1. BulkExport changed rows from open table → plain V2 bytes
-///   2. Encrypt V2 bytes → EncryptedDelta envelope
-///   3. Serialize for relay upload
-///
-/// Note: _crypto_ table insert during import is done by the worker alongside
-/// the open table insert. The V2 bytes go to the open table; the encrypted
-/// blob is stored separately. For now, the crypto table is populated via
-/// a second BulkImport call with the encrypted data.
+/// <para>
+/// Permissions are no longer shipped in the envelope (decision §6). Receivers will
+/// enforce permissions by querying the locally-applied <c>SyncPermission</c> table
+/// during the staggered apply pass.
+/// </para>
 /// </summary>
 public class SyncOrchestrator(
     ISqliteWasmDatabaseService databaseService,
     ICryptoProvider crypto,
-    ContactService contactService,
-    PermissionService permissionService)
+    ContactService contactService)
 {
     /// <summary>
-    /// Export data as an encrypted delta for all active contacts.
+    /// Export data as an encrypted delta for all recipients.
     /// </summary>
     public async ValueTask<byte[]> ExportAsync(
         string databaseName,
         BulkExportMetadata exportMetadata,
-        DualKeyPairFull senderKeys,
-        DualKeyPairFull adminKeys)
+        DualKeyPairFull senderKeys)
     {
         // 1. BulkExport from open table → plain V2 bytes
         var v2Bytes = await databaseService.BulkExportAsync(databaseName, exportMetadata);
 
-        // 2. Get recipient public keys (all active contacts + self)
+        // 2. Get recipient public keys (all active contacts + self for round-trip)
         var recipientPks = await contactService.GetRecipientPublicKeysAsync();
         var allRecipients = recipientPks.Append(senderKeys.X25519PublicKey).Distinct().ToArray();
 
-        // 3. Build permission map
-        var permissions = await permissionService.GetPermissionMapAsync();
-        if (!permissions.ContainsKey(senderKeys.Ed25519PublicKey))
-        {
-            permissions[senderKeys.Ed25519PublicKey] = new();
-        }
-
-        // 4. Encrypt envelope
-        var adminPrivateKey = Convert.FromBase64String(adminKeys.Ed25519PrivateKey);
+        // 3. Encrypt envelope (no permissions payload — decision §6)
         var delta = await EncryptedDeltaService.EncryptAsync(
-            crypto, v2Bytes, senderKeys, allRecipients,
-            permissions, adminPrivateKey, adminKeys.Ed25519PublicKey);
+            crypto, v2Bytes, senderKeys, allRecipients);
 
-        // 5. Serialize for transport
+        // 4. Serialize for transport
         return EncryptedDeltaService.Serialize(delta);
     }
 
     /// <summary>
-    /// Import an encrypted delta: decrypt, verify permissions, apply to open table.
+    /// Import an encrypted delta: decrypt and apply to the local database.
+    /// Permission enforcement will move into the worker in Phase D-3.
     /// </summary>
     public async ValueTask<int> ImportAsync(
         string databaseName,
         byte[] envelopeBytes,
         DualKeyPairFull recipientKeys,
-        Dictionary<string, string[]> allTableColumns,
         ConflictResolutionStrategy conflictStrategy = ConflictResolutionStrategy.DeltaWins)
     {
         // 1. Deserialize envelope
@@ -87,30 +74,14 @@ public class SyncOrchestrator(
         var v2Bytes = await EncryptedDeltaService.DecryptAsync(
             crypto, delta, recipientPrivateKey, recipientKeys.X25519PublicKey);
 
-        // 4. Peek V2 header for table name
-        var header = MessagePackSerializer.Deserialize<object[]>(v2Bytes);
-        var tableName = header[7]?.ToString() ?? "";
-
-        // 5. Check sender's table-level permission
-        var accessCheck = PermissionHelper.CheckWriteAccess(
-            delta.Permissions, delta.SenderPublicKey, tableName, []);
-        if (!accessCheck.IsAllowed)
-        {
-            throw new UnauthorizedAccessException($"Sender lacks table access: {accessCheck.Reason}");
-        }
-
-        // 6. Build readonly columns for worker-side validation
-        var readonlyColumns = await permissionService.BuildReadonlyColumnMapAsync(
-            delta.SenderPublicKey, allTableColumns);
-
-        // 7. BulkImport into open table with conflict resolution + readonly validation
-        return await databaseService.BulkImportAsync(
-            databaseName, v2Bytes, conflictStrategy, readonlyColumns);
+        // 4. Apply to open table. Permission enforcement is deferred to Phase D-3
+        //    (in-transaction SQL lookup against SyncPermission inside the worker).
+        return await databaseService.BulkImportAsync(databaseName, v2Bytes, conflictStrategy);
     }
 
     /// <summary>
     /// Import raw V2 bytes (already decrypted) directly into the open table.
-    /// Used for scope changes when re-decrypting rows from _crypto_ table.
+    /// Used for scope changes when re-decrypting rows from the _crypto_ table.
     /// </summary>
     public async ValueTask<int> ImportDecryptedAsync(
         string databaseName,

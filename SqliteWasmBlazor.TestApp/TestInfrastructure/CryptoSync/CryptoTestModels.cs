@@ -4,15 +4,19 @@ using SqliteWasmBlazor.CryptoSync;
 namespace SqliteWasmBlazor.TestApp.TestInfrastructure.CryptoSync;
 
 /// <summary>
-/// Test entity for CryptoSync integration tests. Phase C will reintroduce
-/// permission attributes via the canonical <c>[Permissions]</c> shape once the
-/// generator lowering is rewritten — see Phase A finding A1.
+/// Test entity for CryptoSync integration tests.
+/// Editor can CRUD by default; only Owner can delete.
+/// Viewer is read-only at the table level but may flip <c>IsBought</c>
+/// via the per-column <c>[AllowUpdate]</c> override.
 /// </summary>
+[Permissions("Editor", Delete = "Owner")]
 public class CryptoTestItem : SyncableEntity
 {
     public string Title { get; set; } = "";
     public string Description { get; set; } = "";
     public decimal Price { get; set; }
+
+    [AllowUpdate("Viewer")]
     public bool IsBought { get; set; }
 }
 
@@ -30,8 +34,6 @@ public partial class CryptoTestContext : CryptoSyncContextBase
     {
         base.OnModelCreating(modelBuilder);
         ConfigureCryptoTables(modelBuilder);
-        // SeedPermissions(modelBuilder) — generator emits this only when entities carry
-        // permission attributes. Phase C will reintroduce the canonical [Permissions]
-        // attribute and re-enable this call.
+        SeedPermissions(modelBuilder);
     }
 }

@@ -1,0 +1,75 @@
+using Microsoft.EntityFrameworkCore;
+
+namespace SqliteWasmBlazor.CryptoSync;
+
+/// <summary>
+/// Local-device identity helper. Tracks the singleton <see cref="DeviceSettings"/>
+/// row, including the <c>IsAdmin</c> flag and the optional <c>AdminContactId</c>
+/// (resolved on non-admin instances after the invitation handshake).
+///
+/// <para>
+/// Admin-only operations (<c>InvitationService</c> writes,
+/// <c>ContactPromotionService.ElevateToFullAsync</c>, ownership-transfer refusal
+/// for system scopes) gate on <see cref="IsAdminAsync"/>.
+/// </para>
+/// </summary>
+public class DeviceIdentityService(CryptoSyncContextBase context)
+{
+    /// <summary>
+    /// Returns true if this device is the admin (instance creator).
+    /// </summary>
+    public async ValueTask<bool> IsAdminAsync()
+    {
+        var settings = await context.DeviceSettings.FirstOrDefaultAsync();
+        return settings?.IsAdmin ?? false;
+    }
+
+    /// <summary>
+    /// Get this device's <see cref="DeviceSettings"/> row, or <c>null</c> if the
+    /// instance has not been initialized yet.
+    /// </summary>
+    public ValueTask<DeviceSettings?> GetAsync()
+    {
+        return new ValueTask<DeviceSettings?>(context.DeviceSettings.FirstOrDefaultAsync());
+    }
+
+    /// <summary>
+    /// Mark this device as the admin (instance creator). Idempotent. Throws if
+    /// no <see cref="DeviceSettings"/> row exists yet — the consuming app must
+    /// create the device row at first launch before calling this.
+    /// </summary>
+    public async ValueTask MarkAsAdminAsync()
+    {
+        var settings = await context.DeviceSettings.FirstOrDefaultAsync()
+            ?? throw new InvalidOperationException(
+                "DeviceSettings row not found. Create the device row at first launch before calling MarkAsAdminAsync.");
+
+        settings.IsAdmin = true;
+        await context.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Cache the admin's <see cref="TrustedContact.Id"/> on a non-admin device,
+    /// learned from the invitation handshake. Lets peers know whose key is the
+    /// system-table owner.
+    /// </summary>
+    public async ValueTask SetAdminContactIdAsync(Guid contactId)
+    {
+        var settings = await context.DeviceSettings.FirstOrDefaultAsync()
+            ?? throw new InvalidOperationException(
+                "DeviceSettings row not found. Create the device row at first launch before calling SetAdminContactIdAsync.");
+
+        settings.AdminContactId = contactId;
+        await context.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Get the admin's <see cref="TrustedContact.Id"/> on a non-admin device,
+    /// or <c>null</c> if the handshake hasn't completed yet (or this IS the admin).
+    /// </summary>
+    public async ValueTask<Guid?> GetAdminContactIdAsync()
+    {
+        var settings = await context.DeviceSettings.FirstOrDefaultAsync();
+        return settings?.AdminContactId;
+    }
+}

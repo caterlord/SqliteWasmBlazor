@@ -15,11 +15,20 @@ public class TestItem : SyncableEntity
 
 /// <summary>
 /// Test context that inherits CryptoSyncContextBase — simulates a real app.
+/// Marked partial so the source generator can extend it with
+/// <c>ConfigureCryptoTables</c> (shadow-table EF config) and
+/// <c>SeedPermissions</c> (admin-signed permission rows from <c>[Permissions]</c>).
 /// </summary>
-public class TestSyncContext : CryptoSyncContextBase
+public partial class TestSyncContext : CryptoSyncContextBase
 {
     public TestSyncContext(DbContextOptions options) : base(options) { }
     public DbSet<TestItem> TestItems => Set<TestItem>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        ConfigureCryptoTables(modelBuilder);
+    }
 }
 
 public class ContextTests : IDisposable

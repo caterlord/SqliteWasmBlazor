@@ -44,49 +44,63 @@ public class CryptoSyncGenerator : IIncrementalGenerator
                     continue;
                 }
 
-                // Concrete-context domain entities (used for shadow tables, EF config,
-                // CryptoTableRegistry, permission seeds).
-                var domainEntities = GetDomainEntities(classSymbol);
+                // Every syncable entity reachable from this context — both domain entities
+                // (user's own DbSets) AND system entities (TrustedContact, SyncPermission,
+                // SharingKey declared in CryptoSyncContextBase). Both need crypto shadow
+                // tables because both flow over the wire during sync.
+                var allEntities = GetSyncableEntities(classSymbol);
 
-                // System-table entities (used for SystemTableRegistry). Walks base context too.
-                var systemEntities = GetSystemTableEntities(classSymbol);
-
-                // Sensitive entities (used for SensitiveEntityRegistry).
+                // Useful derived views for the generators below.
+                var systemEntities = allEntities.Where(e => e.IsSystemTable).ToList();
+                var domainEntities = allEntities.Where(e => !e.IsSystemTable).ToList();
                 var sensitiveEntities = domainEntities.Where(e => e.IsSensitive).ToList();
 
-                if (domainEntities.Count == 0 && systemEntities.Count == 0)
+                if (allEntities.Count == 0)
                 {
                     continue;
                 }
 
                 var ns = classSymbol.ContainingNamespace.ToDisplayString();
 
-                // Generate _crypto_ entity for each domain entity (skip sensitive — they
-                // live only in the shadow path; the entity stays declared by the user but
-                // open-table query access is blocked at the SensitiveAccessService layer).
-                foreach (var entity in domainEntities)
+                // Generate Crypto_<Entity> shadow class for EVERY syncable entity, including
+                // system tables. The _crypto_ shadow table is the sync source of truth — it
+                // holds per-row (Id, SharingScope, SharingId, EncryptedRow, Nonce). Sensitive
+                // entities also get a shadow (that's where they live exclusively); their
+                // suppression applies only to the open-table query path (handled later in
+                // SensitiveAccessService, not here in the generator).
+                foreach (var entity in allEntities)
                 {
                     var source = GenerateCryptoEntity(ns, entity);
                     spc.AddSource($"Crypto_{entity.Name}.g.cs", source);
                 }
 
-                // Generate OnModelCreating extension for all crypto tables
-                var configSource = GenerateEfConfiguration(ns, classSymbol.Name, domainEntities);
+                // ConfigureCryptoTables(ModelBuilder) partial — EF Core config for every
+                // shadow table the context needs, including system ones.
+                var configSource = GenerateEfConfiguration(ns, classSymbol.Name, allEntities);
                 spc.AddSource($"{classSymbol.Name}_CryptoConfig.g.cs", configSource);
 
-                // Generate crypto table registry (domain entities)
-                var registrySource = GenerateCryptoTableRegistry(ns, domainEntities);
+                // CryptoTableRegistry: every shadow table (domain + system). This is the
+                // full map (EntityName, _crypto_<tableName>, openTableName) used by both
+                // runtime layers that need to enumerate shadows (ex: benchmark, recovery,
+                // BulkRotateKey scope filters).
+                var registrySource = GenerateCryptoTableRegistry(ns, allEntities);
                 spc.AddSource("CryptoTableRegistry.g.cs", registrySource);
 
-                // Generate system table registry (collected from concrete + base context)
+                // SystemTableRegistry: filter to just the [SystemTable] entries. Used by
+                // the worker's staged-apply routing (system tables first on import) and by
+                // OwnershipTransferService to refuse transfer of system scopes.
                 var systemRegistrySource = GenerateSystemTableRegistry(ns, systemEntities);
                 spc.AddSource("SystemTableRegistry.g.cs", systemRegistrySource);
 
-                // Generate sensitive entity registry
+                // SensitiveEntityRegistry: filter to [Sensitive] entries (currently empty —
+                // the attribute exists but no entity uses it yet).
                 var sensitiveRegistrySource = GenerateSensitiveEntityRegistry(ns, sensitiveEntities);
                 spc.AddSource("SensitiveEntityRegistry.g.cs", sensitiveRegistrySource);
 
-                // Generate permission seed data from [Permissions] attributes on domain entities
+                // Permission seed rows come ONLY from domain entities with [Permissions]
+                // attributes. System tables have their own hardcoded permission seed in
+                // CryptoSyncContextBase.SeedSystemTablePermissions — emitting duplicates here
+                // would collide on the deterministic-GUID primary keys.
                 var seedSource = GeneratePermissionSeedData(ns, classSymbol.Name, domainEntities);
                 if (seedSource is not null)
                 {
@@ -144,80 +158,20 @@ public class CryptoSyncGenerator : IIncrementalGenerator
     }
 
     /// <summary>
-    /// Concrete-context domain entities — DbSet&lt;T&gt; declared on the user's context,
-    /// not on the base. Excludes system tables (those flow into SystemTableRegistry instead).
+    /// All syncable entities reachable from the context — walks the concrete context AND the
+    /// base context inheritance chain. Includes both domain entities (`IsSystemTable == false`)
+    /// and system entities marked <c>[SystemTable]</c> (`IsSystemTable == true`). Both kinds
+    /// need crypto shadow tables because both kinds are sync sources — system tables sync
+    /// admin-managed state (contacts, permissions, sharing keys) to peers.
+    ///
+    /// Previously the walker stopped at <c>CryptoSyncContextBase</c> and skipped anything
+    /// marked <c>[SystemTable]</c>. That meant the system DbSets declared on the base context
+    /// (<c>TrustedContact</c>, <c>SyncPermission</c>, <c>SharingKey</c>) never got
+    /// <c>Crypto_&lt;Entity&gt;</c> shadow classes or EF configuration, so there was no
+    /// <c>_crypto_</c> table to sync against. Unified now: walk everything, tag system-ness,
+    /// emit shadows for all.
     /// </summary>
-    private static List<EntityInfo> GetDomainEntities(INamedTypeSymbol contextSymbol)
-    {
-        var entities = new List<EntityInfo>();
-        var current = contextSymbol;
-
-        while (current is not null)
-        {
-            // Only the concrete context's own DbSet declarations.
-            if (current.Name == "CryptoSyncContextBase")
-            {
-                break;
-            }
-
-            foreach (var member in current.GetMembers())
-            {
-                if (member is not IPropertySymbol property)
-                {
-                    continue;
-                }
-
-                if (property.Type is not INamedTypeSymbol propertyType)
-                {
-                    continue;
-                }
-
-                if (propertyType.Name != "DbSet" || propertyType.TypeArguments.Length != 1)
-                {
-                    continue;
-                }
-
-                var entityType = (INamedTypeSymbol)propertyType.TypeArguments[0];
-
-                // Domain entities must inherit SyncableEntity (so the row can sync).
-                if (!InheritsSyncableEntity(entityType))
-                {
-                    continue;
-                }
-
-                // Skip [SystemTable] markers — they flow into SystemTableRegistry instead.
-                if (HasAttribute(entityType, "SystemTableAttribute"))
-                {
-                    continue;
-                }
-
-                var properties = GetEntityProperties(entityType);
-                var permissions = GetPermissionAttributes(entityType, property.Name);
-                var columnRules = GetColumnRules(entityType);
-                var isSensitive = HasAttribute(entityType, "SensitiveAttribute");
-
-                entities.Add(new EntityInfo(
-                    entityType.Name,
-                    entityType.ContainingNamespace.ToDisplayString(),
-                    property.Name,
-                    properties,
-                    permissions,
-                    columnRules,
-                    IsSystemTable: false,
-                    IsSensitive: isSensitive));
-            }
-
-            current = current.BaseType;
-        }
-
-        return entities;
-    }
-
-    /// <summary>
-    /// All entities marked <c>[SystemTable]</c>, walking the entire context inheritance
-    /// chain (concrete + base). Used to emit <c>SystemTableRegistry</c>.
-    /// </summary>
-    private static List<EntityInfo> GetSystemTableEntities(INamedTypeSymbol contextSymbol)
+    private static List<EntityInfo> GetSyncableEntities(INamedTypeSymbol contextSymbol)
     {
         var entities = new List<EntityInfo>();
         var seen = new HashSet<string>();
@@ -244,25 +198,44 @@ public class CryptoSyncGenerator : IIncrementalGenerator
 
                 var entityType = (INamedTypeSymbol)propertyType.TypeArguments[0];
 
-                if (!HasAttribute(entityType, "SystemTableAttribute"))
+                // Must inherit SyncableEntity — that's what gives the row an Id / SharingScope /
+                // SharingId / UpdatedAt / IsDeleted shape. Standalone classes like
+                // DeviceSettings, SentInvitation, ReceivedInvitation do NOT inherit
+                // SyncableEntity and are deliberately skipped — they're local-only.
+                if (!InheritsSyncableEntity(entityType))
                 {
                     continue;
                 }
 
+                // Deduplicate across the inheritance chain. Concrete context might hide a base
+                // DbSet with a new declaration; first wins.
                 if (!seen.Add(entityType.Name))
                 {
                     continue;
                 }
 
+                var isSystemTable = HasAttribute(entityType, "SystemTableAttribute");
+                var properties = GetEntityProperties(entityType);
+                var columnRules = GetColumnRules(entityType);
+                var isSensitive = HasAttribute(entityType, "SensitiveAttribute");
+
+                // System tables have their permission rules admin-seeded by
+                // CryptoSyncContextBase.SeedSystemTablePermissions — the generator must NOT
+                // emit duplicate seed rows for them. Domain entities walk [Permissions]
+                // attributes as usual.
+                var permissions = isSystemTable
+                    ? new List<PermissionInfo>()
+                    : GetPermissionAttributes(entityType, property.Name);
+
                 entities.Add(new EntityInfo(
                     entityType.Name,
                     entityType.ContainingNamespace.ToDisplayString(),
                     property.Name,
-                    Properties: new List<PropertyInfo>(),
-                    Permissions: new List<PermissionInfo>(),
-                    ColumnRules: new List<ColumnRule>(),
-                    IsSystemTable: true,
-                    IsSensitive: false));
+                    properties,
+                    permissions,
+                    columnRules,
+                    IsSystemTable: isSystemTable,
+                    IsSensitive: isSensitive));
             }
 
             current = current.BaseType;

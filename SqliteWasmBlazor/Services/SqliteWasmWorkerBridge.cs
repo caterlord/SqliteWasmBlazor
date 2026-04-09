@@ -492,54 +492,6 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
         }
     }
 
-    public async Task<(byte[] EncryptedBlob, byte[] Nonce)> BulkExportEncryptedAsync(
-        string databaseName, BulkExportMetadata exportMetadata,
-        byte[] contentKey, CancellationToken cancellationToken = default)
-    {
-        await EnsureInitializedAsync(cancellationToken);
-
-        var requestId = Interlocked.Increment(ref _nextRequestId);
-        var tcs = new TaskCompletionSource<byte[]>();
-        _pendingBinaryRequests[requestId] = tcs;
-
-        try
-        {
-            await using var registration = cancellationToken.Register(() =>
-            {
-                _pendingBinaryRequests.TryRemove(requestId, out _);
-                tcs.TrySetCanceled();
-            });
-
-            // Send content key as binary payload (Span), metadata as JSON
-            var dataDict = JsonSerializer.SerializeToNode(exportMetadata, JsonOptions)?.AsObject()
-                ?? new System.Text.Json.Nodes.JsonObject();
-            dataDict["type"] = "bulkExportEncrypted";
-            dataDict["database"] = databaseName;
-
-            var metadataJson = JsonSerializer.Serialize(new { id = requestId, data = dataDict });
-
-            SendBinaryToWorker(contentKey.AsSpan(), metadataJson);
-
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeoutCts.CancelAfter(300_000);
-
-            // Worker returns: [12-byte nonce | encrypted blob]
-            var result = await tcs.Task.WaitAsync(timeoutCts.Token);
-
-            var nonce = result[..12];
-            var encryptedBlob = result[12..];
-            return (encryptedBlob, nonce);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new TimeoutException("Encrypted bulk export timed out.");
-        }
-        finally
-        {
-            _pendingBinaryRequests.TryRemove(requestId, out _);
-        }
-    }
-
     public async Task<byte[]> BulkExportEncryptedV2Async(
         string databaseName, BulkExportMetadata exportMetadata,
         byte[] headerBytes, CancellationToken cancellationToken = default)
@@ -587,59 +539,51 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
         }
     }
 
-    public async Task<int> BulkImportEncryptedAsync(
-        string databaseName, byte[] encryptedPayload, byte[] nonce,
-        byte[] contentKey, ConflictResolutionStrategy conflictStrategy = ConflictResolutionStrategy.None,
-        Dictionary<string, string[]>? readonlyColumns = null, CancellationToken cancellationToken = default)
+    public async Task<byte[]> BulkImportEncryptedV2Async(
+        string databaseName, byte[] headerBytes,
+        byte[] groupBytes, CancellationToken cancellationToken = default)
     {
         await EnsureInitializedAsync(cancellationToken);
 
         var requestId = Interlocked.Increment(ref _nextRequestId);
-        var tcs = new TaskCompletionSource<SqlQueryResult>();
-        _pendingRequests[requestId] = tcs;
+        var tcs = new TaskCompletionSource<byte[]>();
+        _pendingBinaryRequests[requestId] = tcs;
 
         try
         {
             await using var registration = cancellationToken.Register(() =>
             {
-                _pendingRequests.TryRemove(requestId, out _);
+                _pendingBinaryRequests.TryRemove(requestId, out _);
                 tcs.TrySetCanceled();
             });
 
-            // Header: [nonce(12) | contentKey(32)] = 44 bytes (small, copied)
-            // Payload: encryptedPayload (large, zero-copy transferred)
-            Span<byte> header = stackalloc byte[44];
-            nonce.AsSpan().CopyTo(header[..12]);
-            contentKey.AsSpan().CopyTo(header[12..]);
-
+            // Binary payload = V2CryptoHeader, binary header = ShadowRowGroup
+            // Worker dispatches as 'bulkImportEncryptedV2'
             var metadataJson = JsonSerializer.Serialize(new
             {
                 id = requestId,
                 data = new
                 {
-                    type = "bulkImportEncrypted",
-                    database = databaseName,
-                    conflictStrategy = (int)conflictStrategy,
-                    readonlyColumns
+                    type = "bulkImportEncryptedV2",
+                    database = databaseName
                 }
             });
 
-            SendBinaryToWorkerWithHeader(encryptedPayload.AsSpan(), metadataJson, header);
-            header.Clear(); // zero nonce+key from stack
+            SendBinaryToWorkerWithHeader(headerBytes.AsSpan(), metadataJson, groupBytes.AsSpan());
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(300_000);
 
-            var result = await tcs.Task.WaitAsync(timeoutCts.Token);
-            return result.RowsAffected;
+            // Worker returns MessagePack-packed ImportReport
+            return await tcs.Task.WaitAsync(timeoutCts.Token);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            throw new TimeoutException("Encrypted bulk import timed out.");
+            throw new TimeoutException("Encrypted bulk import (V2) timed out.");
         }
         finally
         {
-            _pendingRequests.TryRemove(requestId, out _);
+            _pendingBinaryRequests.TryRemove(requestId, out _);
         }
     }
 

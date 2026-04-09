@@ -280,33 +280,19 @@
                 Mode = 1
             };
 
-            // ---- PHASE 1: Export source encrypted with keyOld ----
+            // ---- PHASE 1 + 2: V2 export/import (pending orchestrator wiring) ----
+            // TODO: Wire V2CryptoHeader + BulkExportEncryptedV2Async + BulkImportEncryptedV2Async
+            // once ShareGroup/ShareTarget bootstrap is available in benchmark context.
             keyOld = RandomNumberGenerator.GetBytes(32);
 
-            _statusText = $"Phase 1/5 — Export₁ ({_rowCount:N0} rows)...";
+            _statusText = $"Phase 1-2/5 — PENDING V2 crypto-core wiring...";
             StateHasChanged();
             await Task.Yield();
 
-            var sw1 = Stopwatch.StartNew();
-            var envelope1 = await DatabaseService.BulkExportEncryptedAsync(
-                SourceDbName, exportMetadata, keyOld);
-            sw1.Stop();
-            var export1Ms = sw1.ElapsedMilliseconds;
-            Logger.LogInformation("Benchmark Export₁: {Ms} ms, {Bytes} bytes", export1Ms, envelope1.EncryptedBlob.Length);
-
-            // ---- PHASE 2: Import envelope₁ into tempA ----
-            _statusText = $"Phase 2/5 — Import₁ (populates tempA shadow)...";
-            StateHasChanged();
-            await Task.Yield();
-
-            var import1Key = CopyKey(keyOld);
-            var sw2 = Stopwatch.StartNew();
-            var import1Rows = await DatabaseService.BulkImportEncryptedAsync(
-                TempADbName, envelope1.EncryptedBlob, envelope1.Nonce, import1Key,
-                ConflictResolutionStrategy.DeltaWins);
-            sw2.Stop();
-            var import1Ms = sw2.ElapsedMilliseconds;
-            Logger.LogInformation("Benchmark Import₁: {Ms} ms, {Rows} rows", import1Ms, import1Rows);
+            long export1Ms = 0;
+            long import1Ms = 0;
+            var import1Rows = 0;
+            Logger.LogWarning("Benchmark Phase 1-2 skipped: V1 API removed, V2 wiring pending");
 
             // ---- PHASE 3: Rotate tempA's shadow from keyOld → keyNew ----
             // THE measurement.
@@ -323,31 +309,15 @@
             var rotateMs = sw3.ElapsedMilliseconds;
             Logger.LogInformation("Benchmark Rotate: {Ms} ms, {Rows} rows re-encrypted", rotateMs, rotatedRowCount);
 
-            // ---- PHASE 4: Export tempA encrypted with keyNew ----
-            _statusText = $"Phase 4/5 — Export₂ ({rotatedRowCount:N0} rows)...";
+            // ---- PHASE 4 + 5: V2 export/import (pending orchestrator wiring) ----
+            _statusText = $"Phase 4-5/5 — PENDING V2 crypto-core wiring...";
             StateHasChanged();
             await Task.Yield();
 
-            var sw4 = Stopwatch.StartNew();
-            var envelope2 = await DatabaseService.BulkExportEncryptedAsync(
-                TempADbName, exportMetadata, keyNew);
-            sw4.Stop();
-            var export2Ms = sw4.ElapsedMilliseconds;
-            Logger.LogInformation("Benchmark Export₂: {Ms} ms, {Bytes} bytes", export2Ms, envelope2.EncryptedBlob.Length);
-
-            // ---- PHASE 5: Import envelope₂ into tempB ----
-            _statusText = $"Phase 5/5 — Import₂ (into verify DB)...";
-            StateHasChanged();
-            await Task.Yield();
-
-            var import2Key = CopyKey(keyNew);
-            var sw5 = Stopwatch.StartNew();
-            var import2Rows = await DatabaseService.BulkImportEncryptedAsync(
-                TempBDbName, envelope2.EncryptedBlob, envelope2.Nonce, import2Key,
-                ConflictResolutionStrategy.DeltaWins);
-            sw5.Stop();
-            var import2Ms = sw5.ElapsedMilliseconds;
-            Logger.LogInformation("Benchmark Import₂: {Ms} ms, {Rows} rows", import2Ms, import2Rows);
+            long export2Ms = 0;
+            long import2Ms = 0;
+            var import2Rows = 0;
+            Logger.LogWarning("Benchmark Phase 4-5 skipped: V1 API removed, V2 wiring pending");
 
             // ---- VERIFY: compare source vs tempB ----
             _statusText = "Verifying round-trip integrity...";

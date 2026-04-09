@@ -105,67 +105,26 @@ public interface ISqliteWasmDatabaseService
     Task<byte[]> BulkExportAsync(string databaseName, BulkExportMetadata exportMetadata, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Encrypted bulk export: worker exports, encrypts V2 bytes with content key via SubtleCrypto AES-GCM.
-    /// Plain V2 bytes never leave the worker. Returns encrypted blob + nonce.
-    /// Content key is zeroed in worker after use.
+    /// V2 encrypted bulk export — shadow rows as wire format. Worker derives CEK
+    /// via crypto-core (ECDH + HKDF), encrypts per-row with AAD (Layer 1 tamper
+    /// detection), signs per-row (Layer 2), upserts shadow, returns
+    /// MessagePack-packed ShadowRowGroup.
     /// </summary>
-    /// <param name="databaseName">Source database filename</param>
-    /// <param name="exportMetadata">Export parameters</param>
-    /// <param name="contentKey">32-byte AES-GCM content key. Caller MUST zero after this call returns.</param>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>(encryptedBlob, nonce) — nonce is 12 bytes</returns>
-    Task<(byte[] EncryptedBlob, byte[] Nonce)> BulkExportEncryptedAsync(string databaseName, BulkExportMetadata exportMetadata,
-        byte[] contentKey, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Encrypted bulk export — V2 shadow-as-wire format. The worker walks the open
-    /// table, groups rows by <c>(SharingScope, SharingId)</c>, derives a per-group
-    /// AES-GCM content key from the session's X25519 private key via HKDF-SHA256
-    /// (deterministic, single-actor — two-actor ECIES unwrap is a later stage),
-    /// encrypts each row with a fresh nonce, upserts the sender's
-    /// <c>_crypto_&lt;table&gt;</c> shadow, and returns the per-row shadow entries
-    /// as the wire payload.
-    ///
-    /// <para>
-    /// Input <paramref name="headerBytes"/> is a MessagePack-serialized
-    /// <c>V2CryptoHeader</c> (hand-written record in <c>SqliteWasmBlazor.CryptoSync</c>):
-    /// system-table list, sharing-table name, client contact id, and the session's
-    /// 32-byte X25519 private key. The worker zeroes its copy of the private key
-    /// material after each call; the caller MUST also zero the buffer it passed in.
-    /// </para>
-    ///
-    /// <para>
-    /// Return bytes are a MessagePack-packed <c>ShadowRowGroup</c> (one table's
-    /// rows — the orchestrator bundles multiple groups into a <c>DeltaEnvelope</c>).
-    /// No outer envelope encryption — per-row AES-GCM inside each
-    /// <c>ShadowRow.EncryptedRow</c> is the only confidentiality layer, per the
-    /// Stage 3 / D-3 shadow-as-wire decision.
-    /// </para>
-    /// </summary>
-    /// <param name="databaseName">Source database filename.</param>
-    /// <param name="exportMetadata">Export parameters (tableName, columns, where, orderBy, …).</param>
-    /// <param name="headerBytes">MessagePack-serialized <c>V2CryptoHeader</c>. Caller owns
-    /// the buffer and MUST zero the private-key region after the call returns.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>MessagePack-packed <c>ShadowRowGroup</c> bytes.</returns>
     Task<byte[]> BulkExportEncryptedV2Async(string databaseName, BulkExportMetadata exportMetadata,
         byte[] headerBytes, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Encrypted bulk import: worker decrypts with content key, inserts into open table + _crypto_ table.
-    /// Content key is zeroed in worker after use.
+    /// V2 encrypted bulk import with three-layer tamper detection. Worker verifies
+    /// signatures (Layer 2), unwraps CEK (Layer 3), decrypts with AAD (Layer 1),
+    /// applies to open table, returns MessagePack-packed ImportReport.
     /// </summary>
-    /// <param name="databaseName">Target database filename</param>
-    /// <param name="encryptedPayload">AES-GCM encrypted V2 bytes</param>
-    /// <param name="nonce">12-byte AES-GCM nonce</param>
-    /// <param name="contentKey">32-byte AES-GCM content key. Caller MUST zero after this call returns.</param>
-    /// <param name="conflictStrategy">Conflict resolution for open table</param>
-    /// <param name="readonlyColumns">Readonly enforcement for open table</param>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>Number of rows imported into open table</returns>
-    Task<int> BulkImportEncryptedAsync(string databaseName, byte[] encryptedPayload, byte[] nonce,
-        byte[] contentKey, ConflictResolutionStrategy conflictStrategy = ConflictResolutionStrategy.None,
-        Dictionary<string, string[]>? readonlyColumns = null, CancellationToken cancellationToken = default);
+    /// <param name="databaseName">Target database filename.</param>
+    /// <param name="headerBytes">MessagePack-serialized V2CryptoHeader.</param>
+    /// <param name="groupBytes">MessagePack-packed ShadowRowGroup to import.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>MessagePack-packed ImportReport bytes.</returns>
+    Task<byte[]> BulkImportEncryptedV2Async(string databaseName, byte[] headerBytes,
+        byte[] groupBytes, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Bulk re-key rotation: re-encrypts every row in a crypto shadow table

@@ -18,8 +18,9 @@ public abstract class CryptoSyncContextBase : DbContext
     public DbSet<SentInvitation> SentInvitations => Set<SentInvitation>();
     public DbSet<ReceivedInvitation> ReceivedInvitations => Set<ReceivedInvitation>();
 
-    // Sharing & keys
-    public DbSet<SharingKey> SharingKeys => Set<SharingKey>();
+    // Group encryption & key distribution
+    public DbSet<ShareGroup> ShareGroups => Set<ShareGroup>();
+    public DbSet<ShareTarget> ShareTargets => Set<ShareTarget>();
 
     // Permissions (admin-defined, seeded via migration)
     public DbSet<SyncPermission> Permissions => Set<SyncPermission>();
@@ -63,20 +64,29 @@ public abstract class CryptoSyncContextBase : DbContext
                 .OnDelete(DeleteBehavior.SetNull);
         });
 
-        // Sharing keys
-        modelBuilder.Entity<SharingKey>(entity =>
+        // Share groups
+        modelBuilder.Entity<ShareGroup>(entity =>
         {
             entity.HasKey(e => e.Id);
-            entity.HasIndex(e => new { e.SharingId, e.ClientContactId }).IsUnique();
-            entity.HasIndex(e => e.SharingId);
-            entity.HasOne(e => e.ClientContact)
+            entity.HasIndex(e => e.GroupContext).IsUnique();
+            entity.HasQueryFilter(e => !e.IsDeleted);
+        });
+
+        // Share targets (per-member wrapped CEK)
+        modelBuilder.Entity<ShareTarget>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.ShareGroupId, e.KeyVersion, e.MemberPublicKey }).IsUnique();
+            entity.HasIndex(e => e.MemberPublicKey);
+            entity.HasOne(e => e.ShareGroup)
                 .WithMany()
-                .HasForeignKey(e => e.ClientContactId)
+                .HasForeignKey(e => e.ShareGroupId)
                 .OnDelete(DeleteBehavior.Cascade);
             entity.HasOne(e => e.GrantedByContact)
                 .WithMany()
                 .HasForeignKey(e => e.GrantedByContactId)
                 .OnDelete(DeleteBehavior.Restrict);
+            entity.HasQueryFilter(e => !e.IsDeleted);
         });
 
         // Permissions (soft-delete filtered, seeded via migration)
@@ -112,7 +122,7 @@ public abstract class CryptoSyncContextBase : DbContext
     /// </summary>
     private static void SeedSystemTablePermissions(ModelBuilder modelBuilder)
     {
-        var systemTables = new[] { "Contacts", "SentInvitations", "ReceivedInvitations", "SharingKeys", "Permissions" };
+        var systemTables = new[] { "Contacts", "SentInvitations", "ReceivedInvitations", "ShareGroups", "ShareTargets", "Permissions" };
 
         var seeds = new List<SyncPermission>();
 

@@ -39,6 +39,23 @@ public sealed class ShadowRow
     /// <summary>12-byte AES-GCM nonce, fresh per row.</summary>
     [Key(4)]
     public byte[] Nonce { get; set; } = [];
+
+    /// <summary>Which CEK version encrypted this row. Bound as AAD during
+    /// encryption (Layer 1 tamper detection). Receiver uses this to select
+    /// the correct <see cref="ShareTarget"/> wrapped CEK.</summary>
+    [Key(5)]
+    public int KeyVersion { get; set; }
+
+    /// <summary>Ed25519 public key of the row producer (Base64). Used for
+    /// per-row envelope signature verification (Layer 2).</summary>
+    [Key(6)]
+    public string SenderPublicKey { get; set; } = string.Empty;
+
+    /// <summary>Ed25519 signature over the canonical per-row envelope
+    /// (Layer 2 tamper detection). Covers Id, GroupId, KeyVersion,
+    /// SenderPublicKey, and SHA-256(EncryptedRow).</summary>
+    [Key(7)]
+    public byte[] EnvelopeSignature { get; set; } = [];
 }
 
 /// <summary>

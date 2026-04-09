@@ -1,5 +1,6 @@
 using BlazorPRF.Crypto.Abstractions;
 using BlazorPRF.Crypto.Abstractions.Models;
+using BlazorPRF.Crypto.Abstractions.Services;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 
@@ -53,7 +54,7 @@ public sealed class TestActor : IAsyncDisposable
         Contacts = new ContactService(context);
         Invitations = new InvitationService(context, DeviceIdentity);
         Promotion = new ContactPromotionService(context, DeviceIdentity);
-        Bootstrap = new CryptoSyncBootstrap(context, crypto);
+        Bootstrap = new CryptoSyncBootstrap(context, new GroupEncryptionService(crypto));
         Gate = new SyncGate(Contacts);
     }
 

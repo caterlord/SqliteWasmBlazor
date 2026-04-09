@@ -63,35 +63,30 @@ public class TwoActorFixtureTests : IAsyncLifetime
         Assert.NotNull(userContact);
         Assert.Equal(TrustLevel.Full, userContact.TrustLevel);
         Assert.Equal(SharingScope.Public, userContact.SharingScope);
-        Assert.Equal(KeyDerivation.SystemSharingId, userContact.SharingId);
+        Assert.Equal(CryptoSyncBootstrap.SystemSharingId, userContact.SharingId);
     }
 
     [Fact]
-    public async Task Admin_HasSelfSharingKey_AndUserSharingKey_ForSystemScope()
+    public async Task Admin_HasSystemShareGroup_WithTwoShareTargets()
     {
-        var keys = await _scenario.Admin.Context.SharingKeys
-            .Where(k => k.SharingId == KeyDerivation.SystemSharingId)
+        var group = await _scenario.Admin.Context.ShareGroups
+            .SingleAsync(g => g.GroupContext == CryptoSyncBootstrap.SystemGroupContext);
+        Assert.Equal(1, group.KeyVersion);
+
+        var targets = await _scenario.Admin.Context.ShareTargets
+            .Where(t => t.ShareGroupId == group.Id)
             .ToListAsync();
 
-        Assert.Equal(2, keys.Count);
-
-        var adminContact = await _scenario.Admin.Contacts
-            .GetByEd25519PublicKeyAsync(_scenario.Admin.Keys.Ed25519PublicKey);
-        var userContact = await _scenario.Admin.Contacts
-            .GetByEd25519PublicKeyAsync(_scenario.User.Keys.Ed25519PublicKey);
-
-        Assert.NotNull(adminContact);
-        Assert.NotNull(userContact);
-        Assert.Contains(keys, k => k.ClientContactId == adminContact.Id && k.Role == SyncRole.Owner);
-        Assert.Contains(keys, k => k.ClientContactId == userContact.Id && k.Role == SyncRole.Viewer);
+        Assert.Equal(2, targets.Count);
+        Assert.Contains(targets, t => t.MemberPublicKey == _scenario.Admin.Keys.X25519PublicKey
+                                      && t.Role == SyncRole.Owner);
+        Assert.Contains(targets, t => t.MemberPublicKey == _scenario.User.Keys.X25519PublicKey
+                                      && t.Role == SyncRole.Viewer);
     }
 
     [Fact]
     public async Task Admin_GateAcceptsAdminAndUserAsFullTrustSenders()
     {
-        // Both directions: admin's gate should let admin sync (self-sync, e.g.
-        // multi-device admin) and let user sync (peer sync). Both pass because
-        // both are TrustLevel.Full in admin's local Contacts table.
         var asAdmin = await _scenario.Admin.Gate.EnsureSenderTrustedAsync(_scenario.Admin.Keys.Ed25519PublicKey);
         var asUser = await _scenario.Admin.Gate.EnsureSenderTrustedAsync(_scenario.User.Keys.Ed25519PublicKey);
         Assert.Equal(TrustLevel.Full, asAdmin.TrustLevel);
@@ -133,11 +128,6 @@ public class TwoActorFixtureTests : IAsyncLifetime
     [Fact]
     public async Task User_PrimaryKeysAreShared_WithAdmin()
     {
-        // Invariant: shadow and open share the plaintext primary key — that
-        // means after the bootstrap delivery, user's TrustedContact rows
-        // carry the SAME row Id as admin's. Without this, mutual references
-        // (DeviceSettings.AdminContactId, SharingKey.ClientContactId,
-        // SharingKey.GrantedByContactId) would diverge across actors.
         var adminContactOnAdmin = await _scenario.Admin.Contacts
             .GetByEd25519PublicKeyAsync(_scenario.Admin.Keys.Ed25519PublicKey);
         var adminContactOnUser = await _scenario.User.Contacts
@@ -165,62 +155,51 @@ public class TwoActorFixtureTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task User_HasSharingKeyForSystemScope_WithViewerRole()
+    public async Task User_HasShareTargetForSystemScope_WithViewerRole()
     {
-        var userContact = await _scenario.User.Contacts
-            .GetByEd25519PublicKeyAsync(_scenario.User.Keys.Ed25519PublicKey);
-        Assert.NotNull(userContact);
+        var target = await _scenario.User.Context.ShareTargets
+            .SingleAsync(t => t.MemberPublicKey == _scenario.User.Keys.X25519PublicKey);
 
-        var key = await _scenario.User.Context.SharingKeys
-            .SingleAsync(k => k.SharingId == KeyDerivation.SystemSharingId
-                              && k.ClientContactId == userContact.Id);
-
-        Assert.Equal(SharingScope.Public, key.SharingScope);
-        Assert.Equal(SyncRole.Viewer, key.Role);
-        Assert.NotEmpty(key.WrappedContentKey);
+        Assert.Equal(SyncRole.Viewer, target.Role);
+        Assert.NotEmpty(target.WrappedContentKey);
+        Assert.True(target.WrappedContentKey.Length > 12);
     }
 
     [Fact]
-    public async Task BothActors_AgreeOnSystemContentKey_ViaTheirOwnSharingKeyRows()
+    public async Task BothActors_AgreeOnSystemCek_ViaTheirOwnShareTargets()
     {
-        // The deepest invariant: admin and user, after the bootstrap, both
-        // unwrap their own SharingKey row to obtain the SAME 32-byte system
-        // content key. This is the load-bearing property for system-scope
-        // sync — admin can encrypt under it, user can decrypt under it,
-        // and they're operating against byte-identical key material despite
-        // having entirely separate databases and processing paths.
+        // The deepest invariant: admin and user both unwrap their own
+        // ShareTarget to obtain the SAME 32-byte system CEK.
 
-        var adminContact = await _scenario.Admin.Contacts
-            .GetByEd25519PublicKeyAsync(_scenario.Admin.Keys.Ed25519PublicKey);
-        Assert.NotNull(adminContact);
-        var adminSelfKeyRow = await _scenario.Admin.Context.SharingKeys
-            .SingleAsync(k => k.SharingId == KeyDerivation.SystemSharingId
-                              && k.ClientContactId == adminContact.Id);
+        var systemGroup = await _scenario.Admin.Context.ShareGroups
+            .SingleAsync(g => g.GroupContext == CryptoSyncBootstrap.SystemGroupContext);
 
-        var userContact = await _scenario.User.Contacts
-            .GetByEd25519PublicKeyAsync(_scenario.User.Keys.Ed25519PublicKey);
-        Assert.NotNull(userContact);
-        var userKeyRow = await _scenario.User.Context.SharingKeys
-            .SingleAsync(k => k.SharingId == KeyDerivation.SystemSharingId
-                              && k.ClientContactId == userContact.Id);
+        // Admin unwraps their self-ShareTarget
+        var adminTarget = await _scenario.Admin.Context.ShareTargets
+            .SingleAsync(t => t.ShareGroupId == systemGroup.Id
+                && t.MemberPublicKey == _scenario.Admin.Keys.X25519PublicKey);
+        var adminWrapped = CryptoSyncBootstrap.DeserializeWrappedCek(adminTarget.WrappedContentKey);
+        var adminPrivKey = Convert.FromBase64String(_scenario.Admin.Keys.X25519PrivateKey);
+        var adminWkResult = await _scenario.Crypto.DeriveWrappingKeyAsync(
+            adminPrivKey, systemGroup.AdminPublicKey, systemGroup.GroupContext);
+        Assert.True(adminWkResult.Success);
+        var adminCekResult = await _scenario.Crypto.UnwrapContentKeyAsync(adminWrapped, adminWkResult.Value!);
+        Assert.True(adminCekResult.Success);
 
-        var adminUnwrap = await _scenario.Crypto.DecryptAsymmetricAsync(
-            EnvelopeBytes.Deserialize(adminSelfKeyRow.WrappedContentKey),
-            Convert.FromBase64String(_scenario.Admin.Keys.X25519PrivateKey));
-        var userUnwrap = await _scenario.Crypto.DecryptAsymmetricAsync(
-            EnvelopeBytes.Deserialize(userKeyRow.WrappedContentKey),
-            Convert.FromBase64String(_scenario.User.Keys.X25519PrivateKey));
+        // User unwraps their ShareTarget
+        var userGroup = await _scenario.User.Context.ShareGroups
+            .SingleAsync(g => g.GroupContext == CryptoSyncBootstrap.SystemGroupContext);
+        var userTarget = await _scenario.User.Context.ShareTargets
+            .SingleAsync(t => t.ShareGroupId == userGroup.Id
+                && t.MemberPublicKey == _scenario.User.Keys.X25519PublicKey);
+        var userWrapped = CryptoSyncBootstrap.DeserializeWrappedCek(userTarget.WrappedContentKey);
+        var userPrivKey = Convert.FromBase64String(_scenario.User.Keys.X25519PrivateKey);
+        var userWkResult = await _scenario.Crypto.DeriveWrappingKeyAsync(
+            userPrivKey, userGroup.AdminPublicKey, userGroup.GroupContext);
+        Assert.True(userWkResult.Success);
+        var userCekResult = await _scenario.Crypto.UnwrapContentKeyAsync(userWrapped, userWkResult.Value!);
+        Assert.True(userCekResult.Success);
 
-        Assert.True(adminUnwrap.Success);
-        Assert.True(userUnwrap.Success);
-
-        var adminKeyBytes = Convert.FromBase64String(adminUnwrap.Value!);
-        var userKeyBytes = Convert.FromBase64String(userUnwrap.Value!);
-        Assert.Equal(adminKeyBytes, userKeyBytes);
-
-        // And it must equal the deterministic derivation from admin's private key.
-        var derived = KeyDerivation.DeriveSystemContentKey(
-            Convert.FromBase64String(_scenario.Admin.Keys.X25519PrivateKey));
-        Assert.Equal(derived, adminKeyBytes);
+        Assert.Equal(adminCekResult.Value!.ToArray(), userCekResult.Value!.ToArray());
     }
 }

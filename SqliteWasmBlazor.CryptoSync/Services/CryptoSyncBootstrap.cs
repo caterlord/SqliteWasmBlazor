@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using BlazorPRF.Crypto.Abstractions;
 using BlazorPRF.Crypto.Abstractions.Models;
+using BlazorPRF.Crypto.Abstractions.Services;
 using Microsoft.EntityFrameworkCore;
 
 namespace SqliteWasmBlazor.CryptoSync;
@@ -9,42 +10,31 @@ namespace SqliteWasmBlazor.CryptoSync;
 /// First-launch scaffolding for a CryptoSync admin instance. Idempotent.
 ///
 /// <para>
-/// On a fresh device, this creates everything needed for the local instance
-/// to be a functional admin: a <see cref="DeviceSettings"/> row marked
-/// <c>IsAdmin=true</c>, the admin's own <see cref="TrustedContact"/> at
-/// <see cref="TrustLevel.Full"/>, and a self-<see cref="SharingKey"/> for the
-/// system scope holding the deterministically-derived system content key
-/// ECIES-wrapped under the admin's own X25519 public key.
+/// Creates everything needed for a functional admin: <see cref="DeviceSettings"/>,
+/// the admin's own <see cref="TrustedContact"/>, a system <see cref="ShareGroup"/>,
+/// and a self-<see cref="ShareTarget"/> (the admin is the sole member of the system
+/// group — self-group pattern per PDF spec).
 /// </para>
 ///
 /// <para>
-/// The system content key is NOT stored as a derivable secret — only the
-/// wrapped form is at rest. The admin can re-derive it any time via
-/// <see cref="KeyDerivation.DeriveSystemContentKey"/> using their own
-/// private key, OR unwrap it from their self-SharingKey row. Both paths
-/// produce the same key (decision §15 + §16 — explicit self-ShareTarget for
-/// uniform runtime lookup).
-/// </para>
-///
-/// <para>
-/// Idempotent contract: if a DeviceSettings row already exists with
-/// <c>IsAdmin=true</c> AND a TrustedContact for the same Ed25519 public key
-/// exists, the call returns the existing admin contact without modification.
-/// Re-running the bootstrap on an already-initialized device is a no-op.
+/// Uses <see cref="IGroupEncryption.CreateGroupKeysAsync"/> to generate a random CEK
+/// and wrap it for the admin. The wrapped CEK is stored in <see cref="ShareTarget.WrappedContentKey"/>
+/// as raw bytes: <c>[nonce(12) | ciphertext]</c>.
 /// </para>
 /// </summary>
 public class CryptoSyncBootstrap(
     CryptoSyncContextBase context,
-    ICryptoProvider crypto)
+    IGroupEncryption groupEncryption)
 {
+    /// <summary>Well-known group context for the system scope (v1).</summary>
+    public const string SystemGroupContext = "system:v1";
+
+    /// <summary>Well-known SharingId for the system scope.</summary>
+    public const string SystemSharingId = "system";
+
     /// <summary>
     /// Initialize this device as the admin instance.
     /// </summary>
-    /// <param name="adminKeys">Admin's full key pair (Ed25519 for signing, X25519 for ECIES).</param>
-    /// <param name="adminUsername">Display name for the admin contact row.</param>
-    /// <param name="adminEmail">Email for the admin contact row.</param>
-    /// <param name="deviceName">Friendly device name for the DeviceSettings row.</param>
-    /// <returns>The admin's TrustedContact row (newly created or existing).</returns>
     public async ValueTask<TrustedContact> InitializeAdminAsync(
         DualKeyPairFull adminKeys,
         string adminUsername,
@@ -66,7 +56,6 @@ public class CryptoSyncBootstrap(
         var now = DateTime.UtcNow;
 
         // ---- 1. DeviceSettings ----
-        // Either create fresh, or upgrade an existing non-admin row.
         if (existingDevice is null)
         {
             existingDevice = new DeviceSettings
@@ -85,8 +74,6 @@ public class CryptoSyncBootstrap(
         }
 
         // ---- 2. Admin's own TrustedContact row ----
-        // Public-scope, system SharingId so this contact will be broadcast to
-        // every Full-trust peer once they're added to the system scope.
         var adminContact = new TrustedContact
         {
             Id = Guid.NewGuid(),
@@ -100,65 +87,105 @@ public class CryptoSyncBootstrap(
             VerifiedAt = now,
             UpdatedAt = now,
             SharingScope = SharingScope.Public,
-            SharingId = KeyDerivation.SystemSharingId
+            SharingId = SystemSharingId
         };
         context.Contacts.Add(adminContact);
 
-        // Link DeviceSettings to the admin contact id (lets non-admin peers
-        // later resolve "which contact is the admin" via DeviceSettings.AdminContactId).
         existingDevice.AdminContactId = adminContact.Id;
 
-        // ---- 3. Derive the system content key ----
-        // Deterministic from admin's private key — no storage needed for the
-        // key itself. The wrapped form goes into the self-SharingKey below
-        // (decision §16 — uniform lookup, owner has an explicit ShareTarget).
+        // ---- 3. System ShareGroup + admin self-ShareTarget ----
         var adminPrivateKeyBytes = Convert.FromBase64String(adminKeys.X25519PrivateKey);
-        byte[]? systemContentKey = null;
 
         try
         {
-            systemContentKey = KeyDerivation.DeriveSystemContentKey(adminPrivateKeyBytes);
+            var createResult = await groupEncryption.CreateGroupKeysAsync(
+                adminPrivateKeyBytes,
+                adminKeys.X25519PublicKey,
+                [adminKeys.X25519PublicKey], // self-group: admin is sole member
+                SystemGroupContext);
 
-            // ---- 4. Self-SharingKey for the system scope ----
-            // Wrap the freshly-derived content key under admin's OWN X25519
-            // public key. Admin can either re-derive (via KeyDerivation) or
-            // ECIES-unwrap from this row — both yield the same key.
-            var contentKeyBase64 = Convert.ToBase64String(systemContentKey);
-            var wrapResult = await crypto.EncryptAsymmetricAsync(contentKeyBase64, adminKeys.X25519PublicKey);
-            if (!wrapResult.Success)
+            if (!createResult.Success)
             {
                 throw new InvalidOperationException(
-                    $"Failed to wrap system content key for admin self-SharingKey: {wrapResult.ErrorCode}");
+                    $"Failed to create system group keys: {createResult.ErrorCode}");
             }
 
-            var wrappedKeyBytes = EnvelopeBytes.Serialize(wrapResult.Value!);
+            var bundle = createResult.Value
+                ?? throw new InvalidOperationException("CreateGroupKeysAsync returned null bundle");
 
-            var selfSharingKey = new SharingKey
+            // ShareGroup — the system scope group
+            var shareGroup = new ShareGroup
             {
                 Id = Guid.NewGuid(),
-                SharingId = KeyDerivation.SystemSharingId,
+                GroupContext = SystemGroupContext,
+                KeyVersion = bundle.KeyVersion,
+                AdminPublicKey = adminKeys.X25519PublicKey,
+                CreatedAt = now,
+                UpdatedAt = now,
                 SharingScope = SharingScope.Public,
-                ClientContactId = adminContact.Id,
-                WrappedContentKey = wrappedKeyBytes,
-                Role = SyncRole.Owner,
-                GrantedByContactId = adminContact.Id, // admin granted to themselves
-                CreatedAt = now
+                SharingId = SystemSharingId
             };
-            context.SharingKeys.Add(selfSharingKey);
+            context.ShareGroups.Add(shareGroup);
+
+            // ShareTarget — admin's own wrapped CEK (self-group pattern)
+            if (bundle.MemberKeys.Count == 0)
+            {
+                throw new InvalidOperationException("CreateGroupKeysAsync returned empty MemberKeys");
+            }
+            var adminWrappedKey = bundle.MemberKeys[0];
+
+            var shareTarget = new ShareTarget
+            {
+                Id = Guid.NewGuid(),
+                ShareGroupId = shareGroup.Id,
+                KeyVersion = bundle.KeyVersion,
+                MemberPublicKey = adminKeys.X25519PublicKey,
+                WrappedContentKey = SerializeWrappedCek(adminWrappedKey.WrappedContentKey),
+                Role = SyncRole.Owner,
+                GrantedByContactId = adminContact.Id,
+                UpdatedAt = now,
+                SharingScope = SharingScope.Public,
+                SharingId = SystemSharingId
+            };
+            context.ShareTargets.Add(shareTarget);
 
             await context.SaveChangesAsync();
         }
         finally
         {
-            // Zero key material from this method's stack copies. The CryptoKey
-            // handle inside ICryptoProvider has its own lifetime.
-            if (systemContentKey is not null)
-            {
-                CryptographicOperations.ZeroMemory(systemContentKey);
-            }
             CryptographicOperations.ZeroMemory(adminPrivateKeyBytes);
         }
 
         return adminContact;
+    }
+
+    /// <summary>
+    /// Serialize a <see cref="SymmetricEncryptedData"/> (Base64 ciphertext + nonce)
+    /// into the raw byte[] format used for <see cref="ShareTarget.WrappedContentKey"/>:
+    /// <c>[nonce(12) | ciphertext]</c>.
+    /// </summary>
+    public static byte[] SerializeWrappedCek(SymmetricEncryptedData wrapped)
+    {
+        var nonce = Convert.FromBase64String(wrapped.Nonce);
+        var ciphertext = Convert.FromBase64String(wrapped.Ciphertext);
+        var result = new byte[nonce.Length + ciphertext.Length];
+        nonce.CopyTo(result.AsSpan());
+        ciphertext.CopyTo(result.AsSpan(nonce.Length));
+        return result;
+    }
+
+    /// <summary>
+    /// Deserialize the raw byte[] format back into a <see cref="SymmetricEncryptedData"/>.
+    /// Inverse of <see cref="SerializeWrappedCek"/>.
+    /// </summary>
+    public static SymmetricEncryptedData DeserializeWrappedCek(byte[] data)
+    {
+        if (data.Length < 12)
+        {
+            throw new ArgumentException("WrappedContentKey must be at least 12 bytes (nonce)");
+        }
+        var nonce = Convert.ToBase64String(data.AsSpan(0, 12));
+        var ciphertext = Convert.ToBase64String(data.AsSpan(12));
+        return new SymmetricEncryptedData(ciphertext, nonce);
     }
 }

@@ -116,8 +116,9 @@ internal class CryptoSyncRoundTripTest(
             var contactService = new ContactService(ctx);
             var orchestrator = new SyncOrchestrator(DatabaseService!, crypto, contactService);
 
-            rowsImported = await orchestrator.ImportAsync(
+            var report = await orchestrator.ImportAsync(
                 CryptoDatabaseName, envelopeBytes, bobKeys);
+            rowsImported = report.RowsImported;
         }
 
         if (rowsImported != 2)

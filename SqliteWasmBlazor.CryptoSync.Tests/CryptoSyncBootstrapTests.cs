@@ -1,5 +1,6 @@
 using BlazorPRF.Crypto.Abstractions;
 using BlazorPRF.Crypto.Abstractions.Models;
+using BlazorPRF.Crypto.Abstractions.Services;
 using BlazorPRF.Crypto.Testing;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -9,10 +10,9 @@ namespace SqliteWasmBlazor.CryptoSync.Tests;
 
 /// <summary>
 /// Tests for <see cref="CryptoSyncBootstrap"/>: the first-launch admin
-/// scaffolding. Verifies the post-bootstrap state is correct (DeviceSettings
-/// flagged admin, admin's TrustedContact present at Full trust in the
-/// system scope, admin's self-SharingKey present and well-formed) and that
-/// re-running the bootstrap is idempotent.
+/// scaffolding. Verifies post-bootstrap state: DeviceSettings flagged admin,
+/// admin's TrustedContact at Full trust in system scope, admin's self-ShareGroup +
+/// self-ShareTarget present and well-formed.
 /// </summary>
 public class CryptoSyncBootstrapTests : IAsyncLifetime
 {
@@ -35,11 +35,10 @@ public class CryptoSyncBootstrapTests : IAsyncLifetime
         await _context.Database.EnsureCreatedAsync();
 
         _crypto = new BouncyCastleCryptoProvider();
-        _bootstrap = new CryptoSyncBootstrap(_context, _crypto);
+        _bootstrap = new CryptoSyncBootstrap(_context, new GroupEncryptionService(_crypto));
 
-        // Derive a deterministic admin key pair from a fixed seed for test reproducibility.
         var adminSeed = new byte[32];
-        for (var i = 0; i < adminSeed.Length; i++) adminSeed[i] = (byte)(i + 1);
+        for (var i = 0; i < adminSeed.Length; i++) { adminSeed[i] = (byte)(i + 1); }
         _adminKeys = await _crypto.DeriveDualKeyPairAsync(adminSeed);
     }
 
@@ -78,11 +77,9 @@ public class CryptoSyncBootstrapTests : IAsyncLifetime
     [Fact]
     public async Task InitializeAdminAsync_AdminContact_IsInPublicSystemScope()
     {
-        // The admin's contact row sits in the public system scope so peers
-        // learn about admin once they're added to the system scope.
         var admin = await RunBootstrapAsync();
         Assert.Equal(SharingScope.Public, admin.SharingScope);
-        Assert.Equal(KeyDerivation.SystemSharingId, admin.SharingId);
+        Assert.Equal(CryptoSyncBootstrap.SystemSharingId, admin.SharingId);
     }
 
     [Fact]
@@ -97,43 +94,55 @@ public class CryptoSyncBootstrapTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task InitializeAdminAsync_CreatesSelfSharingKey_ForSystemScope()
+    public async Task InitializeAdminAsync_CreatesSystemShareGroup()
     {
-        var admin = await RunBootstrapAsync();
+        await RunBootstrapAsync();
 
-        var sharingKey = await _context.SharingKeys.SingleAsync();
-        Assert.Equal(KeyDerivation.SystemSharingId, sharingKey.SharingId);
-        Assert.Equal(SharingScope.Public, sharingKey.SharingScope);
-        Assert.Equal(admin.Id, sharingKey.ClientContactId);
-        Assert.Equal(admin.Id, sharingKey.GrantedByContactId);
-        Assert.Equal(SyncRole.Owner, sharingKey.Role);
-        Assert.NotNull(sharingKey.WrappedContentKey);
-        Assert.NotEmpty(sharingKey.WrappedContentKey);
+        var group = await _context.ShareGroups.SingleAsync();
+        Assert.Equal(CryptoSyncBootstrap.SystemGroupContext, group.GroupContext);
+        Assert.Equal(1, group.KeyVersion);
+        Assert.Equal(_adminKeys.X25519PublicKey, group.AdminPublicKey);
+        Assert.Equal(SharingScope.Public, group.SharingScope);
+        Assert.Equal(CryptoSyncBootstrap.SystemSharingId, group.SharingId);
     }
 
     [Fact]
-    public async Task InitializeAdminAsync_SelfSharingKey_UnwrapsToDerivedSystemKey()
+    public async Task InitializeAdminAsync_CreatesSelfShareTarget_ForSystemScope()
     {
-        // The wrapped content key on the admin's self-SharingKey, when
-        // unwrapped with the admin's X25519 private key, must yield the SAME
-        // 32 bytes that KeyDerivation.DeriveSystemContentKey produces.
-        // This is the integrity check that "stored wrap" and "deterministic
-        // derivation" agree on the system content key (decisions §15 + §16).
+        var admin = await RunBootstrapAsync();
+
+        var target = await _context.ShareTargets.SingleAsync();
+        Assert.Equal(_adminKeys.X25519PublicKey, target.MemberPublicKey);
+        Assert.Equal(1, target.KeyVersion);
+        Assert.Equal(SyncRole.Owner, target.Role);
+        Assert.Equal(admin.Id, target.GrantedByContactId);
+        Assert.NotNull(target.WrappedContentKey);
+        Assert.True(target.WrappedContentKey.Length > 12, "WrappedContentKey should be [nonce(12) | ciphertext]");
+    }
+
+    [Fact]
+    public async Task InitializeAdminAsync_SelfShareTarget_CanUnwrapCek()
+    {
+        // The wrapped CEK on the admin's self-ShareTarget, when unwrapped
+        // with the admin's wrapping key (ECDH + HKDF), must yield a valid
+        // 32-byte AES-256 key. This proves the roundtrip from
+        // CreateGroupKeysAsync → serialize → deserialize → unwrap works.
         await RunBootstrapAsync();
 
-        var sharingKey = await _context.SharingKeys.SingleAsync();
-        var encryptedMessage = EnvelopeBytes.Deserialize(sharingKey.WrappedContentKey);
+        var target = await _context.ShareTargets.SingleAsync();
+        var group = await _context.ShareGroups.SingleAsync();
+        var wrapped = CryptoSyncBootstrap.DeserializeWrappedCek(target.WrappedContentKey);
 
-        var unwrapResult = await _crypto.DecryptAsymmetricAsync(
-            encryptedMessage,
-            Convert.FromBase64String(_adminKeys.X25519PrivateKey));
+        // Derive wrapping key (same ECDH + HKDF path the worker uses)
+        var adminPrivateKey = Convert.FromBase64String(_adminKeys.X25519PrivateKey);
+        var wrappingKeyResult = await _crypto.DeriveWrappingKeyAsync(
+            adminPrivateKey, _adminKeys.X25519PublicKey, group.GroupContext);
+        Assert.True(wrappingKeyResult.Success);
+
+        var unwrapResult = await _crypto.UnwrapContentKeyAsync(
+            wrapped, wrappingKeyResult.Value!);
         Assert.True(unwrapResult.Success);
-
-        var unwrappedKey = Convert.FromBase64String(unwrapResult.Value!);
-        var derivedKey = KeyDerivation.DeriveSystemContentKey(
-            Convert.FromBase64String(_adminKeys.X25519PrivateKey));
-
-        Assert.Equal(derivedKey, unwrappedKey);
+        Assert.Equal(32, unwrapResult.Value!.Length);
     }
 
     [Fact]
@@ -145,16 +154,13 @@ public class CryptoSyncBootstrapTests : IAsyncLifetime
         Assert.Equal(first.Id, second.Id);
         Assert.Equal(1, await _context.Contacts.CountAsync());
         Assert.Equal(1, await _context.DeviceSettings.CountAsync());
-        Assert.Equal(1, await _context.SharingKeys.CountAsync());
+        Assert.Equal(1, await _context.ShareGroups.CountAsync());
+        Assert.Equal(1, await _context.ShareTargets.CountAsync());
     }
 
     [Fact]
     public async Task InitializeAdminAsync_GateAcceptsAdminAfterBootstrap()
     {
-        // End-to-end check: after bootstrap, the SyncGate must consider the
-        // admin's own Ed25519 public key a valid full-trust sender. This is
-        // the foundational invariant for self-syncing across multiple
-        // admin devices later.
         var admin = await RunBootstrapAsync();
         var gate = new SyncGate(new ContactService(_context));
 

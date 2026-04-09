@@ -362,6 +362,16 @@ public class CryptoSyncGenerator : IIncrementalGenerator
         sb.AppendLine();
         sb.AppendLine("    /// <summary>Per-row AES-GCM nonce.</summary>");
         sb.AppendLine("    public required byte[] Nonce { get; init; }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>CEK version that encrypted this row (Layer 1 AAD).</summary>");
+        sb.AppendLine("    public int KeyVersion { get; set; }");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Ed25519 public key of the row producer (Layer 2 verification).</summary>");
+        sb.AppendLine("    [MaxLength(64)]");
+        sb.AppendLine("    public string SenderPublicKey { get; set; } = \"\";");
+        sb.AppendLine();
+        sb.AppendLine("    /// <summary>Ed25519 per-row envelope signature (Layer 2 tamper detection).</summary>");
+        sb.AppendLine("    public byte[] EnvelopeSignature { get; set; } = Array.Empty<byte>();");
         sb.AppendLine("}");
 
         return sb.ToString();

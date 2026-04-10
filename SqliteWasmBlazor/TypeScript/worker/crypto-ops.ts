@@ -187,6 +187,203 @@ function importErrorCodeToInt(code: string): number {
 }
 
 // ============================================================================
+// Permission enforcement helpers
+// ============================================================================
+
+interface ParsedPermissions {
+    insertDenied: boolean;
+    updateDenied: boolean;
+    deleteDenied: boolean;
+    readDenied: boolean;
+    /** Columns that this role may NOT update (table-level update allowed but column denied). */
+    readonlyColumns: string[];
+    /** Columns that this role MAY update even when table-level update is denied. */
+    readwriteColumns: string[];
+}
+
+/**
+ * Resolve the sender's role and parse the applicable permission diff for a domain table.
+ * Returns null if the sender's role can't be determined (falls back to no enforcement).
+ *
+ * Lookup chain:
+ *   1. SenderPublicKey (Ed25519 hex) → Contacts.Ed25519PublicKey → Contact.X25519PublicKey
+ *   2. X25519PublicKey + ShareGroup(groupContext) → ShareTarget.Role
+ *   3. Role + TableName → Permissions.PermissionDiffJson
+ */
+function resolveSenderPermissions(
+    db: any, tableName: string,
+    header: { groupContext: string }
+): ParsedPermissions | null {
+    // Step 1: find the sender's Ed25519 public key from the first shadow row
+    // All rows in a ShadowRowGroup come from the same sender
+    // The SenderPublicKey is stored as hex in the shadow row during Phase 1
+    // We need to look it up from the just-upserted shadow rows
+    const cryptoTableName = `_crypto_${tableName}`;
+    const senderRows = db.exec({
+        sql: `SELECT SenderPublicKey FROM "${cryptoTableName}" LIMIT 1`,
+        returnValue: 'resultRows',
+        rowMode: 'array'
+    }) as any[][];
+
+    if (!senderRows || senderRows.length === 0) {
+        logger.warn(MODULE_NAME, `resolveSenderPermissions: no shadow rows for ${tableName}`);
+        return null;
+    }
+
+    const senderEd25519Hex = senderRows[0][0] as string;
+
+    // Step 2: Ed25519 hex → Contact → X25519PublicKey
+    // Convert hex back to base64 for Contact lookup
+    const ed25519Bytes = hexToBytes(senderEd25519Hex);
+    const ed25519Base64 = btoa(Array.from(ed25519Bytes).map(b => String.fromCharCode(b)).join(''));
+
+    const contactRows = db.exec({
+        sql: `SELECT X25519PublicKey FROM Contacts WHERE Ed25519PublicKey = ? LIMIT 1`,
+        bind: [ed25519Base64],
+        returnValue: 'resultRows',
+        rowMode: 'array'
+    }) as any[][];
+
+    if (!contactRows || contactRows.length === 0) {
+        logger.warn(MODULE_NAME, `resolveSenderPermissions: sender contact not found for Ed25519 key`);
+        return null;
+    }
+
+    const senderX25519PubKey = contactRows[0][0] as string;
+
+    // Step 3: X25519PubKey + ShareGroup → ShareTarget.Role
+    const targetRows = db.exec({
+        sql: `SELECT st.Role FROM ShareTargets st
+              JOIN ShareGroups sg ON st.ShareGroupId = sg.Id
+              WHERE st.MemberPublicKey = ? AND sg.GroupContext = ? AND st.KeyVersion = sg.KeyVersion
+              LIMIT 1`,
+        bind: [senderX25519PubKey, header.groupContext],
+        returnValue: 'resultRows',
+        rowMode: 'array'
+    }) as any[][];
+
+    if (!targetRows || targetRows.length === 0) {
+        logger.warn(MODULE_NAME, `resolveSenderPermissions: no ShareTarget for sender in group ${header.groupContext}`);
+        return null;
+    }
+
+    const senderRole = targetRows[0][0] as number; // 0=Owner, 1=Editor, 2=Viewer
+
+    // Step 4: Role + TableName → PermissionDiffJson
+    const permRows = db.exec({
+        sql: `SELECT PermissionDiffJson FROM Permissions WHERE Role = ? AND TableName = ? AND RecordId IS NULL LIMIT 1`,
+        bind: [senderRole, tableName],
+        returnValue: 'resultRows',
+        rowMode: 'array'
+    }) as any[][];
+
+    if (!permRows || permRows.length === 0) {
+        // No permission row = full access (Owner typically has no restriction row or `{}`)
+        return { insertDenied: false, updateDenied: false, deleteDenied: false, readDenied: false, readonlyColumns: [], readwriteColumns: [] };
+    }
+
+    const diffJson = permRows[0][0] as string;
+    return parsePermissionDiff(diffJson, tableName);
+}
+
+/**
+ * Parse a PermissionDiffJson (v2 nested format) for a specific table.
+ * Format: `{"TableName": {"delete":"deny","insert":"deny","columns":{"Price":"readonly"}}}`
+ * Empty object `{}` = full access.
+ */
+function parsePermissionDiff(diffJson: string, tableName: string): ParsedPermissions {
+    const result: ParsedPermissions = {
+        insertDenied: false,
+        updateDenied: false,
+        deleteDenied: false,
+        readDenied: false,
+        readonlyColumns: [],
+        readwriteColumns: []
+    };
+
+    if (!diffJson || diffJson === '{}') {
+        return result;
+    }
+
+    try {
+        const parsed = JSON.parse(diffJson);
+        const tableDiff = parsed[tableName];
+
+        if (!tableDiff || typeof tableDiff === 'string') {
+            // "readonly" shorthand = deny insert/update/delete
+            if (tableDiff === 'readonly') {
+                result.insertDenied = true;
+                result.updateDenied = true;
+                result.deleteDenied = true;
+            }
+            return result;
+        }
+
+        if (tableDiff.insert === 'deny') { result.insertDenied = true; }
+        if (tableDiff.update === 'deny') { result.updateDenied = true; }
+        if (tableDiff.delete === 'deny') { result.deleteDenied = true; }
+        if (tableDiff.read === 'deny') { result.readDenied = true; }
+
+        if (tableDiff.columns && typeof tableDiff.columns === 'object') {
+            for (const [col, rule] of Object.entries(tableDiff.columns)) {
+                if (rule === 'readonly') {
+                    result.readonlyColumns.push(col);
+                } else if (rule === 'readwrite') {
+                    result.readwriteColumns.push(col);
+                }
+            }
+        }
+    } catch {
+        logger.warn(MODULE_NAME, `parsePermissionDiff: invalid JSON: ${diffJson}`);
+    }
+
+    return result;
+}
+
+/**
+ * Check if any readonly columns were mutated in an update.
+ * Compares the incoming row values against the existing row in the open table.
+ * Returns the list of violated column names.
+ */
+function checkColumnPermissions(
+    db: any, tableName: string, pkColumn: string, pkValue: any,
+    columnNames: string[], incomingRow: any[], readonlyColumns: string[]
+): string[] {
+    const roCols = readonlyColumns.filter(c => columnNames.includes(c));
+    if (roCols.length === 0) {
+        return [];
+    }
+
+    const selectCols = roCols.map(c => `"${c}"`).join(', ');
+    const existing = db.exec({
+        sql: `SELECT ${selectCols} FROM "${tableName}" WHERE "${pkColumn}" = ? LIMIT 1`,
+        bind: [pkValue],
+        returnValue: 'resultRows',
+        rowMode: 'array'
+    }) as any[][];
+
+    if (!existing || existing.length === 0) {
+        return []; // New row — column checks don't apply to inserts
+    }
+
+    const violations: string[] = [];
+    for (let i = 0; i < roCols.length; i++) {
+        const colIdx = columnNames.indexOf(roCols[i]);
+        if (colIdx < 0) { continue; }
+
+        const oldVal = existing[0][i];
+        const newVal = incomingRow[colIdx];
+
+        // Compare with type coercion (SQLite stores may differ from msgpack types)
+        if (String(oldVal) !== String(newVal)) {
+            violations.push(roCols[i]);
+        }
+    }
+
+    return violations;
+}
+
+// ============================================================================
 // Encrypted export
 // ============================================================================
 
@@ -455,6 +652,7 @@ export async function bulkImportEncryptedV2(dbName: string, headerBytes: Uint8Ar
         }
 
         // Phase 2: Apply decrypted rows to open table
+        const isSystemTable = !!group[1];
         if (arrivedRows.length > 0) {
             const colRows = db.exec({
                 sql: `SELECT ColumnName, SqlType, CSharpType, IsPrimaryKey FROM _column_registry WHERE TableName = ? ORDER BY ColumnIndex`,
@@ -471,23 +669,92 @@ export async function bulkImportEncryptedV2(dbName: string, headerBytes: Uint8Ar
             const sqlTypes = colRows.map((r: any[]) => r[1] as string);
             const csharpTypes = colRows.map((r: any[]) => r[2] as string);
             const isDeletedIdx = columnNames.indexOf('IsDeleted');
+            const pkColumn = columnNames.find((_, i) => colRows[i][3]) ?? 'Id';
+            const pkIdx = columnNames.indexOf(pkColumn);
 
             const v2ImportHeader: any = {
                 7: tableName,
                 8: colRows.map((r: any[]) => [r[0], r[1], r[2]]),
-                9: columnNames.find((_, i) => colRows[i][3]) ?? 'Id'
+                9: pkColumn
             };
+
+            // Permission enforcement for domain tables.
+            // System tables skip checks — they're admin-only, signature-verified.
+            const permissions = isSystemTable
+                ? null
+                : resolveSenderPermissions(db, tableName, header);
 
             const rowsToInsert: any[][] = [];
             const idsToDelete: unknown[] = [];
 
             for (const arrived of arrivedRows) {
                 const isDeleted = isDeletedIdx >= 0 && !!arrived.row[isDeletedIdx];
+                const rowIdHex = arrived.id instanceof Uint8Array
+                    ? bytesToHex(arrived.id) : String(arrived.id);
+
                 if (isDeleted) {
+                    // Check delete permission
+                    if (permissions && permissions.deleteDenied) {
+                        errors.push({
+                            code: 'PERMISSION_DELETE_DENIED',
+                            table: tableName, rowId: rowIdHex, groupId: header.groupContext,
+                            message: `Sender role lacks delete permission on ${tableName}`
+                        });
+                        rowsSkipped++;
+                        continue;
+                    }
                     idsToDelete.push(arrived.id);
                 } else {
+                    // Determine if insert or update by checking existing row
                     const converted = arrived.row.map((val: any, idx: number) =>
                         convertValueForSqlite(val, csharpTypes[idx], sqlTypes[idx]));
+
+                    if (permissions) {
+                        const existingRow = db.exec({
+                            sql: `SELECT "${pkColumn}" FROM "${tableName}" WHERE "${pkColumn}" = ? LIMIT 1`,
+                            bind: [converted[pkIdx]],
+                            returnValue: 'resultRows',
+                            rowMode: 'array'
+                        });
+                        const isInsert = !existingRow || existingRow.length === 0;
+
+                        if (isInsert && permissions.insertDenied) {
+                            errors.push({
+                                code: 'PERMISSION_INSERT_DENIED',
+                                table: tableName, rowId: rowIdHex, groupId: header.groupContext,
+                                message: `Sender role lacks insert permission on ${tableName}`
+                            });
+                            rowsSkipped++;
+                            continue;
+                        }
+
+                        if (!isInsert && permissions.updateDenied) {
+                            errors.push({
+                                code: 'PERMISSION_UPDATE_DENIED',
+                                table: tableName, rowId: rowIdHex, groupId: header.groupContext,
+                                message: `Sender role lacks update permission on ${tableName}`
+                            });
+                            rowsSkipped++;
+                            continue;
+                        }
+
+                        // Column-level enforcement for updates
+                        if (!isInsert && permissions.readonlyColumns.length > 0) {
+                            const colViolations = checkColumnPermissions(
+                                db, tableName, pkColumn, converted[pkIdx],
+                                columnNames, converted, permissions.readonlyColumns);
+                            if (colViolations.length > 0) {
+                                errors.push({
+                                    code: 'PERMISSION_COLUMN_READONLY',
+                                    table: tableName, rowId: rowIdHex, groupId: header.groupContext,
+                                    message: `Readonly columns mutated: ${colViolations.join(', ')}`
+                                });
+                                rowsSkipped++;
+                                continue;
+                            }
+                        }
+                    }
+
                     rowsToInsert.push(converted);
                 }
             }

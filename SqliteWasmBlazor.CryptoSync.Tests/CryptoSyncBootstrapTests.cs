@@ -64,14 +64,15 @@ public class CryptoSyncBootstrapTests : IAsyncLifetime
         Assert.Equal("Admin", admin.Username);
         Assert.Equal(_adminKeys.X25519PublicKey, admin.X25519PublicKey);
         Assert.Equal(_adminKeys.Ed25519PublicKey, admin.Ed25519PublicKey);
-        Assert.Equal(SyncRole.Owner, admin.Role);
+        Assert.True(admin.IsAdmin);
     }
 
     [Fact]
     public async Task InitializeAdminAsync_AdminContact_IsFullTrust()
     {
         var admin = await RunBootstrapAsync();
-        Assert.Equal(TrustLevel.Full, admin.TrustLevel);
+        Assert.True(admin.IsTrusted);
+        Assert.True(admin.IsAdmin);
     }
 
     [Fact]

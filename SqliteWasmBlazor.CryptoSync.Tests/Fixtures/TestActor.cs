@@ -28,8 +28,6 @@ public sealed class TestActor : IAsyncDisposable
 
     public ContactService Contacts { get; }
     public DeviceIdentityService DeviceIdentity { get; }
-    public InvitationService Invitations { get; }
-    public ContactPromotionService Promotion { get; }
     public CryptoSyncBootstrap Bootstrap { get; }
     public SyncGate Gate { get; }
 
@@ -52,8 +50,6 @@ public sealed class TestActor : IAsyncDisposable
 
         DeviceIdentity = new DeviceIdentityService(context);
         Contacts = new ContactService(context);
-        Invitations = new InvitationService(context, DeviceIdentity);
-        Promotion = new ContactPromotionService(context, DeviceIdentity);
         Bootstrap = new CryptoSyncBootstrap(context, new GroupEncryptionService(crypto));
         Gate = new SyncGate(Contacts);
     }

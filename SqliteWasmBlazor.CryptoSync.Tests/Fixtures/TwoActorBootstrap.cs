@@ -55,13 +55,10 @@ public sealed class TwoActorBootstrap : IAsyncDisposable
                 Email = $"{userName.ToLowerInvariant()}@test.com"
             },
             user.Keys.X25519PublicKey,
-            user.Keys.Ed25519PublicKey,
-            SyncRole.Editor,
-            TrustLevel.Marginal,
-            TrustDirection.Sent);
+            user.Keys.Ed25519PublicKey);
 
-        // 3. Elevate user from Marginal → Full
-        await admin.Promotion.ElevateToFullAsync(userContactOnAdmin.Id);
+        // 3. Trust the user
+        await admin.Contacts.TrustAsync(userContactOnAdmin.Id);
         await admin.Context.Entry(userContactOnAdmin).ReloadAsync();
 
         // 4. Admin issues a ShareTarget for the user on the system scope.
@@ -133,10 +130,8 @@ public sealed class TwoActorBootstrap : IAsyncDisposable
             Comment = adminContact.Comment,
             X25519PublicKey = adminContact.X25519PublicKey,
             Ed25519PublicKey = adminContact.Ed25519PublicKey,
-            Role = adminContact.Role,
-            TrustLevel = adminContact.TrustLevel,
-            Direction = TrustDirection.Received,
-            VerifiedAt = adminContact.VerifiedAt,
+            IsAdmin = adminContact.IsAdmin,
+            IsTrusted = adminContact.IsTrusted,
             UpdatedAt = adminContact.UpdatedAt,
             SharingScope = adminContact.SharingScope,
             SharingId = adminContact.SharingId
@@ -150,10 +145,8 @@ public sealed class TwoActorBootstrap : IAsyncDisposable
             Comment = userContactOnAdmin.Comment,
             X25519PublicKey = userContactOnAdmin.X25519PublicKey,
             Ed25519PublicKey = userContactOnAdmin.Ed25519PublicKey,
-            Role = userContactOnAdmin.Role,
-            TrustLevel = userContactOnAdmin.TrustLevel,
-            Direction = TrustDirection.Sent,
-            VerifiedAt = userContactOnAdmin.VerifiedAt,
+            IsAdmin = userContactOnAdmin.IsAdmin,
+            IsTrusted = userContactOnAdmin.IsTrusted,
             UpdatedAt = userContactOnAdmin.UpdatedAt,
             SharingScope = userContactOnAdmin.SharingScope,
             SharingId = userContactOnAdmin.SharingId

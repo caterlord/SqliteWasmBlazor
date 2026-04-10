@@ -81,10 +81,8 @@ public class CryptoSyncBootstrap(
             Email = adminEmail,
             X25519PublicKey = adminKeys.X25519PublicKey,
             Ed25519PublicKey = adminKeys.Ed25519PublicKey,
-            Role = SyncRole.Owner,
-            TrustLevel = TrustLevel.Full,
-            Direction = TrustDirection.Sent,
-            VerifiedAt = now,
+            IsAdmin = true,
+            IsTrusted = true,
             UpdatedAt = now,
             SharingScope = SharingScope.Public,
             SharingId = SystemSharingId

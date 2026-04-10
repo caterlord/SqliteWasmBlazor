@@ -3,31 +3,22 @@ using Microsoft.EntityFrameworkCore;
 namespace SqliteWasmBlazor.CryptoSync;
 
 /// <summary>
-/// Manages trusted contacts. Plain user data (no per-column encryption — see Phase H
-/// for the at-rest defense model). System table; only the admin device creates
-/// contacts (decision §12), other devices receive them via the public-scope sync
-/// once promoted to <see cref="TrustLevel.Full"/>.
-///
-/// Phase B minimal surface — Phase E expands to the full canonical API
-/// (List/UpdateUserData/UpdateTrustLevel/Delete/etc.).
+/// Manages trusted contacts. System table — only the admin device creates
+/// contacts; other devices receive them via the system-scope sync.
 /// </summary>
 public class ContactService(CryptoSyncContextBase context)
 {
     /// <summary>
-    /// Create a new trusted contact at <see cref="TrustLevel.Marginal"/>.
-    /// The row stays admin-private (<see cref="SharingScope.Client"/>) until
-    /// <c>ContactPromotionService.ElevateToFullAsync</c> flips it to
-    /// <see cref="SharingScope.Public"/>.
+    /// Create a new contact. Starts untrusted (<see cref="TrustedContact.IsTrusted"/> = false)
+    /// unless explicitly set — an untrusted contact is a pending invitation.
     /// </summary>
     public async ValueTask<TrustedContact> AddContactAsync(
         ContactUserData userData,
         string x25519PublicKey,
         string ed25519PublicKey,
-        SyncRole role,
-        TrustLevel trustLevel,
-        TrustDirection direction)
+        bool isAdmin = false,
+        bool isTrusted = false)
     {
-        var now = DateTime.UtcNow;
         var contact = new TrustedContact
         {
             Id = Guid.NewGuid(),
@@ -36,11 +27,9 @@ public class ContactService(CryptoSyncContextBase context)
             Comment = userData.Comment,
             X25519PublicKey = x25519PublicKey,
             Ed25519PublicKey = ed25519PublicKey,
-            Role = role,
-            TrustLevel = trustLevel,
-            Direction = direction,
-            VerifiedAt = now,
-            UpdatedAt = now,
+            IsAdmin = isAdmin,
+            IsTrusted = isTrusted,
+            UpdatedAt = DateTime.UtcNow,
             SharingScope = SharingScope.Client,
             SharingId = string.Empty
         };
@@ -51,47 +40,54 @@ public class ContactService(CryptoSyncContextBase context)
     }
 
     /// <summary>
-    /// Get a contact by Ed25519 public key (used to identify delta senders).
+    /// Trust a contact (accept the invitation). Moves the contact to the
+    /// public system scope so it broadcasts to all trusted peers on next sync.
     /// </summary>
-    public async ValueTask<TrustedContact?> GetByEd25519PublicKeyAsync(string ed25519PublicKey)
-    {
-        return await context.Contacts.FirstOrDefaultAsync(c => c.Ed25519PublicKey == ed25519PublicKey);
-    }
-
-    /// <summary>
-    /// Get all contacts.
-    /// </summary>
-    public async ValueTask<List<TrustedContact>> GetAllAsync()
-    {
-        return await context.Contacts.ToListAsync();
-    }
-
-    /// <summary>
-    /// Get X25519 public keys of all contacts (for building recipient list).
-    /// </summary>
-    public async ValueTask<string[]> GetRecipientPublicKeysAsync()
-    {
-        return await context.Contacts
-            .Select(c => c.X25519PublicKey)
-            .ToArrayAsync();
-    }
-
-    /// <summary>
-    /// Update a contact's role.
-    /// </summary>
-    public async ValueTask UpdateRoleAsync(Guid contactId, SyncRole newRole)
+    public async ValueTask TrustAsync(Guid contactId)
     {
         var contact = await context.Contacts.FindAsync(contactId)
             ?? throw new InvalidOperationException($"Contact {contactId} not found");
 
-        contact.Role = newRole;
+        contact.IsTrusted = true;
+        contact.SharingScope = SharingScope.Public;
+        contact.SharingId = CryptoSyncBootstrap.SystemSharingId;
         contact.UpdatedAt = DateTime.UtcNow;
         await context.SaveChangesAsync();
     }
 
     /// <summary>
-    /// Remove a contact (soft delete via <see cref="SyncableEntity.IsDeleted"/>).
+    /// Untrust a contact. Reverts to client-private scope.
     /// </summary>
+    public async ValueTask UntrustAsync(Guid contactId)
+    {
+        var contact = await context.Contacts.FindAsync(contactId)
+            ?? throw new InvalidOperationException($"Contact {contactId} not found");
+
+        contact.IsTrusted = false;
+        contact.SharingScope = SharingScope.Client;
+        contact.SharingId = string.Empty;
+        contact.UpdatedAt = DateTime.UtcNow;
+        await context.SaveChangesAsync();
+    }
+
+    public async ValueTask<TrustedContact?> GetByEd25519PublicKeyAsync(string ed25519PublicKey)
+    {
+        return await context.Contacts.FirstOrDefaultAsync(c => c.Ed25519PublicKey == ed25519PublicKey);
+    }
+
+    public async ValueTask<List<TrustedContact>> GetAllAsync()
+    {
+        return await context.Contacts.ToListAsync();
+    }
+
+    public async ValueTask<string[]> GetRecipientPublicKeysAsync()
+    {
+        return await context.Contacts
+            .Where(c => c.IsTrusted)
+            .Select(c => c.X25519PublicKey)
+            .ToArrayAsync();
+    }
+
     public async ValueTask DeleteAsync(Guid contactId)
     {
         var contact = await context.Contacts.FindAsync(contactId);

@@ -36,14 +36,14 @@ internal class CryptoSyncRoundTripTest(
         await using (var ctx = await CryptoFactory.CreateDbContextAsync())
         {
             var contactService = new ContactService(ctx);
-            await contactService.AddContactAsync(
+            var alice = await contactService.AddContactAsync(
                 new ContactUserData { Username = "Alice", Email = "alice@test.com" },
                 aliceKeys.X25519PublicKey, aliceKeys.Ed25519PublicKey,
-                SyncRole.Owner, TrustLevel.Full, TrustDirection.Sent);
-            await contactService.AddContactAsync(
+                isAdmin: true, isTrusted: true);
+            var bob = await contactService.AddContactAsync(
                 new ContactUserData { Username = "Bob", Email = "bob@test.com" },
                 bobKeys.X25519PublicKey, bobKeys.Ed25519PublicKey,
-                SyncRole.Editor, TrustLevel.Full, TrustDirection.Sent);
+                isTrusted: true);
         }
 
         // 3. Seed test items via EF Core

@@ -15,7 +15,7 @@ public class CryptoSyncGenerator : IIncrementalGenerator
     // never participate in permission seeds, and are local-only on each device.
     private static readonly HashSet<string> StandaloneBaseEntityNames = new()
     {
-        "SentInvitation", "ReceivedInvitation", "DeviceSettings", "SyncState"
+        "DeviceSettings", "SyncState"
     };
 
     public void Initialize(IncrementalGeneratorInitializationContext context)

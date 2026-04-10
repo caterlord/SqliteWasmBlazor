@@ -6,8 +6,8 @@ namespace SqliteWasmBlazor.CryptoSync.Tests;
 
 /// <summary>
 /// Tests for <see cref="SyncGate"/>: the precondition guard that runs above
-/// every other sync step. Sync is entirely blocked unless the sender is a
-/// known full-trust contact in the local Contacts table.
+/// every other sync step. Sync is blocked unless the sender is a known
+/// trusted contact.
 /// </summary>
 public class SyncGateTests : IDisposable
 {
@@ -37,28 +37,33 @@ public class SyncGateTests : IDisposable
         _connection.Dispose();
     }
 
-    private async Task<TrustedContact> AddContactAsync(string name, TrustLevel trustLevel, string ed25519PublicKey)
+    private async Task<TrustedContact> AddContactAsync(string name, bool isTrusted, string ed25519PublicKey)
     {
-        return await _contacts.AddContactAsync(
+        var contact = await _contacts.AddContactAsync(
             new ContactUserData { Username = name, Email = $"{name.ToLowerInvariant()}@test.com" },
             x25519PublicKey: Convert.ToBase64String(new byte[32]),
-            ed25519PublicKey: ed25519PublicKey,
-            role: SyncRole.Editor,
-            trustLevel: trustLevel,
-            direction: TrustDirection.Sent);
+            ed25519PublicKey: ed25519PublicKey);
+
+        if (isTrusted)
+        {
+            await _contacts.TrustAsync(contact.Id);
+            await _context.Entry(contact).ReloadAsync();
+        }
+
+        return contact;
     }
 
     [Fact]
-    public async Task EnsureSenderTrustedAsync_ReturnsContact_ForFullTrustSender()
+    public async Task EnsureSenderTrustedAsync_ReturnsContact_ForTrustedSender()
     {
         var senderPk = Convert.ToBase64String(new byte[32] { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32 });
-        var added = await AddContactAsync("Alice", TrustLevel.Full, senderPk);
+        var added = await AddContactAsync("Alice", isTrusted: true, senderPk);
 
         var resolved = await _gate.EnsureSenderTrustedAsync(senderPk);
 
         Assert.Equal(added.Id, resolved.Id);
         Assert.Equal("Alice", resolved.Username);
-        Assert.Equal(TrustLevel.Full, resolved.TrustLevel);
+        Assert.True(resolved.IsTrusted);
     }
 
     [Fact]
@@ -73,26 +78,15 @@ public class SyncGateTests : IDisposable
     }
 
     [Fact]
-    public async Task EnsureSenderTrustedAsync_Throws_ForMarginalTrustContact()
+    public async Task EnsureSenderTrustedAsync_Throws_ForUntrustedContact()
     {
         var senderPk = Convert.ToBase64String(new byte[32] { 99, 98, 97, 96, 95, 94, 93, 92, 91, 90, 89, 88, 87, 86, 85, 84, 83, 82, 81, 80, 79, 78, 77, 76, 75, 74, 73, 72, 71, 70, 69, 68 });
-        await AddContactAsync("Marginal", TrustLevel.Marginal, senderPk);
+        await AddContactAsync("Untrusted", isTrusted: false, senderPk);
 
         var ex = await Assert.ThrowsAsync<SyncRejectedException>(
             () => _gate.EnsureSenderTrustedAsync(senderPk).AsTask());
 
-        Assert.Contains("Marginal", ex.Message);
-        Assert.Contains("Full", ex.Message);
-    }
-
-    [Fact]
-    public async Task EnsureSenderTrustedAsync_Throws_ForNoneTrustContact()
-    {
-        var senderPk = Convert.ToBase64String(new byte[32] { 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50, 50 });
-        await AddContactAsync("None", TrustLevel.None, senderPk);
-
-        await Assert.ThrowsAsync<SyncRejectedException>(
-            () => _gate.EnsureSenderTrustedAsync(senderPk).AsTask());
+        Assert.Contains("not trusted", ex.Message);
     }
 
     [Fact]
@@ -105,8 +99,6 @@ public class SyncGateTests : IDisposable
     [Fact]
     public async Task SyncRejectedException_IsAnInvalidOperationException()
     {
-        // Sanity check: code that catches InvalidOperationException for sync
-        // failures will continue to work; SyncRejectedException is a subtype.
         var ex = await Assert.ThrowsAsync<SyncRejectedException>(
             () => _gate.EnsureSenderTrustedAsync(string.Empty).AsTask());
         Assert.IsAssignableFrom<InvalidOperationException>(ex);

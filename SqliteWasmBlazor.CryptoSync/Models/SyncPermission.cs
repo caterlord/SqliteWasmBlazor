@@ -62,11 +62,4 @@ public sealed class SyncPermission
     [MaxLength(2048)]
     public string ReadwriteColumns { get; set; } = "";
 
-    /// <summary>Admin's Ed25519 signature over the permission (Base64).</summary>
-    [MaxLength(128)]
-    public string? AdminSignature { get; set; }
-
-    /// <summary>Admin's Ed25519 public key (Base64) for verification.</summary>
-    [MaxLength(64)]
-    public string? AdminPublicKey { get; set; }
 }

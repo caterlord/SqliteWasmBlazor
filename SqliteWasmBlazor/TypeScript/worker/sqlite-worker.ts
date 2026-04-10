@@ -1315,7 +1315,7 @@ function base64ToBytes(base64: string): Uint8Array {
 interface V2CryptoHeader {
     version: number;
     systemTables: string[];
-    clientContactIdBytes: Uint8Array;
+    clientContactId: string | Uint8Array;
     clientX25519PrivateKey: Uint8Array;
     adminX25519PublicKey: Uint8Array;
     groupContext: string;
@@ -1338,8 +1338,9 @@ function parseV2CryptoHeader(bytes: Uint8Array): V2CryptoHeader {
     if (!Array.isArray(arr[1])) {
         throw new Error('V2CryptoHeader: SystemTables must be array');
     }
-    if (!(arr[2] instanceof Uint8Array) || arr[2].byteLength !== 16) {
-        throw new Error('V2CryptoHeader: ClientContactId must be 16-byte Uint8Array');
+    // MessagePack-CSharp serializes Guid as a 36-char string by default
+    if (typeof arr[2] !== 'string' && !(arr[2] instanceof Uint8Array)) {
+        throw new Error(`V2CryptoHeader: ClientContactId must be string or Uint8Array, got ${typeof arr[2]}`);
     }
     if (!(arr[3] instanceof Uint8Array) || arr[3].byteLength !== 32) {
         throw new Error('V2CryptoHeader: ClientX25519PrivateKey must be 32-byte Uint8Array');
@@ -1366,7 +1367,7 @@ function parseV2CryptoHeader(bytes: Uint8Array): V2CryptoHeader {
     return {
         version,
         systemTables: arr[1] as string[],
-        clientContactIdBytes: arr[2],
+        clientContactId: arr[2],
         clientX25519PrivateKey: arr[3],
         adminX25519PublicKey: arr[4],
         groupContext: arr[5],

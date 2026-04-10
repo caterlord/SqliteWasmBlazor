@@ -269,75 +269,62 @@ function resolveSenderPermissions(
 
     const senderRole = targetRows[0][0] as number; // 0=Owner, 1=Editor, 2=Viewer
 
-    // Step 4: Role + TableName → PermissionDiffJson
+    // Step 4: Role + TableName → fully resolved permission columns
     const permRows = db.exec({
-        sql: `SELECT PermissionDiffJson FROM Permissions WHERE Role = ? AND TableName = ? AND RecordId IS NULL LIMIT 1`,
+        sql: `SELECT CanInsert, CanRead, CanUpdate, CanDelete, ReadonlyColumns, ReadwriteColumns
+              FROM Permissions WHERE Role = ? AND TableName = ? AND RecordId IS NULL LIMIT 1`,
         bind: [senderRole, tableName],
         returnValue: 'resultRows',
         rowMode: 'array'
     }) as any[][];
 
     if (!permRows || permRows.length === 0) {
-        // No permission row = full access (Owner typically has no restriction row or `{}`)
+        // No permission row = full access
         return { insertDenied: false, updateDenied: false, deleteDenied: false, readDenied: false, readonlyColumns: [], readwriteColumns: [] };
     }
 
-    const diffJson = permRows[0][0] as string;
-    return parsePermissionDiff(diffJson, tableName);
+    const row = permRows[0];
+    const splitCols = (csv: string) => csv ? csv.split(',').filter(c => c.length > 0) : [];
+
+    return {
+        insertDenied: !row[0],
+        readDenied: !row[1],
+        updateDenied: !row[2],
+        deleteDenied: !row[3],
+        readonlyColumns: splitCols(row[4] as string),
+        readwriteColumns: splitCols(row[5] as string)
+    };
 }
 
 /**
- * Parse a PermissionDiffJson (v2 nested format) for a specific table.
- * Format: `{"TableName": {"delete":"deny","insert":"deny","columns":{"Price":"readonly"}}}`
- * Empty object `{}` = full access.
+ * Get all column names that differ between the incoming row and the existing row.
+ * Used for readwrite-override enforcement: when table-level update is denied but
+ * specific columns have readwrite override, only those columns may change.
  */
-function parsePermissionDiff(diffJson: string, tableName: string): ParsedPermissions {
-    const result: ParsedPermissions = {
-        insertDenied: false,
-        updateDenied: false,
-        deleteDenied: false,
-        readDenied: false,
-        readonlyColumns: [],
-        readwriteColumns: []
-    };
+function getChangedColumns(
+    db: any, tableName: string, pkColumn: string, pkValue: any,
+    columnNames: string[], incomingRow: any[]
+): string[] {
+    const selectCols = columnNames.map(c => `"${c}"`).join(', ');
+    const existing = db.exec({
+        sql: `SELECT ${selectCols} FROM "${tableName}" WHERE "${pkColumn}" = ? LIMIT 1`,
+        bind: [pkValue],
+        returnValue: 'resultRows',
+        rowMode: 'array'
+    }) as any[][];
 
-    if (!diffJson || diffJson === '{}') {
-        return result;
+    if (!existing || existing.length === 0) {
+        return []; // New row — no changes to check
     }
 
-    try {
-        const parsed = JSON.parse(diffJson);
-        const tableDiff = parsed[tableName];
-
-        if (!tableDiff || typeof tableDiff === 'string') {
-            // "readonly" shorthand = deny insert/update/delete
-            if (tableDiff === 'readonly') {
-                result.insertDenied = true;
-                result.updateDenied = true;
-                result.deleteDenied = true;
-            }
-            return result;
+    const changed: string[] = [];
+    for (let i = 0; i < columnNames.length; i++) {
+        if (columnNames[i] === pkColumn) { continue; } // PK never changes
+        if (String(existing[0][i]) !== String(incomingRow[i])) {
+            changed.push(columnNames[i]);
         }
-
-        if (tableDiff.insert === 'deny') { result.insertDenied = true; }
-        if (tableDiff.update === 'deny') { result.updateDenied = true; }
-        if (tableDiff.delete === 'deny') { result.deleteDenied = true; }
-        if (tableDiff.read === 'deny') { result.readDenied = true; }
-
-        if (tableDiff.columns && typeof tableDiff.columns === 'object') {
-            for (const [col, rule] of Object.entries(tableDiff.columns)) {
-                if (rule === 'readonly') {
-                    result.readonlyColumns.push(col);
-                } else if (rule === 'readwrite') {
-                    result.readwriteColumns.push(col);
-                }
-            }
-        }
-    } catch {
-        logger.warn(MODULE_NAME, `parsePermissionDiff: invalid JSON: ${diffJson}`);
     }
-
-    return result;
+    return changed;
 }
 
 /**
@@ -729,17 +716,36 @@ export async function bulkImportEncryptedV2(dbName: string, headerBytes: Uint8Ar
                         }
 
                         if (!isInsert && permissions.updateDenied) {
-                            errors.push({
-                                code: 'PERMISSION_UPDATE_DENIED',
-                                table: tableName, rowId: rowIdHex, groupId: header.groupContext,
-                                message: `Sender role lacks update permission on ${tableName}`
-                            });
-                            rowsSkipped++;
-                            continue;
+                            if (permissions.readwriteColumns.length > 0) {
+                                // Table-level update denied, but some columns have readwrite override.
+                                // Allow if ONLY readwrite columns changed; reject if anything else changed.
+                                const changedCols = getChangedColumns(
+                                    db, tableName, pkColumn, converted[pkIdx],
+                                    columnNames, converted);
+                                const disallowed = changedCols.filter(c => !permissions.readwriteColumns.includes(c));
+                                if (disallowed.length > 0) {
+                                    errors.push({
+                                        code: 'PERMISSION_UPDATE_DENIED',
+                                        table: tableName, rowId: rowIdHex, groupId: header.groupContext,
+                                        message: `Sender role may only update [${permissions.readwriteColumns.join(', ')}] but also changed: ${disallowed.join(', ')}`
+                                    });
+                                    rowsSkipped++;
+                                    continue;
+                                }
+                                // Only readwrite columns changed — allowed
+                            } else {
+                                errors.push({
+                                    code: 'PERMISSION_UPDATE_DENIED',
+                                    table: tableName, rowId: rowIdHex, groupId: header.groupContext,
+                                    message: `Sender role lacks update permission on ${tableName}`
+                                });
+                                rowsSkipped++;
+                                continue;
+                            }
                         }
 
-                        // Column-level enforcement for updates
-                        if (!isInsert && permissions.readonlyColumns.length > 0) {
+                        // Column-level enforcement for updates (when table-level update IS allowed)
+                        if (!isInsert && !permissions.updateDenied && permissions.readonlyColumns.length > 0) {
                             const colViolations = checkColumnPermissions(
                                 db, tableName, pkColumn, converted[pkIdx],
                                 columnNames, converted, permissions.readonlyColumns);

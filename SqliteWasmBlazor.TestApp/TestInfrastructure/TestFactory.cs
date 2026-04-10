@@ -65,6 +65,9 @@ internal class TestFactory
 
         var test2 = new WorkerEncryptedRoundTripTest(cryptoFactory, databaseService);
         _entries.Add(new TestEntry("Encrypted Delta", test2.Name, () => test2.RunTestWithFreshDatabaseAsync()));
+
+        var test3 = new PermissionEnforcementTest(cryptoFactory, databaseService);
+        _entries.Add(new TestEntry("Encrypted Delta", test3.Name, () => test3.RunTestWithFreshDatabaseAsync()));
     }
 
     private void PopulateTests(IDbContextFactory<TodoDbContext> factory, ISqliteWasmDatabaseService databaseService)

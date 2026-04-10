@@ -100,24 +100,32 @@ public class CryptoSyncContextBase : DbContext
 
         foreach (var table in systemTables)
         {
-            seeds.Add(CreateSystemPermission(table, SyncRole.Owner, "{}"));
+            // Owner: full CRUD on system tables
+            seeds.Add(CreateSystemPermission(table, SyncRole.Owner,
+                canInsert: true, canRead: true, canUpdate: true, canDelete: true));
+            // Editor/Viewer: read-only on system tables
             seeds.Add(CreateSystemPermission(table, SyncRole.Editor,
-                $"{{\"{table}\":\"readonly\"}}"));
+                canInsert: false, canRead: true, canUpdate: false, canDelete: false));
             seeds.Add(CreateSystemPermission(table, SyncRole.Viewer,
-                $"{{\"{table}\":\"readonly\"}}"));
+                canInsert: false, canRead: true, canUpdate: false, canDelete: false));
         }
 
         modelBuilder.Entity<SyncPermission>().HasData(seeds);
     }
 
-    private static SyncPermission CreateSystemPermission(string tableName, SyncRole role, string permissionDiffJson)
+    private static SyncPermission CreateSystemPermission(
+        string tableName, SyncRole role,
+        bool canInsert, bool canRead, bool canUpdate, bool canDelete)
     {
         return new SyncPermission
         {
             Id = DeterministicGuid($"SystemPermission:{(int)role}:{tableName}"),
             Role = role,
             TableName = tableName,
-            PermissionDiffJson = permissionDiffJson,
+            CanInsert = canInsert,
+            CanRead = canRead,
+            CanUpdate = canUpdate,
+            CanDelete = canDelete,
             SharingScope = SharingScope.Public,
             SharingId = "system",
             UpdatedAt = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)

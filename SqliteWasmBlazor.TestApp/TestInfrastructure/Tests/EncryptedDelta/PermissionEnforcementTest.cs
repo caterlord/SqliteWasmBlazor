@@ -121,7 +121,7 @@ internal class PermissionEnforcementTest(
             AssertEqual(1, imported, "Editor insert imported");
             AssertEqual(0, skipped, "Editor insert skipped");
 
-            // Now update: re-export with changed data, import as update
+            // Now update: modify Price, export, revert open table, import as Editor
             await using (var ctx = await CryptoFactory.CreateDbContextAsync())
             {
                 var item = await ctx.CryptoTestItems.SingleAsync(i => i.Id == itemId);
@@ -131,10 +131,26 @@ internal class PermissionEnforcementTest(
             }
 
             var updateDelta = await ExportDelta();
+
+            // Revert so the worker sees a real update
+            await using (var ctx = await CryptoFactory.CreateDbContextAsync())
+            {
+                var item = await ctx.CryptoTestItems.SingleAsync(i => i.Id == itemId);
+                item.Price = 4.00m;
+                await ctx.SaveChangesAsync();
+            }
+
             var (updated, updateSkipped, _) = await ImportDelta(updateDelta);
 
             AssertEqual(1, updated, "Editor update imported");
             AssertEqual(0, updateSkipped, "Editor update skipped");
+
+            // Verify the update actually applied
+            await using (var ctx = await CryptoFactory.CreateDbContextAsync())
+            {
+                var item = await ctx.CryptoTestItems.SingleAsync(i => i.Id == itemId);
+                AssertEqual(5.00m, item.Price, "Price after Editor update");
+            }
 
             Console.WriteLine($"[{Name}] Step D OK: Editor insert + update allowed");
         }
@@ -165,6 +181,14 @@ internal class PermissionEnforcementTest(
                 await ctx.SaveChangesAsync();
             }
             var updateDelta = await ExportDelta();
+
+            // Revert open table to original Price so the worker sees a real change
+            await using (var ctx = await CryptoFactory.CreateDbContextAsync())
+            {
+                var item = await ctx.CryptoTestItems.SingleAsync(i => i.Id == itemId);
+                item.Price = 6.00m;
+                await ctx.SaveChangesAsync();
+            }
 
             // Switch to Viewer, import the update
             await SetSenderRole(SyncRole.Viewer);
@@ -208,6 +232,14 @@ internal class PermissionEnforcementTest(
                 await ctx.SaveChangesAsync();
             }
             var updateDelta = await ExportDelta();
+
+            // Revert open table so the worker sees the actual change
+            await using (var ctx = await CryptoFactory.CreateDbContextAsync())
+            {
+                var item = await ctx.CryptoTestItems.SingleAsync(i => i.Id == itemId);
+                item.IsBought = false;
+                await ctx.SaveChangesAsync();
+            }
 
             // Switch to Viewer, import — should be allowed (IsBought is readwrite)
             await SetSenderRole(SyncRole.Viewer);

@@ -88,9 +88,10 @@ internal class SchemaVersionMismatchTest(
         await using (var ctx = await CryptoFactory.CreateDbContextAsync())
         {
             // Add a fake column entry — changes the schema hash
+            var fakeId = Guid.NewGuid().ToString();
             await ctx.Database.ExecuteSqlRawAsync(
                 "INSERT INTO _column_registry (Id, TableName, ColumnIndex, ColumnName, SqlType, CSharpType, IsPrimaryKey) " +
-                "VALUES ('{00000000-0000-0000-0000-ffffffffffff}', 'CryptoTestItems', 99, 'FakeNewColumn', 'TEXT', 'String', 0)");
+                "VALUES ({0}, 'CryptoTestItems', 99, 'FakeNewColumn', 'TEXT', 'String', 0)", fakeId);
         }
 
         // Step 3: Import — should fail with schema mismatch

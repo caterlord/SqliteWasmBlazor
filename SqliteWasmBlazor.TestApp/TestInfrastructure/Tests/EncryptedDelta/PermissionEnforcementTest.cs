@@ -366,6 +366,8 @@ internal class PermissionEnforcementTest(
         var items = await ctx.CryptoTestItems.IgnoreQueryFilters().ToListAsync();
         ctx.CryptoTestItems.RemoveRange(items);
         await ctx.SaveChangesAsync();
+        // Also clear shadow table (export writes shadow entries)
+        await ctx.Database.ExecuteSqlRawAsync("DELETE FROM _crypto_CryptoTestItems");
     }
 
     private async ValueTask<int> CountOpenTable()

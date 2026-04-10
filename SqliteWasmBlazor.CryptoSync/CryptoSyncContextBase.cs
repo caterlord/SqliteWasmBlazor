@@ -23,6 +23,9 @@ public abstract class CryptoSyncContextBase : DbContext
     // Permissions (compile-time schema, seeded via HasData)
     public DbSet<SyncPermission> Permissions => Set<SyncPermission>();
 
+    // Schema metadata (seeded by generator, queried by worker at import time)
+    public DbSet<ColumnRegistryEntry> ColumnRegistry => Set<ColumnRegistryEntry>();
+
     // Local-only
     public DbSet<SyncState> SyncStates => Set<SyncState>();
     public DbSet<DeviceSettings> DeviceSettings => Set<DeviceSettings>();
@@ -67,6 +70,13 @@ public abstract class CryptoSyncContextBase : DbContext
             entity.HasKey(e => e.Id);
             entity.HasIndex(e => new { e.SharingScope, e.SharingId, e.TableName, e.RecordId, e.Role }).IsUnique();
             entity.HasQueryFilter(e => !e.IsDeleted);
+        });
+
+        modelBuilder.Entity<ColumnRegistryEntry>(entity =>
+        {
+            entity.ToTable("_column_registry");
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.TableName, e.ColumnIndex }).IsUnique();
         });
 
         modelBuilder.Entity<SyncState>(entity =>

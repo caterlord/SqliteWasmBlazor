@@ -408,10 +408,82 @@ public class CryptoSyncGenerator : IIncrementalGenerator
             sb.AppendLine();
         }
 
+        // Seed _column_registry with column metadata for each syncable entity.
+        // The worker queries this at import time to build INSERT statements
+        // with correct column order and type conversion.
+        sb.AppendLine("        // Column registry: seeded schema metadata for worker import");
+        sb.AppendLine("        modelBuilder.Entity<SqliteWasmBlazor.CryptoSync.ColumnRegistryEntry>().HasData(");
+
+        var seedLines = new List<string>();
+        foreach (var entity in entities)
+        {
+            for (var i = 0; i < entity.Properties.Count; i++)
+            {
+                var prop = entity.Properties[i];
+                var sqlType = MapCSharpTypeToSqlType(prop.Type);
+                var isPk = prop.Name == "Id";
+
+                // Deterministic GUID from table + column index
+                byte[] hash;
+                using (var sha = System.Security.Cryptography.SHA256.Create())
+                {
+                    hash = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes($"ColumnRegistry:{entity.DbSetName}:{i}"));
+                }
+                var guidBytes = new byte[16];
+                System.Array.Copy(hash, guidBytes, 16);
+                var guid = new System.Guid(guidBytes);
+
+                seedLines.Add(
+                    $"            new {{ Id = System.Guid.Parse(\"{guid}\"), " +
+                    $"TableName = \"{entity.DbSetName}\", " +
+                    $"ColumnIndex = {i}, " +
+                    $"ColumnName = \"{prop.Name}\", " +
+                    $"SqlType = \"{sqlType}\", " +
+                    $"CSharpType = \"{prop.Type}\", " +
+                    $"IsPrimaryKey = {(isPk ? "true" : "false")} }}");
+            }
+        }
+
+        sb.AppendLine(string.Join(",\n", seedLines));
+        sb.AppendLine("        );");
+        sb.AppendLine();
+
         sb.AppendLine("    }");
         sb.AppendLine("}");
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Map a C# type name to the SQLite column type that EF Core uses.
+    /// Must match the logic in MessagePackFileHeaderV2.GetSqlType and the
+    /// actual EF Core migration output for SQLite.
+    /// </summary>
+    private static string MapCSharpTypeToSqlType(string csharpType)
+    {
+        // Strip nullable suffix
+        var baseType = csharpType.EndsWith("?") ? csharpType.Substring(0, csharpType.Length - 1) : csharpType;
+        // Strip namespace if present
+        var lastDot = baseType.LastIndexOf('.');
+        if (lastDot >= 0)
+        {
+            baseType = baseType.Substring(lastDot + 1);
+        }
+
+        return baseType switch
+        {
+            "Guid" => "TEXT",
+            "String" or "string" => "TEXT",
+            "DateTime" or "DateTimeOffset" or "TimeSpan" => "TEXT",
+            "Decimal" or "decimal" => "TEXT",
+            "Char" or "char" => "TEXT",
+            "Boolean" or "bool" or "Int32" or "int" or "Int64" or "long" or "Int16" or "short"
+                or "Byte" or "byte" or "UInt32" or "uint" or "UInt64" or "ulong"
+                or "UInt16" or "ushort" or "SByte" or "sbyte" => "INTEGER",
+            "Double" or "double" or "Single" or "float" => "REAL",
+            "Byte[]" => "BLOB",
+            _ => "TEXT" // Default fallback
+        };
     }
 
     private static string GenerateCryptoTableRegistry(string ns, List<EntityInfo> entities)

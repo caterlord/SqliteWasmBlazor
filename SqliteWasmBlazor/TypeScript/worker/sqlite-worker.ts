@@ -1737,59 +1737,81 @@ async function bulkImportEncryptedV2(dbName: string, headerBytes: Uint8Array, gr
         }
 
         // Phase 2: Apply decrypted rows to open table
-        // Read open table schema from PRAGMA — column order matches export order
-        // (both sides share the same EF Core migration)
-        const pragmaRows = db.exec({
-            sql: `PRAGMA table_info("${tableName}")`,
-            returnValue: 'resultRows',
-            rowMode: 'array'
-        }) as any[][];
+        // Query _column_registry for column metadata (seeded by generator).
+        // This gives us column names, SQL types, C# types in export order —
+        // the same order the values appear in the decrypted row arrays.
+        if (arrivedRows.length > 0) {
+            const colRows = db.exec({
+                sql: `SELECT ColumnName, SqlType, CSharpType, IsPrimaryKey FROM _column_registry WHERE TableName = ? ORDER BY ColumnIndex`,
+                bind: [tableName],
+                returnValue: 'resultRows',
+                rowMode: 'array'
+            }) as any[][];
 
-        if (pragmaRows && pragmaRows.length > 0 && arrivedRows.length > 0) {
-            const columnNames = pragmaRows.map((r: any[]) => r[1] as string);
+            if (!colRows || colRows.length === 0) {
+                throw new Error(`bulkImportEncryptedV2: no _column_registry entries for table '${tableName}'`);
+            }
+
+            const columnNames = colRows.map((r: any[]) => r[0] as string);
+            const sqlTypes = colRows.map((r: any[]) => r[1] as string);
+            const csharpTypes = colRows.map((r: any[]) => r[2] as string);
             const isDeletedIdx = columnNames.indexOf('IsDeleted');
-            const quotedColumns = columnNames.map(c => `"${c}"`).join(', ');
-            const placeholders = columnNames.map(() => '?').join(', ');
-            const insertSql = `INSERT OR REPLACE INTO "${tableName}" (${quotedColumns}) VALUES (${placeholders})`;
-            const deleteSql = `DELETE FROM "${tableName}" WHERE Id = ?`;
-            const deleteShadowSql = `DELETE FROM "${cryptoTableName}" WHERE Id = ?`;
 
-            db.exec('BEGIN');
-            try {
-                const insertStmt = db.prepare(insertSql);
-                const deleteStmt = db.prepare(deleteSql);
-                const deleteShadowStmt = db.prepare(deleteShadowSql);
+            // Build V2-compatible header for bulkInsertRows
+            const v2ImportHeader: any = {
+                7: tableName,
+                8: colRows.map((r: any[]) => [r[0], r[1], r[2]]), // [[name, sqlType, csharpType], ...]
+                9: columnNames.find((_, i) => colRows[i][3]) ?? 'Id' // primaryKeyColumn
+            };
 
-                for (const arrived of arrivedRows) {
-                    const isDeleted = isDeletedIdx >= 0 && !!arrived.row[isDeletedIdx];
-                    if (isDeleted) {
-                        // Hard-delete from both open + shadow
-                        deleteStmt.bind([arrived.id]);
+            // Separate deletes from upserts, converting values for SQLite
+            const rowsToInsert: any[][] = [];
+            const idsToDelete: unknown[] = [];
+
+            for (const arrived of arrivedRows) {
+                const isDeleted = isDeletedIdx >= 0 && !!arrived.row[isDeletedIdx];
+                if (isDeleted) {
+                    idsToDelete.push(arrived.id);
+                } else {
+                    // Convert msgpack values back to SQLite-ready format using column metadata
+                    const converted = arrived.row.map((val: any, idx: number) =>
+                        convertValueForSqlite(val, csharpTypes[idx], sqlTypes[idx]));
+                    rowsToInsert.push(converted);
+                }
+            }
+
+            // Hard-delete tombstoned rows from both open + shadow
+            if (idsToDelete.length > 0) {
+                const deleteSql = `DELETE FROM "${tableName}" WHERE Id = ?`;
+                const deleteShadowSql = `DELETE FROM "${cryptoTableName}" WHERE Id = ?`;
+                db.exec('BEGIN');
+                try {
+                    const deleteStmt = db.prepare(deleteSql);
+                    const deleteShadowStmt = db.prepare(deleteShadowSql);
+                    for (const id of idsToDelete) {
+                        deleteStmt.bind([id]);
                         deleteStmt.step();
                         deleteStmt.reset();
-                        deleteShadowStmt.bind([arrived.id]);
+                        deleteShadowStmt.bind([id]);
                         deleteShadowStmt.step();
                         deleteShadowStmt.reset();
                         rowsDeleted++;
-                    } else {
-                        // INSERT OR REPLACE into open table.
-                        // Values are already SQLite-ready — bulkExport converted them
-                        // via convertValueForSqlite before packing into MessagePack.
-                        insertStmt.bind(arrived.row);
-                        insertStmt.step();
-                        insertStmt.reset();
-                        rowsImported++;
                     }
+                    deleteStmt.finalize();
+                    deleteShadowStmt.finalize();
+                    db.exec('COMMIT');
+                } catch (e) {
+                    try { db.exec('ROLLBACK'); } catch { /* ignore */ }
+                    throw e;
                 }
+            }
 
-                insertStmt.finalize();
-                deleteStmt.finalize();
-                deleteShadowStmt.finalize();
-                db.exec('COMMIT');
-            } catch (e) {
-                try { db.exec('ROLLBACK'); } catch { /* ignore */ }
-                logger.error(MODULE_NAME, `bulkImportEncryptedV2: open table apply failed:`, e);
-                throw e;
+            // Insert/update rows into open table using bulkInsertRows
+            if (rowsToInsert.length > 0) {
+                const result = bulkInsertRows(db, v2ImportHeader, rowsToInsert,
+                    2 /* DeltaWins = INSERT OR REPLACE */,
+                    'bulkImportEncryptedV2');
+                rowsImported = result.rowsAffected;
             }
         }
 

@@ -68,6 +68,9 @@ internal class TestFactory
 
         var test3 = new PermissionEnforcementTest(cryptoFactory, databaseService);
         _entries.Add(new TestEntry("Encrypted Delta", test3.Name, () => test3.RunTestWithFreshDatabaseAsync()));
+
+        var test4 = new SchemaVersionMismatchTest(cryptoFactory, databaseService);
+        _entries.Add(new TestEntry("Encrypted Delta", test4.Name, () => test4.RunTestWithFreshDatabaseAsync()));
     }
 
     private void PopulateTests(IDbContextFactory<TodoDbContext> factory, ISqliteWasmDatabaseService databaseService)

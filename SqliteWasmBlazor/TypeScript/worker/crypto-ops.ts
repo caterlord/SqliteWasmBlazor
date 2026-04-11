@@ -933,7 +933,7 @@ async function bulkRotateKey(dbName: string, keyPayload: Uint8Array, metadata: a
         throw new Error(`bulkRotateKey: keyPayload must be 64 bytes (oldKey+newKey), got ${keyPayload.length}`);
     }
 
-    const sharingId = metadata.sharingId as string | undefined;
+    const sharingId = metadata.sharingId as string | null | undefined;
     const cryptoTable = `_crypto_${tableName}`;
 
     const oldKeyBytes = new Uint8Array(32);
@@ -957,19 +957,19 @@ async function bulkRotateKey(dbName: string, keyPayload: Uint8Array, metadata: a
         const newKey = await crypto.subtle.importKey(
             'raw', newKeyBytes.buffer, { name: 'AES-GCM' }, false, ['encrypt']);
 
-        const selectSql = sharingId !== undefined
+        const selectSql = sharingId != null
             ? `SELECT Id, EncryptedRow, Nonce FROM "${cryptoTable}" WHERE SharingId = ?`
             : `SELECT Id, EncryptedRow, Nonce FROM "${cryptoTable}"`;
 
         const rows = db.exec({
             sql: selectSql,
-            bind: sharingId !== undefined ? [sharingId] : [],
+            bind: sharingId != null ? [sharingId] : [],
             returnValue: 'resultRows',
             rowMode: 'array'
         });
 
         if (!rows || rows.length === 0) {
-            logger.info(MODULE_NAME, `bulkRotateKey: no rows match in ${cryptoTable}${sharingId !== undefined ? ` for SharingId=${sharingId}` : ''}`);
+            logger.info(MODULE_NAME, `bulkRotateKey: no rows match in ${cryptoTable}${sharingId != null ? ` for SharingId=${sharingId}` : ''}`);
             return { rowsAffected: 0 };
         }
 
@@ -1019,7 +1019,7 @@ async function bulkRotateKey(dbName: string, keyPayload: Uint8Array, metadata: a
             throw e;
         }
 
-        logger.info(MODULE_NAME, `✓ bulkRotateKey: re-encrypted ${rowsAffected} rows in ${cryptoTable}${sharingId !== undefined ? ` (SharingId=${sharingId})` : ''}`);
+        logger.info(MODULE_NAME, `✓ bulkRotateKey: re-encrypted ${rowsAffected} rows in ${cryptoTable}${sharingId != null ? ` (SharingId=${sharingId})` : ''}`);
         return { rowsAffected };
     } finally {
         oldKeyBytes.fill(0);

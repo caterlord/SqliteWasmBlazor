@@ -744,7 +744,8 @@ async function exportDatabase(dbName: string) {
 /**
  * Plain (non-encrypted) bulk import from V2 MessagePack payload.
  * Used for seeding, initial data load, admin baseline creation.
- * The payload is the same format as BulkExport: header + row arrays.
+ * Column metadata comes from _column_registry (generator-seeded, single source of truth).
+ * The C# header provides tableName, row data, and conflict strategy.
  */
 function bulkImport(dbName: string, payload: Uint8Array, metadata: any) {
     const db = openDatabases.get(dbName);
@@ -757,12 +758,51 @@ function bulkImport(dbName: string, payload: Uint8Array, metadata: any) {
         throw new Error('bulkImport: empty payload');
     }
 
-    const header = objects[0] as V2Header;
+    const headerFromPayload = objects[0] as V2Header;
     const rows = objects.slice(1) as any[][];
-    const conflictStrategy = metadata.conflictStrategy ?? header[6] ?? 0;
-    const readonlyColumnsMap = metadata.readonlyColumnsMap as Record<string, string[]> | undefined;
+    const tableName = headerFromPayload[7];
+    const conflictStrategy = metadata.conflictStrategy ?? headerFromPayload[6] ?? 0;
 
-    return bulkInsertRows(db, header, rows, conflictStrategy, 'bulkImport', readonlyColumnsMap);
+    // Use _column_registry as the authoritative column metadata (types + PK).
+    // The payload rows are in the DTO [Key] attribute order (from C# header).
+    // The registry has a different column order (generator property walk order).
+    // Map payload columns → registry columns by name to reorder rows.
+    const colRows = db.exec({
+        sql: `SELECT ColumnName, SqlType, CSharpType, IsPrimaryKey FROM _column_registry WHERE TableName = ? ORDER BY ColumnIndex`,
+        bind: [tableName],
+        returnValue: 'resultRows',
+        rowMode: 'array'
+    }) as any[][];
+
+    if (!colRows || colRows.length === 0) {
+        throw new Error(`bulkImport: no _column_registry entries for table '${tableName}'`);
+    }
+
+    // Build column name → payload index map from the C# header
+    const payloadColumns = headerFromPayload[8] as string[][];
+    const payloadColNames = payloadColumns.map(c => c[0]);
+
+    // Registry column order with registry types
+    const registryColNames = colRows.map((r: any[]) => r[0] as string);
+    const reorderMap = registryColNames.map(name => payloadColNames.indexOf(name));
+
+    // Verify all registry columns exist in the payload
+    for (let i = 0; i < registryColNames.length; i++) {
+        if (reorderMap[i] < 0) {
+            throw new Error(`bulkImport: column '${registryColNames[i]}' from _column_registry not found in payload header`);
+        }
+    }
+
+    // Reorder each row from payload order → registry order
+    const reorderedRows = rows.map(row => reorderMap.map(srcIdx => row[srcIdx]));
+
+    const registryHeader: any = {
+        7: tableName,
+        8: colRows.map((r: any[]) => [r[0], r[1], r[2]]),
+        9: colRows.find((r: any[]) => r[3])?.[0] ?? 'Id'
+    };
+
+    return bulkInsertRows(db, registryHeader, reorderedRows, conflictStrategy, 'bulkImport');
 }
 
 // Bulk import/export and crypto operations are in separate modules:

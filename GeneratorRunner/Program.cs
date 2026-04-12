@@ -54,15 +54,19 @@ namespace GeneratorRunner
                 }
             }
 
+            var outputDir = Path.Combine(GetProjectRootFromBase(), "GeneratedOutput");
+            if (Directory.Exists(outputDir))
+            {
+                Directory.Delete(outputDir, true);
+            }
+            
             var diags = GeneratorFactory.RunGenerator(sources, additionalText);
 
             foreach (var diag in diags)
             {
                 Console.WriteLine($"Message: {diag.GetMessage()}, Location: {diag.Location.GetLineSpan()}");
             }
-
-            var outputDir = Path.Combine(GetProjectRootFromBase(), "GeneratedOutput");
-
+            
             foreach (var path in SourcePaths)
             {
                 File.Copy(Path.Combine(GetProjectRootFromBase(), path), Path.Combine(outputDir, Path.GetFileName(path)));

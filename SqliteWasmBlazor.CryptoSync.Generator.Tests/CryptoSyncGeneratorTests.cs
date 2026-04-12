@@ -72,6 +72,7 @@ public class CryptoSyncGeneratorTests
             public abstract class CryptoSyncContextBase : Microsoft.EntityFrameworkCore.DbContext
             {
                 protected CryptoSyncContextBase(Microsoft.EntityFrameworkCore.DbContextOptions options) : base() { }
+                public virtual (string ChildTable, string FkColumn)[] GetChildFkRelations(string parentTable) => System.Array.Empty<(string, string)>();
             }
             public enum SyncRole { Owner = 0, Editor = 1, Viewer = 2 }
             public sealed class SyncPermission : SyncableEntity

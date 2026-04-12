@@ -26,6 +26,14 @@ public class CryptoSyncContextBase : DbContext
         optionsBuilder.AddInterceptors(new CryptoSyncSaveChangesInterceptor());
     }
 
+    /// <summary>
+    /// Returns FK child relations for the given parent table. Overridden by the
+    /// generator-emitted partial to provide compile-time FK metadata via
+    /// <c>SyncableFkMap</c>. Base implementation returns empty — no FK cascade
+    /// if the generator hasn't run.
+    /// </summary>
+    public virtual (string ChildTable, string FkColumn)[] GetChildFkRelations(string parentTable) => [];
+
     // Contacts
     public DbSet<TrustedContact> Contacts => Set<TrustedContact>();
 

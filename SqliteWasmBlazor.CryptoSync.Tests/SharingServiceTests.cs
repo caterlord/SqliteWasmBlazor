@@ -95,7 +95,7 @@ public class SharingServiceTests : IDisposable
     [Fact]
     public async Task UnshareAsync_NonSyncableTable_Throws()
     {
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        await Assert.ThrowsAsync<Microsoft.Data.Sqlite.SqliteException>(() =>
             _sharing.UnshareAsync("TableThatDoesNotExist", Guid.NewGuid()));
     }
 
@@ -106,11 +106,10 @@ public class SharingServiceTests : IDisposable
         var firstAffected = await _sharing.UnshareAsync("TestLists", listId);
         Assert.Equal(2, firstAffected);
 
-        // Second call updates the parent row again (the SQL UPDATE matches
-        // even already-deleted rows), but children are now skipped because
-        // the cascade walker filters by IsDeleted = 0.
+        // Second call is a no-op: both parent and child are already
+        // soft-deleted, and the UPDATE filters by IsDeleted = 0.
         var secondAffected = await _sharing.UnshareAsync("TestLists", listId);
-        Assert.Equal(1, secondAffected);
+        Assert.Equal(0, secondAffected);
     }
 
     private async Task<Guid> SeedListWithChildrenAsync(int itemCount, int noteCount)

@@ -25,6 +25,10 @@ public sealed class ImportReport
     [Key(1)]
     public int RowsSkipped { get; set; }
 
+    /// <summary>Number of tombstone rows (IsDeleted=true) that were hard-deleted from both open and shadow tables.</summary>
+    [Key(3)]
+    public int RowsDeleted { get; set; }
+
     /// <summary>
     /// All errors encountered during import. Empty when the import is fully
     /// successful. Ordered by detection order (batch-level first, then

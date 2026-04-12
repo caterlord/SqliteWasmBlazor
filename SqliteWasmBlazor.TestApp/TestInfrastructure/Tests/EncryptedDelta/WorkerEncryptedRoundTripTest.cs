@@ -98,7 +98,7 @@ internal class WorkerEncryptedRoundTripTest(
             var group = await ctx.ShareGroups.SingleAsync(g =>
                 g.GroupContext == CryptoSyncBootstrap.SystemGroupContext);
             var target = await ctx.ShareTargets.SingleAsync(t =>
-                t.MemberPublicKey == adminX25519PublicKey);
+                t.ShareGroupId == group.Id && t.MemberPublicKey == adminX25519PublicKey);
 
             v2Header = new V2CryptoHeader
             {
@@ -176,7 +176,7 @@ internal class WorkerEncryptedRoundTripTest(
             var group = await ctx.ShareGroups.SingleAsync(g =>
                 g.GroupContext == CryptoSyncBootstrap.SystemGroupContext);
             var target = await ctx.ShareTargets.SingleAsync(t =>
-                t.MemberPublicKey == adminX25519PublicKey);
+                t.ShareGroupId == group.Id && t.MemberPublicKey == adminX25519PublicKey);
 
             v2Header = new V2CryptoHeader
             {
@@ -196,10 +196,9 @@ internal class WorkerEncryptedRoundTripTest(
         // Delete domain items from open table (simulating a fresh peer)
         await using (var ctx = await CryptoFactory.CreateDbContextAsync())
         {
-            ctx.CryptoTestItems.RemoveRange(await ctx.CryptoTestItems.ToListAsync());
-            await ctx.SaveChangesAsync();
+            await ctx.Database.ExecuteSqlRawAsync("DELETE FROM CryptoTestItems");
 
-            if (await ctx.CryptoTestItems.CountAsync() != 0)
+            if (await ctx.CryptoTestItems.IgnoreQueryFilters().CountAsync() != 0)
             {
                 throw new InvalidOperationException("Failed to delete items before import");
             }

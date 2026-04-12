@@ -8,8 +8,14 @@ public abstract class SyncableEntity
 {
     public Guid Id { get; set; }
 
-    /// <summary>Visibility scope — determines who gets the decryption key.</summary>
-    public SharingScope SharingScope { get; set; }
+    /// <summary>
+    /// Visibility scope — determines who gets the decryption key. Defaults
+    /// to <see cref="SharingScope.Client"/> (privacy-by-default): a brand-new
+    /// row is private to the creator's self-group until the caller
+    /// explicitly widens scope to <see cref="SharingScope.Public"/> or
+    /// hands the row to a named <see cref="SharingScope.Shared"/> group.
+    /// </summary>
+    public SharingScope SharingScope { get; set; } = SharingScope.Client;
 
     /// <summary>Scope identifier for key lookup (e.g. "list-{guid}" for a shared shopping list).</summary>
     public string SharingId { get; set; } = "";

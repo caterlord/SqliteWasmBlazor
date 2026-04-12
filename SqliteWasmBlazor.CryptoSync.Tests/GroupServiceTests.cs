@@ -111,12 +111,23 @@ public class GroupServiceTests : IAsyncLifetime
         var crypto = _scenario.Crypto;
         await using var thirdActor = await TestActor.CreateAsync("Charlie", false, 200, crypto);
 
-        // Add Charlie as contact
-        var charlieContact = await _scenario.Admin.Contacts.AddContactAsync(
-            new ContactUserData { Username = "Charlie", Email = "charlie@test.com" },
-            thirdActor.Keys.X25519PublicKey,
-            thirdActor.Keys.Ed25519PublicKey,
-            isTrusted: true);
+        // Add Charlie as contact via direct insert (the full invitation
+        // flow is exercised in ContactInvitationServiceTests).
+        var charlieContact = new TrustedContact
+        {
+            Id = Guid.NewGuid(),
+            Username = "Charlie",
+            Email = "charlie@test.com",
+            X25519PublicKey = thirdActor.Keys.X25519PublicKey,
+            Ed25519PublicKey = thirdActor.Keys.Ed25519PublicKey,
+            IsAdmin = false,
+            IsTrusted = true,
+            UpdatedAt = DateTime.UtcNow,
+            SharingScope = SharingScope.Public,
+            SharingId = CryptoSyncBootstrap.SystemSharingId
+        };
+        _scenario.Admin.Context.Contacts.Add(charlieContact);
+        await _scenario.Admin.Context.SaveChangesAsync();
 
         var adminContact = await _scenario.Admin.Contacts
             .GetByEd25519PublicKeyAsync(_scenario.Admin.Keys.Ed25519PublicKey);

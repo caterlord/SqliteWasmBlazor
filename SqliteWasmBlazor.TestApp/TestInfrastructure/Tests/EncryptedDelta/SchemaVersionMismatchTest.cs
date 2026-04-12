@@ -55,7 +55,7 @@ internal class SchemaVersionMismatchTest(
             var group = await ctx.ShareGroups.SingleAsync(g =>
                 g.GroupContext == CryptoSyncBootstrap.SystemGroupContext);
             var target = await ctx.ShareTargets.SingleAsync(t =>
-                t.MemberPublicKey == CryptoTestContext.AdminX25519PublicKey);
+                t.ShareGroupId == group.Id && t.MemberPublicKey == CryptoTestContext.AdminX25519PublicKey);
 
             v2Header = new V2CryptoHeader
             {
@@ -120,7 +120,7 @@ internal class SchemaVersionMismatchTest(
             var group = await ctx.ShareGroups.SingleAsync(g =>
                 g.GroupContext == CryptoSyncBootstrap.SystemGroupContext);
             var target = await ctx.ShareTargets.SingleAsync(t =>
-                t.MemberPublicKey == CryptoTestContext.AdminX25519PublicKey);
+                t.ShareGroupId == group.Id && t.MemberPublicKey == CryptoTestContext.AdminX25519PublicKey);
 
             v2Header = new V2CryptoHeader
             {

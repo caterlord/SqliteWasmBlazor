@@ -51,7 +51,7 @@
 
     private async Task RunAllTestsAsync()
     {
-        var testFactory = new TestFactory(DbContextFactory, DatabaseService, CryptoFactory, GroupEncryption);
+        var testFactory = new TestFactory(DbContextFactory, DatabaseService, CryptoFactory);
         var tests = testFactory.GetTests().ToList();
 
         _totalTests = tests.Count;

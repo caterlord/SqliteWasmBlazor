@@ -39,17 +39,23 @@ public class SyncGateTests : IDisposable
 
     private async Task<TrustedContact> AddContactAsync(string name, bool isTrusted, string ed25519PublicKey)
     {
-        var contact = await _contacts.AddContactAsync(
-            new ContactUserData { Username = name, Email = $"{name.ToLowerInvariant()}@test.com" },
-            x25519PublicKey: Convert.ToBase64String(new byte[32]),
-            ed25519PublicKey: ed25519PublicKey);
-
-        if (isTrusted)
+        // Direct insert via the context — bypasses ContactInvitationService since
+        // these tests are about SyncGate trust-resolution, not invitation flow.
+        var contact = new TrustedContact
         {
-            await _contacts.TrustAsync(contact.Id);
-            await _context.Entry(contact).ReloadAsync();
-        }
-
+            Id = Guid.NewGuid(),
+            Username = name,
+            Email = $"{name.ToLowerInvariant()}@test.com",
+            X25519PublicKey = Convert.ToBase64String(new byte[32]),
+            Ed25519PublicKey = ed25519PublicKey,
+            IsAdmin = false,
+            IsTrusted = isTrusted,
+            UpdatedAt = DateTime.UtcNow,
+            SharingScope = SharingScope.Public,
+            SharingId = CryptoSyncBootstrap.SystemSharingId
+        };
+        _context.Contacts.Add(contact);
+        await _context.SaveChangesAsync();
         return contact;
     }
 

@@ -157,12 +157,20 @@ public class TwoActorFixtureTests : IAsyncLifetime
     [Fact]
     public async Task User_HasShareTargetForSystemScope_WithViewerRole()
     {
-        var target = await _scenario.User.Context.ShareTargets
-            .SingleAsync(t => t.MemberPublicKey == _scenario.User.Keys.X25519PublicKey);
+        // The user now has TWO ShareTargets: one for the system group
+        // (Viewer role, wrapped by admin) and one for their own self-group
+        // (Owner role, wrapped via self-ECDH on their own device).
+        var systemGroup = await _scenario.User.Context.ShareGroups
+            .SingleAsync(g => g.GroupContext == CryptoSyncBootstrap.SystemGroupContext);
 
-        Assert.Equal(SyncRole.Viewer, target.Role);
-        Assert.NotEmpty(target.WrappedContentKey);
-        Assert.True(target.WrappedContentKey.Length > 12);
+        var systemTarget = await _scenario.User.Context.ShareTargets
+            .SingleAsync(t =>
+                t.MemberPublicKey == _scenario.User.Keys.X25519PublicKey
+                && t.ShareGroupId == systemGroup.Id);
+
+        Assert.Equal(SyncRole.Viewer, systemTarget.Role);
+        Assert.NotEmpty(systemTarget.WrappedContentKey);
+        Assert.True(systemTarget.WrappedContentKey.Length > 12);
     }
 
     [Fact]

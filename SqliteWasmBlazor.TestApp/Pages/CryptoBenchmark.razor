@@ -456,7 +456,8 @@
 
         var group = await ctx.ShareGroups.SingleAsync(g => g.GroupContext == groupContext);
         var target = await ctx.ShareTargets.SingleAsync(t =>
-            t.MemberPublicKey == CryptoTestContext.AdminX25519PublicKey
+            t.ShareGroupId == group.Id
+            && t.MemberPublicKey == CryptoTestContext.AdminX25519PublicKey
             && t.KeyVersion == group.KeyVersion);
 
         return new V2CryptoHeader

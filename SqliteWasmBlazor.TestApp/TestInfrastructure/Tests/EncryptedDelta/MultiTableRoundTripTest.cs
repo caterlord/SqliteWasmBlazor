@@ -145,14 +145,8 @@ internal class MultiTableRoundTripTest(
         // ---------- Clear open + shadow (children first because FK RESTRICT) ----------
         await using (var ctx = await CryptoFactory.CreateDbContextAsync())
         {
-            ctx.CryptoTestListItems.RemoveRange(
-                await ctx.CryptoTestListItems.IgnoreQueryFilters().ToListAsync());
-            await ctx.SaveChangesAsync();
-
-            ctx.CryptoTestLists.RemoveRange(
-                await ctx.CryptoTestLists.IgnoreQueryFilters().ToListAsync());
-            await ctx.SaveChangesAsync();
-
+            await ctx.Database.ExecuteSqlRawAsync("DELETE FROM CryptoTestListItems");
+            await ctx.Database.ExecuteSqlRawAsync("DELETE FROM CryptoTestLists");
             await ctx.Database.ExecuteSqlRawAsync("DELETE FROM _crypto_CryptoTestListItems");
             await ctx.Database.ExecuteSqlRawAsync("DELETE FROM _crypto_CryptoTestLists");
 
@@ -243,7 +237,7 @@ internal class MultiTableRoundTripTest(
         var group = await ctx.ShareGroups.SingleAsync(g =>
             g.GroupContext == CryptoSyncBootstrap.SystemGroupContext);
         var target = await ctx.ShareTargets.SingleAsync(t =>
-            t.MemberPublicKey == CryptoTestContext.AdminX25519PublicKey);
+            t.ShareGroupId == group.Id && t.MemberPublicKey == CryptoTestContext.AdminX25519PublicKey);
 
         return new V2CryptoHeader
         {

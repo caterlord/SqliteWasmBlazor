@@ -72,4 +72,34 @@ public class DeviceIdentityService(CryptoSyncContextBase context)
         var settings = await context.DeviceSettings.FirstOrDefaultAsync();
         return settings?.AdminContactId;
     }
+
+    /// <summary>
+    /// Cache this device's own <see cref="TrustedContact.Id"/> on
+    /// <see cref="DeviceSettings.OwnContactId"/>. Required by the save
+    /// interceptor to resolve "my self-group SharingId" for new
+    /// <see cref="SharingScope.Client"/>-scoped rows. On the admin device
+    /// this is set during bootstrap (admin's own contact id). On a
+    /// non-admin device the app layer calls this after the first sync
+    /// pulls the device's own <see cref="TrustedContact"/> row, matching
+    /// it by X25519 public key.
+    /// </summary>
+    public async ValueTask SetOwnContactIdAsync(Guid contactId)
+    {
+        var settings = await context.DeviceSettings.FirstOrDefaultAsync()
+            ?? throw new InvalidOperationException(
+                "DeviceSettings row not found. Create the device row at first launch before calling SetOwnContactIdAsync.");
+
+        settings.OwnContactId = contactId;
+        await context.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// Get this device's own <see cref="TrustedContact.Id"/>, or <c>null</c>
+    /// if it has not been resolved yet (non-admin device pre-first-sync).
+    /// </summary>
+    public async ValueTask<Guid?> GetOwnContactIdAsync()
+    {
+        var settings = await context.DeviceSettings.FirstOrDefaultAsync();
+        return settings?.OwnContactId;
+    }
 }

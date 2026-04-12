@@ -33,4 +33,13 @@ public sealed class DeviceSettings
     /// system-table owner. Null on the admin device itself.
     /// </summary>
     public Guid? AdminContactId { get; set; }
+
+    /// <summary>
+    /// This device's own <see cref="TrustedContact.Id"/>. Used by the save
+    /// interceptor to resolve "my self-group SharingId" at save time. On the
+    /// admin device this equals the admin contact id (set during bootstrap).
+    /// On a non-admin device the app layer sets this after the first sync
+    /// pulls the device's own contact row (matched by X25519 public key).
+    /// </summary>
+    public Guid? OwnContactId { get; set; }
 }

@@ -86,9 +86,7 @@ internal class CryptoSyncRoundTripTest(
         // ---------- Clear open + shadow for CryptoTestItems ----------
         await using (var ctx = await CryptoFactory.CreateDbContextAsync())
         {
-            ctx.CryptoTestItems.RemoveRange(
-                await ctx.CryptoTestItems.IgnoreQueryFilters().ToListAsync());
-            await ctx.SaveChangesAsync();
+            await ctx.Database.ExecuteSqlRawAsync("DELETE FROM CryptoTestItems");
             await ctx.Database.ExecuteSqlRawAsync("DELETE FROM _crypto_CryptoTestItems");
 
             if (await ctx.CryptoTestItems.IgnoreQueryFilters().CountAsync() != 0)
@@ -175,7 +173,7 @@ internal class CryptoSyncRoundTripTest(
         var group = await ctx.ShareGroups.SingleAsync(g =>
             g.GroupContext == CryptoSyncBootstrap.SystemGroupContext);
         var target = await ctx.ShareTargets.SingleAsync(t =>
-            t.MemberPublicKey == CryptoTestContext.AdminX25519PublicKey);
+            t.ShareGroupId == group.Id && t.MemberPublicKey == CryptoTestContext.AdminX25519PublicKey);
 
         return new V2CryptoHeader
         {

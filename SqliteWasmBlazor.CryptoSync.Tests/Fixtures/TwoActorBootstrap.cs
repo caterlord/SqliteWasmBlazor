@@ -49,86 +49,50 @@ public sealed class TwoActorBootstrap : IAsyncDisposable
             .SingleAsync(t => t.ShareGroupId == systemGroup.Id
                 && t.MemberPublicKey == adminContact.X25519PublicKey);
 
-        // Add user as a trusted contact on admin's side
-        var userContactOnAdmin = await admin.Contacts.AddContactAsync(
+        // Build the user's invitation-acceptance payload on the user's
+        // device (privacy-preserving self-group flow), then have the admin
+        // accept it. This atomically inserts the user TrustedContact, the
+        // user's self-group ShareGroup + ShareTarget, and the admin-wrapped
+        // system-group ShareTarget for the user.
+        var userInvitationOnUser = new ContactInvitationService(user.Context, groupEncryption, crypto);
+        var payload = await userInvitationOnUser.BuildInvitationResponseAsync(
+            user.Keys,
             new ContactUserData
             {
                 Username = userName,
                 Email = $"{userName.ToLowerInvariant()}@test.com"
-            },
-            user.Keys.X25519PublicKey,
-            user.Keys.Ed25519PublicKey);
+            });
 
-        await admin.Contacts.TrustAsync(userContactOnAdmin.Id);
+        var adminInvitation = new ContactInvitationService(admin.Context, groupEncryption, crypto);
+        var userContactOnAdmin = await adminInvitation.AcceptInvitationResponseAsync(
+            admin.Keys,
+            payload,
+            systemRole: SyncRole.Viewer);
+
         await admin.Context.Entry(userContactOnAdmin).ReloadAsync();
 
-        // Issue a ShareTarget for user on the system scope
-        var adminPrivKey = Convert.FromBase64String(admin.Keys.X25519PrivateKey);
-        var adminWrappedCek = CryptoSyncBootstrap.DeserializeWrappedCek(adminTarget.WrappedContentKey);
-        ShareTarget userTargetOnAdmin;
-        try
-        {
-            var addResult = await groupEncryption.AddGroupMembersAsync(
-                adminPrivKey,
-                adminContact.X25519PublicKey,
-                adminWrappedCek,
-                [user.Keys.X25519PublicKey],
-                systemGroup.GroupContext);
+        var userTargetOnAdmin = await admin.Context.ShareTargets
+            .SingleAsync(t => t.ShareGroupId == systemGroup.Id
+                && t.MemberPublicKey == user.Keys.X25519PublicKey);
+        var userSelfGroup = await admin.Context.ShareGroups
+            .SingleAsync(g => g.Id == payload.SelfGroupId);
+        var userSelfTargetOnAdmin = await admin.Context.ShareTargets
+            .SingleAsync(t => t.ShareGroupId == userSelfGroup.Id);
 
-            if (!addResult.Success)
-            {
-                throw new InvalidOperationException(
-                    $"Failed to wrap CEK for user: {addResult.ErrorCode}");
-            }
-
-            var userWrappedKey = addResult.Value![0];
-
-            userTargetOnAdmin = new ShareTarget
-            {
-                Id = Guid.NewGuid(),
-                ShareGroupId = systemGroup.Id,
-                KeyVersion = systemGroup.KeyVersion,
-                MemberPublicKey = user.Keys.X25519PublicKey,
-                WrappedContentKey = CryptoSyncBootstrap.SerializeWrappedCek(userWrappedKey.WrappedContentKey),
-                Role = SyncRole.Viewer,
-                GrantedByContactId = adminContact.Id,
-                UpdatedAt = DateTime.UtcNow,
-                SharingScope = SharingScope.Public,
-                SharingId = CryptoSyncBootstrap.SystemSharingId
-            };
-            admin.Context.ShareTargets.Add(userTargetOnAdmin);
-            await admin.Context.SaveChangesAsync();
-        }
-        finally
-        {
-            System.Security.Cryptography.CryptographicOperations.ZeroMemory(adminPrivKey);
-        }
-
-        // Seed user's DB with rows that would arrive on first sync
-        // Note: user's DB also has the HasData seed, but with admin's test keypair.
-        // For the two-actor test, user needs admin's ACTUAL contact row (matching admin actor's keys).
-        // We need to remove the HasData admin and add the correct one.
-        var hasDataAdmin = await user.Context.Contacts.SingleOrDefaultAsync(c => c.IsAdmin);
-        if (hasDataAdmin is not null)
-        {
-            user.Context.Contacts.Remove(hasDataAdmin);
-        }
-        var hasDataDevice = await user.Context.DeviceSettings.SingleOrDefaultAsync();
-        if (hasDataDevice is not null)
-        {
-            user.Context.DeviceSettings.Remove(hasDataDevice);
-        }
-        var hasDataGroup = await user.Context.ShareGroups.SingleOrDefaultAsync();
-        if (hasDataGroup is not null)
-        {
-            var hasDataTarget = await user.Context.ShareTargets.SingleOrDefaultAsync();
-            if (hasDataTarget is not null)
-            {
-                user.Context.ShareTargets.Remove(hasDataTarget);
-            }
-            user.Context.ShareGroups.Remove(hasDataGroup);
-        }
-        await user.Context.SaveChangesAsync();
+        // Seed user's DB with rows that would arrive on first sync. The
+        // user's DB starts with HasData admin/system-group/self-group seeds
+        // generated with the AdminSeed test keypair — we need to swap those
+        // for rows that use the user actor's real keypair. Use raw SQL DELETE
+        // because the interceptor's Deleted → soft-delete conversion would
+        // otherwise leave the seed rows in the table (just tombstoned), and
+        // the subsequent inserts would collide on primary key.
+        await user.Context.Database.ExecuteSqlRawAsync("DELETE FROM ShareTargets");
+        await user.Context.Database.ExecuteSqlRawAsync("DELETE FROM ShareGroups");
+        await user.Context.Database.ExecuteSqlRawAsync("DELETE FROM Contacts");
+        await user.Context.Database.ExecuteSqlRawAsync("DELETE FROM DeviceSettings");
+        // Detach any tracked seed entities so subsequent Add() calls don't
+        // hit identity-conflict in the change tracker.
+        user.Context.ChangeTracker.Clear();
 
         // Now seed with the actual test data
         user.Context.DeviceSettings.Add(new DeviceSettings
@@ -137,7 +101,8 @@ public sealed class TwoActorBootstrap : IAsyncDisposable
             ClientGuid = Guid.NewGuid().ToString(),
             DeviceName = $"{userName} Device",
             IsAdmin = false,
-            AdminContactId = adminContact.Id
+            AdminContactId = adminContact.Id,
+            OwnContactId = userContactOnAdmin.Id
         });
 
         user.Context.Contacts.Add(new TrustedContact
@@ -182,6 +147,20 @@ public sealed class TwoActorBootstrap : IAsyncDisposable
             SharingId = systemGroup.SharingId
         });
 
+        // Also mirror the user's own self-group rows to user-side so the
+        // interceptor can route Client-scoped writes via OwnContactId.
+        user.Context.ShareGroups.Add(new ShareGroup
+        {
+            Id = userSelfGroup.Id,
+            GroupContext = userSelfGroup.GroupContext,
+            KeyVersion = userSelfGroup.KeyVersion,
+            AdminPublicKey = userSelfGroup.AdminPublicKey,
+            CreatedAt = userSelfGroup.CreatedAt,
+            UpdatedAt = userSelfGroup.UpdatedAt,
+            SharingScope = userSelfGroup.SharingScope,
+            SharingId = userSelfGroup.SharingId
+        });
+
         user.Context.ShareTargets.Add(new ShareTarget
         {
             Id = userTargetOnAdmin.Id,
@@ -194,6 +173,20 @@ public sealed class TwoActorBootstrap : IAsyncDisposable
             UpdatedAt = userTargetOnAdmin.UpdatedAt,
             SharingScope = userTargetOnAdmin.SharingScope,
             SharingId = userTargetOnAdmin.SharingId
+        });
+
+        user.Context.ShareTargets.Add(new ShareTarget
+        {
+            Id = userSelfTargetOnAdmin.Id,
+            ShareGroupId = userSelfTargetOnAdmin.ShareGroupId,
+            KeyVersion = userSelfTargetOnAdmin.KeyVersion,
+            MemberPublicKey = userSelfTargetOnAdmin.MemberPublicKey,
+            WrappedContentKey = userSelfTargetOnAdmin.WrappedContentKey,
+            Role = userSelfTargetOnAdmin.Role,
+            GrantedByContactId = userSelfTargetOnAdmin.GrantedByContactId,
+            UpdatedAt = userSelfTargetOnAdmin.UpdatedAt,
+            SharingScope = userSelfTargetOnAdmin.SharingScope,
+            SharingId = userSelfTargetOnAdmin.SharingId
         });
 
         await user.Context.SaveChangesAsync();

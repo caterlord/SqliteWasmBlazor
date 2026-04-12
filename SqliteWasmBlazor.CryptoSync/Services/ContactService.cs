@@ -3,60 +3,20 @@ using Microsoft.EntityFrameworkCore;
 namespace SqliteWasmBlazor.CryptoSync;
 
 /// <summary>
-/// Manages trusted contacts. System table — only the admin device creates
-/// contacts; other devices receive them via the system-scope sync.
+/// Read-side queries over the trusted-contact table. Contact creation +
+/// trust establishment now lives in <see cref="ContactInvitationService"/>
+/// (the contact's device builds a signed payload, the admin's device
+/// verifies + accepts). What remains here is contact lookups + soft-delete.
 /// </summary>
 public class ContactService(CryptoSyncContextBase context)
 {
     /// <summary>
-    /// Create a new contact. Starts untrusted (<see cref="TrustedContact.IsTrusted"/> = false)
-    /// unless explicitly set — an untrusted contact is a pending invitation.
-    /// </summary>
-    public async ValueTask<TrustedContact> AddContactAsync(
-        ContactUserData userData,
-        string x25519PublicKey,
-        string ed25519PublicKey,
-        bool isAdmin = false,
-        bool isTrusted = false)
-    {
-        var contact = new TrustedContact
-        {
-            Id = Guid.NewGuid(),
-            Username = userData.Username,
-            Email = userData.Email,
-            Comment = userData.Comment,
-            X25519PublicKey = x25519PublicKey,
-            Ed25519PublicKey = ed25519PublicKey,
-            IsAdmin = isAdmin,
-            IsTrusted = isTrusted,
-            UpdatedAt = DateTime.UtcNow,
-            SharingScope = SharingScope.Client,
-            SharingId = string.Empty
-        };
-
-        context.Contacts.Add(contact);
-        await context.SaveChangesAsync();
-        return contact;
-    }
-
-    /// <summary>
-    /// Trust a contact (accept the invitation). Moves the contact to the
-    /// public system scope so it broadcasts to all trusted peers on next sync.
-    /// </summary>
-    public async ValueTask TrustAsync(Guid contactId)
-    {
-        var contact = await context.Contacts.FindAsync(contactId)
-            ?? throw new InvalidOperationException($"Contact {contactId} not found");
-
-        contact.IsTrusted = true;
-        contact.SharingScope = SharingScope.Public;
-        contact.SharingId = CryptoSyncBootstrap.SystemSharingId;
-        contact.UpdatedAt = DateTime.UtcNow;
-        await context.SaveChangesAsync();
-    }
-
-    /// <summary>
-    /// Untrust a contact. Reverts to client-private scope.
+    /// Mark a previously trusted contact as untrusted. Does NOT rewrite
+    /// <see cref="SyncableEntity.SharingId"/> or <see cref="SyncableEntity.SharingScope"/>
+    /// (the immutable-SharingId rule forbids it). Just flips
+    /// <see cref="TrustedContact.IsTrusted"/> = false and bumps
+    /// <see cref="SyncableEntity.UpdatedAt"/>. The interceptor handles the
+    /// timestamp bump automatically.
     /// </summary>
     public async ValueTask UntrustAsync(Guid contactId)
     {
@@ -64,9 +24,6 @@ public class ContactService(CryptoSyncContextBase context)
             ?? throw new InvalidOperationException($"Contact {contactId} not found");
 
         contact.IsTrusted = false;
-        contact.SharingScope = SharingScope.Client;
-        contact.SharingId = string.Empty;
-        contact.UpdatedAt = DateTime.UtcNow;
         await context.SaveChangesAsync();
     }
 

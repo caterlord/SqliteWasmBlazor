@@ -75,7 +75,7 @@
 
             try
             {
-                var testFactory = new TestFactory(_factory, DatabaseService, CryptoFactory, GroupEncryption);
+                var testFactory = new TestFactory(_factory, DatabaseService, CryptoFactory);
                 _tests.AddRange(testFactory.GetTests(TestName, CategoryFilter));
 
                 _running = true;

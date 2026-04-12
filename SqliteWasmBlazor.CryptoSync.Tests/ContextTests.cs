@@ -48,6 +48,21 @@ public class TestListNote : SyncableEntity
 }
 
 /// <summary>
+/// Child entity that declares <c>[InheritPermissions("TestLists")]</c>.
+/// Used by the interceptor parent-inheritance test path: when added without
+/// an explicit <c>SharingId</c>, the interceptor must copy
+/// <c>(SharingScope, SharingId)</c> from the tracked parent <see cref="TestList"/>.
+/// </summary>
+[InheritPermissions("TestLists")]
+public class TestInheritedItem : SyncableEntity
+{
+    public Guid ListId { get; set; }
+    public TestList? List { get; set; }
+
+    public string Label { get; set; } = "";
+}
+
+/// <summary>
 /// Test context that inherits CryptoSyncContextBase — simulates a real app.
 /// Marked partial so the source generator can extend it with
 /// <c>ConfigureCryptoTables</c> (shadow-table EF config).
@@ -59,6 +74,7 @@ public partial class TestSyncContext : CryptoSyncContextBase
     public DbSet<TestList> TestLists => Set<TestList>();
     public DbSet<TestListItem> TestListItems => Set<TestListItem>();
     public DbSet<TestListNote> TestListNotes => Set<TestListNote>();
+    public DbSet<TestInheritedItem> TestInheritedItems => Set<TestInheritedItem>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -72,6 +88,11 @@ public partial class TestSyncContext : CryptoSyncContextBase
         modelBuilder.Entity<TestListNote>()
             .HasOne(n => n.List).WithMany(l => l.Notes)
             .HasForeignKey(n => n.ListId)
+            .OnDelete(DeleteBehavior.Restrict);
+
+        modelBuilder.Entity<TestInheritedItem>()
+            .HasOne(i => i.List).WithMany()
+            .HasForeignKey(i => i.ListId)
             .OnDelete(DeleteBehavior.Restrict);
 
         ConfigureCryptoTables(modelBuilder);

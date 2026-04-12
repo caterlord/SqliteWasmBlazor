@@ -1029,11 +1029,11 @@ export async function bulkImportEncryptedV2(
     const errors: ImportErrorRow[] = [];
     let cek: Uint8Array | null = null;
 
-    const packReport = (imported: number, skipped: number) => ({
+    const packReport = (imported: number, skipped: number, deleted: number = 0) => ({
         rawBinary: true,
         data: pack([imported, skipped, errors.map(e => [
             importErrorCodeToInt(e.code), e.table, e.rowId, e.groupId, e.message
-        ])])
+        ]), deleted])
     });
 
     try {
@@ -1106,7 +1106,7 @@ export async function bulkImportEncryptedV2(
         logger.info(MODULE_NAME,
             `✓ bulkImportEncryptedV2: envelope → ${indexedGroups.length} groups, ${totalImported} imported, ${totalDeleted} deleted, ${totalSkipped} skipped, ${errors.length} errors`);
 
-        return packReport(totalImported, totalSkipped);
+        return packReport(totalImported, totalSkipped, totalDeleted);
     } finally {
         if (cek) { clearBytes(cek); }
     }

@@ -110,15 +110,31 @@ public class CryptoSyncBootstrapTests
         Assert.Equal("TestAdmin", admin.Username);
         Assert.True(admin.IsTrusted);
 
-        var group = await context.ShareGroups.SingleAsync();
-        Assert.Equal(CryptoSyncBootstrap.SystemGroupContext, group.GroupContext);
+        // Bootstrap now seeds the system group AND the admin's self-group.
+        var groups = await context.ShareGroups.OrderBy(g => g.GroupContext).ToListAsync();
+        Assert.Equal(2, groups.Count);
+        var systemGroup = groups.Single(g => g.GroupContext == CryptoSyncBootstrap.SystemGroupContext);
+        var selfGroup = groups.Single(g => g.GroupContext == CryptoSyncBootstrap.BuildSelfGroupContext(admin.Id));
+        Assert.Equal(SharingScope.Public, systemGroup.SharingScope);
+        Assert.Equal(SharingScope.Client, selfGroup.SharingScope);
+        // Both ShareGroup rows route via the system CEK on the wire.
+        Assert.Equal(CryptoSyncBootstrap.SystemSharingId, systemGroup.SharingId);
+        Assert.Equal(CryptoSyncBootstrap.SystemSharingId, selfGroup.SharingId);
 
-        var target = await context.ShareTargets.SingleAsync();
-        Assert.Equal(group.Id, target.ShareGroupId);
-        Assert.True(target.WrappedContentKey.Length > 12);
+        var targets = await context.ShareTargets.ToListAsync();
+        Assert.Equal(2, targets.Count);
+        var systemTarget = targets.Single(t => t.ShareGroupId == systemGroup.Id);
+        var selfTarget = targets.Single(t => t.ShareGroupId == selfGroup.Id);
+        Assert.True(systemTarget.WrappedContentKey.Length > 12);
+        Assert.True(selfTarget.WrappedContentKey.Length > 12);
+        Assert.Equal(SyncRole.Owner, systemTarget.Role);
+        Assert.Equal(SyncRole.Owner, selfTarget.Role);
+        Assert.Equal(admin.X25519PublicKey, systemTarget.MemberPublicKey);
+        Assert.Equal(admin.X25519PublicKey, selfTarget.MemberPublicKey);
 
         var device = await context.DeviceSettings.SingleAsync();
         Assert.True(device.IsAdmin);
         Assert.Equal(admin.Id, device.AdminContactId);
+        Assert.Equal(admin.Id, device.OwnContactId);
     }
 }

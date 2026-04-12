@@ -13,6 +13,19 @@ public class CryptoSyncContextBase : DbContext
     {
     }
 
+    /// <summary>
+    /// Registers the <see cref="CryptoSyncSaveChangesInterceptor"/> on every
+    /// <see cref="CryptoSyncContextBase"/> derivative. Domain contexts that
+    /// override <see cref="OnConfiguring"/> must call
+    /// <c>base.OnConfiguring(optionsBuilder)</c> first to inherit the
+    /// auto-metadata pipeline.
+    /// </summary>
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+    {
+        base.OnConfiguring(optionsBuilder);
+        optionsBuilder.AddInterceptors(new CryptoSyncSaveChangesInterceptor());
+    }
+
     // Contacts
     public DbSet<TrustedContact> Contacts => Set<TrustedContact>();
 

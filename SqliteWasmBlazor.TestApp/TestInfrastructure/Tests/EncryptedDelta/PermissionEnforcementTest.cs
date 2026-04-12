@@ -22,6 +22,7 @@ namespace SqliteWasmBlazor.TestApp.TestInfrastructure.Tests.EncryptedDelta;
 ///   A. Viewer insert denied (new row)
 ///   B. Viewer delete denied (tombstone)
 ///   C. Editor delete denied (tombstone)
+///   C2. Owner delete allowed (soft-delete → hard-delete on receiver)
 ///   D. Editor insert + update allowed
 ///   E. Viewer update denied (changes Price)
 ///   F. Viewer IsBought-only update allowed (readwrite override)
@@ -70,11 +71,11 @@ internal class PermissionEnforcementTest(
             await ClearOpenTable();
             await SetSenderRole(SyncRole.Viewer);
 
-            var (imported, skipped, errors) = await ImportDelta(delta);
+            var report = await ImportDelta(delta);
 
-            AssertEqual(0, imported, "Viewer imported");
-            AssertEqual(2, skipped, "Viewer skipped");
-            AssertEqual(2, errors.Length, "Viewer errors");
+            AssertEqual(0, report.RowsImported, "Viewer imported");
+            AssertEqual(2, report.RowsSkipped, "Viewer skipped");
+            AssertEqual(2, report.Errors.Count, "Viewer errors");
 
             var openCount = await CountOpenTable();
             AssertEqual(0, openCount, "open table after Viewer insert+delete");
@@ -103,16 +104,49 @@ internal class PermissionEnforcementTest(
             await ClearOpenTable();
             await SetSenderRole(SyncRole.Editor);
 
-            var (imported, skipped, errors) = await ImportDelta(delta);
+            var report = await ImportDelta(delta);
 
-            AssertEqual(0, imported, "Editor delete imported");
-            AssertEqual(1, skipped, "Editor delete skipped");
-            AssertEqual(1, errors.Length, "Editor delete errors");
+            AssertEqual(0, report.RowsImported, "Editor delete imported");
+            AssertEqual(1, report.RowsSkipped, "Editor delete skipped");
+            AssertEqual(1, report.Errors.Count, "Editor delete errors");
 
             var shadowCount = await CountShadowTable();
             AssertEqual(0, shadowCount, "shadow table after Editor delete denial");
 
             Console.WriteLine($"[{Name}] Step C OK: Editor delete denied (0 shadow)");
+        }
+
+        // ===== STEP C2: Owner delete allowed (soft-delete → hard-delete) =====
+        Console.WriteLine($"[{Name}] Step C2: Owner delete allowed (tombstone → hard delete)");
+        await ResetDatabase();
+        {
+            var tombstoneId = Guid.NewGuid();
+            await SeedItems(
+                new CryptoTestItem
+                {
+                    Id = tombstoneId, Title = "OwnerDelete", Description = "should be hard-deleted",
+                    Price = 3.50m, IsBought = false,
+                    IsDeleted = true, DeletedAt = DateTime.UtcNow
+                });
+
+            var delta = await ExportDelta();
+            await ClearOpenTable();
+            await SetSenderRole(SyncRole.Owner);
+
+            var report = await ImportDelta(delta);
+
+            AssertEqual(0, report.RowsImported, "Owner delete imported");
+            AssertEqual(0, report.RowsSkipped, "Owner delete skipped");
+            AssertEqual(1, report.RowsDeleted, "Owner delete hard-deleted");
+            AssertEqual(0, report.Errors.Count, "Owner delete errors");
+
+            // Row must be physically absent from both open and shadow tables.
+            var openCount = await CountOpenTable();
+            AssertEqual(0, openCount, "open table after Owner delete");
+            var shadowCount = await CountShadowTable();
+            AssertEqual(0, shadowCount, "shadow table after Owner delete");
+
+            Console.WriteLine($"[{Name}] Step C2 OK: Owner delete applied (0 open, 0 shadow)");
         }
 
         // ===== STEP D: Editor insert + update allowed =====
@@ -131,10 +165,10 @@ internal class PermissionEnforcementTest(
             await ClearOpenTable();
             await SetSenderRole(SyncRole.Editor);
 
-            var (imported, skipped, _) = await ImportDelta(delta);
+            var report = await ImportDelta(delta);
 
-            AssertEqual(1, imported, "Editor insert imported");
-            AssertEqual(0, skipped, "Editor insert skipped");
+            AssertEqual(1, report.RowsImported, "Editor insert imported");
+            AssertEqual(0, report.RowsSkipped, "Editor insert skipped");
 
             // Now update: modify Price, export, revert open table, import as Editor
             await using (var ctx = await CryptoFactory.CreateDbContextAsync())
@@ -155,10 +189,10 @@ internal class PermissionEnforcementTest(
                 await ctx.SaveChangesAsync();
             }
 
-            var (updated, updateSkipped, _) = await ImportDelta(updateDelta);
+            var updateReport = await ImportDelta(updateDelta);
 
-            AssertEqual(1, updated, "Editor update imported");
-            AssertEqual(0, updateSkipped, "Editor update skipped");
+            AssertEqual(1, updateReport.RowsImported, "Editor update imported");
+            AssertEqual(0, updateReport.RowsSkipped, "Editor update skipped");
 
             // Verify the update actually applied
             await using (var ctx = await CryptoFactory.CreateDbContextAsync())
@@ -207,10 +241,10 @@ internal class PermissionEnforcementTest(
 
             // Switch to Viewer, import the update
             await SetSenderRole(SyncRole.Viewer);
-            var (imported, skipped, errors) = await ImportDelta(updateDelta);
+            var report = await ImportDelta(updateDelta);
 
-            AssertEqual(0, imported, "Viewer Price update imported");
-            AssertEqual(1, skipped, "Viewer Price update skipped");
+            AssertEqual(0, report.RowsImported, "Viewer Price update imported");
+            AssertEqual(1, report.RowsSkipped, "Viewer Price update skipped");
 
             // Verify Price unchanged
             await using (var ctx = await CryptoFactory.CreateDbContextAsync())
@@ -258,10 +292,10 @@ internal class PermissionEnforcementTest(
 
             // Switch to Viewer, import — should be allowed (IsBought is readwrite)
             await SetSenderRole(SyncRole.Viewer);
-            var (imported, skipped, _) = await ImportDelta(updateDelta);
+            var report = await ImportDelta(updateDelta);
 
-            AssertEqual(1, imported, "Viewer IsBought update imported");
-            AssertEqual(0, skipped, "Viewer IsBought update skipped");
+            AssertEqual(1, report.RowsImported, "Viewer IsBought update imported");
+            AssertEqual(0, report.RowsSkipped, "Viewer IsBought update skipped");
 
             // Verify IsBought changed
             await using (var ctx = await CryptoFactory.CreateDbContextAsync())
@@ -334,7 +368,7 @@ internal class PermissionEnforcementTest(
         }
     }
 
-    private async ValueTask<(int Imported, int Skipped, ImportError[] Errors)> ImportDelta(byte[] envelopeBytes)
+    private async ValueTask<ImportReport> ImportDelta(byte[] envelopeBytes)
     {
         var v2Header = await BuildV2Header();
         var headerBytes = MessagePackSerializer.Serialize(v2Header);
@@ -349,8 +383,7 @@ internal class PermissionEnforcementTest(
             v2Header.Clear();
         }
 
-        var report = MessagePackSerializer.Deserialize<ImportReport>(reportBytes);
-        return (report.RowsImported, report.RowsSkipped, report.Errors.ToArray());
+        return MessagePackSerializer.Deserialize<ImportReport>(reportBytes);
     }
 
     private async ValueTask<V2CryptoHeader> BuildV2Header()
@@ -359,7 +392,7 @@ internal class PermissionEnforcementTest(
         var group = await ctx.ShareGroups.SingleAsync(g =>
             g.GroupContext == CryptoSyncBootstrap.SystemGroupContext);
         var target = await ctx.ShareTargets.SingleAsync(t =>
-            t.MemberPublicKey == CryptoTestContext.AdminX25519PublicKey);
+            t.ShareGroupId == group.Id && t.MemberPublicKey == CryptoTestContext.AdminX25519PublicKey);
 
         return new V2CryptoHeader
         {
@@ -379,8 +412,10 @@ internal class PermissionEnforcementTest(
     private async ValueTask SetSenderRole(SyncRole role)
     {
         await using var ctx = await CryptoFactory.CreateDbContextAsync();
+        var group = await ctx.ShareGroups.SingleAsync(g =>
+            g.GroupContext == CryptoSyncBootstrap.SystemGroupContext);
         var target = await ctx.ShareTargets.SingleAsync(t =>
-            t.MemberPublicKey == CryptoTestContext.AdminX25519PublicKey);
+            t.ShareGroupId == group.Id && t.MemberPublicKey == CryptoTestContext.AdminX25519PublicKey);
         target.Role = role;
         await ctx.SaveChangesAsync();
     }
@@ -388,10 +423,7 @@ internal class PermissionEnforcementTest(
     private async ValueTask ClearOpenTable()
     {
         await using var ctx = await CryptoFactory.CreateDbContextAsync();
-        var items = await ctx.CryptoTestItems.IgnoreQueryFilters().ToListAsync();
-        ctx.CryptoTestItems.RemoveRange(items);
-        await ctx.SaveChangesAsync();
-        // Also clear shadow table (export writes shadow entries)
+        await ctx.Database.ExecuteSqlRawAsync("DELETE FROM CryptoTestItems");
         await ctx.Database.ExecuteSqlRawAsync("DELETE FROM _crypto_CryptoTestItems");
     }
 

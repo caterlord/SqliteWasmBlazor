@@ -47,7 +47,7 @@ public class GroupServiceTests : IAsyncLifetime
 
         Assert.Equal("shopping-list-1:v1", group.GroupContext);
         Assert.Equal(1, group.KeyVersion);
-        Assert.Equal(_scenario.Admin.Keys.X25519PublicKey, group.AdminPublicKey);
+        Assert.Equal(_scenario.Admin.Keys.X25519PublicKey, group.GroupAdminPublicKey);
 
         var members = await _scenario.Admin.Groups.GetMembersAsync(group.Id);
         Assert.Equal(2, members.Count);
@@ -79,7 +79,7 @@ public class GroupServiceTests : IAsyncLifetime
         // Admin unwraps
         var adminWrapped = CryptoSyncBootstrap.DeserializeWrappedCek(adminTarget.WrappedContentKey);
         var adminWk = await _scenario.Crypto.DeriveWrappingKeyAsync(
-            AdminPrivateKey, group.AdminPublicKey, group.GroupContext);
+            AdminPrivateKey, group.GroupAdminPublicKey, group.GroupContext);
         Assert.True(adminWk.Success);
         var adminCek = await _scenario.Crypto.UnwrapContentKeyAsync(adminWrapped, adminWk.Value!);
         Assert.True(adminCek.Success);
@@ -88,7 +88,7 @@ public class GroupServiceTests : IAsyncLifetime
         var userWrapped = CryptoSyncBootstrap.DeserializeWrappedCek(userTarget.WrappedContentKey);
         var userPrivKey = Convert.FromBase64String(_scenario.User.Keys.X25519PrivateKey);
         var userWk = await _scenario.Crypto.DeriveWrappingKeyAsync(
-            userPrivKey, group.AdminPublicKey, group.GroupContext);
+            userPrivKey, group.GroupAdminPublicKey, group.GroupContext);
         Assert.True(userWk.Success);
         var userCek = await _scenario.Crypto.UnwrapContentKeyAsync(userWrapped, userWk.Value!);
         Assert.True(userCek.Success);
@@ -213,7 +213,7 @@ public class GroupServiceTests : IAsyncLifetime
                 && t.MemberPublicKey == _scenario.Admin.Keys.X25519PublicKey);
         var v1Wrapped = CryptoSyncBootstrap.DeserializeWrappedCek(v1Target.WrappedContentKey);
         var v1Wk = await _scenario.Crypto.DeriveWrappingKeyAsync(
-            AdminPrivateKey, group.AdminPublicKey, "cek-rotate:v1");
+            AdminPrivateKey, group.GroupAdminPublicKey, "cek-rotate:v1");
         var v1Cek = await _scenario.Crypto.UnwrapContentKeyAsync(v1Wrapped, v1Wk.Value!);
 
         // Remove user → rotate
@@ -228,7 +228,7 @@ public class GroupServiceTests : IAsyncLifetime
                 && t.KeyVersion == 2);
         var v2Wrapped = CryptoSyncBootstrap.DeserializeWrappedCek(v2Target.WrappedContentKey);
         var v2Wk = await _scenario.Crypto.DeriveWrappingKeyAsync(
-            AdminPrivateKey, group.AdminPublicKey, group.GroupContext);
+            AdminPrivateKey, group.GroupAdminPublicKey, group.GroupContext);
         var v2Cek = await _scenario.Crypto.UnwrapContentKeyAsync(v2Wrapped, v2Wk.Value!);
 
         // CEKs must differ (rotation generated a new random key)

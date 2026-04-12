@@ -45,7 +45,7 @@ public sealed class AdminSeedData
 /// For production: WebApp calls the same method with PRF-derived keys.
 /// </para>
 /// </summary>
-public class CryptoSyncBootstrap(IGroupEncryption groupEncryption)
+public class CryptoSyncBootstrap(IGroupEncryption groupEncryption, DeclarationSigner signer)
 {
     /// <summary>Well-known group context for the system scope (v1).</summary>
     public const string SystemGroupContext = "system:v1";
@@ -95,6 +95,24 @@ public class CryptoSyncBootstrap(IGroupEncryption groupEncryption)
                 adminPrivateKeyBytes, adminKeys.X25519PublicKey, adminSelfGroupContext);
             var adminSelfWrappedKey = selfBundle.MemberKeys[0];
 
+            // Sign ShareTarget credentials with admin's Ed25519 key.
+            var adminEd25519Priv = Convert.FromBase64String(adminKeys.Ed25519PrivateKey);
+            byte[] systemTargetSig;
+            byte[] selfTargetSig;
+            try
+            {
+                systemTargetSig = await signer.SignShareTargetAsync(
+                    adminEd25519Priv, adminKeys.X25519PublicKey, SyncRole.Owner,
+                    SystemGroupContext, systemBundle.KeyVersion);
+                selfTargetSig = await signer.SignShareTargetAsync(
+                    adminEd25519Priv, adminKeys.X25519PublicKey, SyncRole.Owner,
+                    adminSelfGroupContext, selfBundle.KeyVersion);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(adminEd25519Priv);
+            }
+
             return new AdminSeedData
             {
                 AdminContact = new TrustedContact
@@ -115,7 +133,7 @@ public class CryptoSyncBootstrap(IGroupEncryption groupEncryption)
                     Id = shareGroupId,
                     GroupContext = SystemGroupContext,
                     KeyVersion = systemBundle.KeyVersion,
-                    AdminPublicKey = adminKeys.X25519PublicKey,
+                    GroupAdminPublicKey = adminKeys.X25519PublicKey,
                     CreatedAt = now,
                     UpdatedAt = now,
                     SharingScope = SharingScope.Public,
@@ -129,6 +147,8 @@ public class CryptoSyncBootstrap(IGroupEncryption groupEncryption)
                     MemberPublicKey = adminKeys.X25519PublicKey,
                     WrappedContentKey = SerializeWrappedCek(adminSystemWrappedKey.WrappedContentKey),
                     Role = SyncRole.Owner,
+                    AdminSignature = systemTargetSig,
+                    GroupAdminEd25519PublicKey = adminKeys.Ed25519PublicKey,
                     GrantedByContactId = adminContactId,
                     UpdatedAt = now,
                     SharingScope = SharingScope.Public,
@@ -139,11 +159,9 @@ public class CryptoSyncBootstrap(IGroupEncryption groupEncryption)
                     Id = adminSelfGroupId,
                     GroupContext = adminSelfGroupContext,
                     KeyVersion = selfBundle.KeyVersion,
-                    AdminPublicKey = adminKeys.X25519PublicKey,
+                    GroupAdminPublicKey = adminKeys.X25519PublicKey,
                     CreatedAt = now,
                     UpdatedAt = now,
-                    // Crypto identity is "Client" (private to one device); the
-                    // row itself rides the system-CEK envelope so it can sync.
                     SharingScope = SharingScope.Client,
                     SharingId = SystemSharingId
                 },
@@ -155,6 +173,8 @@ public class CryptoSyncBootstrap(IGroupEncryption groupEncryption)
                     MemberPublicKey = adminKeys.X25519PublicKey,
                     WrappedContentKey = SerializeWrappedCek(adminSelfWrappedKey.WrappedContentKey),
                     Role = SyncRole.Owner,
+                    AdminSignature = selfTargetSig,
+                    GroupAdminEd25519PublicKey = adminKeys.Ed25519PublicKey,
                     GrantedByContactId = adminContactId,
                     UpdatedAt = now,
                     SharingScope = SharingScope.Client,

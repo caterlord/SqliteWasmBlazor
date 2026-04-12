@@ -41,7 +41,7 @@ public class GroupService(CryptoSyncContextBase context, IGroupEncryption groupE
             Id = Guid.NewGuid(),
             GroupContext = groupContext,
             KeyVersion = 1,
-            AdminPublicKey = adminPublicKey,
+            GroupAdminPublicKey = adminPublicKey,
             CreatedAt = DateTime.UtcNow,
             UpdatedAt = DateTime.UtcNow,
             SharingScope = SharingScope.Public,
@@ -87,7 +87,7 @@ public class GroupService(CryptoSyncContextBase context, IGroupEncryption groupE
 
         var adminTarget = await context.ShareTargets
             .FirstOrDefaultAsync(t => t.ShareGroupId == groupId
-                && t.MemberPublicKey == group.AdminPublicKey
+                && t.MemberPublicKey == group.GroupAdminPublicKey
                 && t.KeyVersion == group.KeyVersion)
             ?? throw new InvalidOperationException("Admin's own ShareTarget not found");
 
@@ -95,7 +95,7 @@ public class GroupService(CryptoSyncContextBase context, IGroupEncryption groupE
         var newPubKeys = newMembers.Select(m => m.X25519PublicKey).ToList();
 
         var result = await groupEncryption.AddGroupMembersAsync(
-            adminPrivateKey, group.AdminPublicKey, adminWrappedCek, newPubKeys, group.GroupContext);
+            adminPrivateKey, group.GroupAdminPublicKey, adminWrappedCek, newPubKeys, group.GroupContext);
 
         if (!result.Success)
         {
@@ -160,7 +160,7 @@ public class GroupService(CryptoSyncContextBase context, IGroupEncryption groupE
         var newGroupContext = IncrementGroupContextVersion(group.GroupContext, newKeyVersion);
 
         var result = await groupEncryption.RotateGroupKeyAsync(
-            adminPrivateKey, group.AdminPublicKey, remainingPubKeys, newGroupContext);
+            adminPrivateKey, group.GroupAdminPublicKey, remainingPubKeys, newGroupContext);
 
         if (!result.Success)
         {

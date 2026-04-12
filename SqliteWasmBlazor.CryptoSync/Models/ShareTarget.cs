@@ -52,6 +52,24 @@ public sealed class ShareTarget : SyncableEntity
     /// <summary>Role assigned to this member for this group.</summary>
     public SyncRole Role { get; set; }
 
+    /// <summary>
+    /// Ed25519 signature by the GroupAdmin over the canonical payload
+    /// <c>MemberPublicKey | Role | GroupContext | KeyVersion</c>.
+    /// Constitutes a signed credential: "I, GroupAdmin, grant this key
+    /// this Role in this group at this KeyVersion." Verified at import
+    /// time (Step 2b) against <see cref="GroupAdminEd25519PublicKey"/>.
+    /// </summary>
+    public byte[] AdminSignature { get; set; } = [];
+
+    /// <summary>
+    /// Ed25519 public key (Base64) of the GroupAdmin who signed this
+    /// credential. Denormalized for worker-side verification without
+    /// DB joins. Verified against <see cref="TrustedContact"/> at
+    /// import time (Step 2c) to confirm the signer is trusted.
+    /// </summary>
+    [MaxLength(64)]
+    public string GroupAdminEd25519PublicKey { get; set; } = "";
+
     /// <summary>FK to <see cref="TrustedContact"/> — who granted access.</summary>
     public Guid GrantedByContactId { get; set; }
 

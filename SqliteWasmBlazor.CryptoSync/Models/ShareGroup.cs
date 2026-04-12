@@ -41,11 +41,11 @@ public sealed class ShareGroup : SyncableEntity
     /// <summary>
     /// X25519 public key of the group admin (Base64). ECDH counterparty
     /// for CEK unwrapping — each member does
-    /// <c>deriveWrappingKey(myPrivateKey, adminPublicKey, groupContext)</c>
+    /// <c>deriveWrappingKey(myPrivateKey, groupAdminPublicKey, groupContext)</c>
     /// to derive the wrapping key that unwraps their CEK.
     /// </summary>
     [MaxLength(64)]
-    public required string AdminPublicKey { get; set; }
+    public required string GroupAdminPublicKey { get; set; }
 
     public DateTime CreatedAt { get; set; }
 }

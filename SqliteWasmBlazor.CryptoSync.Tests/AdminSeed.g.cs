@@ -34,14 +34,14 @@ public partial class TestSyncContext
     {
         modelBuilder.Entity<TrustedContact>().HasData(new
         {
-            Id = System.Guid.Parse("d50f504f-520c-44b0-bb2a-46d21387ae98"),
+            Id = System.Guid.Parse("965df86d-4d39-4fef-9f47-9b8a29b6bd95"),
             Username = "TestAdmin",
             Email = "admin@test.local",
             X25519PublicKey = "hsX5Q3fWqD8zyCsMe5PksvoDKUCckQUgYK90hdfxHm4=",
             Ed25519PublicKey = "OBZwE49/GjJM9BteHA/VohAr2v3ScBHgknhQ4F4lJFA=",
             IsAdmin = true,
             IsTrusted = true,
-            UpdatedAt = new System.DateTime(639115398063975130L, System.DateTimeKind.Utc),
+            UpdatedAt = new System.DateTime(639116115066396130L, System.DateTimeKind.Utc),
             SharingScope = SharingScope.Public,
             SharingId = "system",
             IsDeleted = false
@@ -50,24 +50,24 @@ public partial class TestSyncContext
         modelBuilder.Entity<ShareGroup>().HasData(
             new
             {
-                Id = System.Guid.Parse("7a4ff32a-04cd-40f2-96f5-fc929680e376"),
+                Id = System.Guid.Parse("85d2d8b8-ffaf-40a3-846b-a0e6bbb10934"),
                 GroupContext = "system:v1",
                 KeyVersion = 1,
-                AdminPublicKey = "hsX5Q3fWqD8zyCsMe5PksvoDKUCckQUgYK90hdfxHm4=",
-                CreatedAt = new System.DateTime(639115398063975130L, System.DateTimeKind.Utc),
-                UpdatedAt = new System.DateTime(639115398063975130L, System.DateTimeKind.Utc),
+                GroupAdminPublicKey = "hsX5Q3fWqD8zyCsMe5PksvoDKUCckQUgYK90hdfxHm4=",
+                CreatedAt = new System.DateTime(639116115066396130L, System.DateTimeKind.Utc),
+                UpdatedAt = new System.DateTime(639116115066396130L, System.DateTimeKind.Utc),
                 SharingScope = SharingScope.Public,
                 SharingId = "system",
                 IsDeleted = false
             },
             new
             {
-                Id = System.Guid.Parse("635f2a53-0d20-4c56-804a-907f424c46cb"),
-                GroupContext = "self-d50f504f520c44b0bb2a46d21387ae98:v1",
+                Id = System.Guid.Parse("5cb8dce0-a4e7-4a94-9e1b-2ce153629f4c"),
+                GroupContext = "self-965df86d4d394fef9f479b8a29b6bd95:v1",
                 KeyVersion = 1,
-                AdminPublicKey = "hsX5Q3fWqD8zyCsMe5PksvoDKUCckQUgYK90hdfxHm4=",
-                CreatedAt = new System.DateTime(639115398063975130L, System.DateTimeKind.Utc),
-                UpdatedAt = new System.DateTime(639115398063975130L, System.DateTimeKind.Utc),
+                GroupAdminPublicKey = "hsX5Q3fWqD8zyCsMe5PksvoDKUCckQUgYK90hdfxHm4=",
+                CreatedAt = new System.DateTime(639116115066396130L, System.DateTimeKind.Utc),
+                UpdatedAt = new System.DateTime(639116115066396130L, System.DateTimeKind.Utc),
                 SharingScope = SharingScope.Client,
                 SharingId = "system",
                 IsDeleted = false
@@ -76,28 +76,32 @@ public partial class TestSyncContext
         modelBuilder.Entity<ShareTarget>().HasData(
             new
             {
-                Id = System.Guid.Parse("6c4e8c0e-f5c7-4c2f-b6c5-03fb4306f058"),
-                ShareGroupId = System.Guid.Parse("7a4ff32a-04cd-40f2-96f5-fc929680e376"),
+                Id = System.Guid.Parse("33943ebb-9924-4940-b2b6-bf884f498d9c"),
+                ShareGroupId = System.Guid.Parse("85d2d8b8-ffaf-40a3-846b-a0e6bbb10934"),
                 KeyVersion = 1,
                 MemberPublicKey = "hsX5Q3fWqD8zyCsMe5PksvoDKUCckQUgYK90hdfxHm4=",
-                WrappedContentKey = System.Convert.FromBase64String("T6KheBqOHL8uJ9B7idhUeC3rLMoyXGzno0LTtTTAnOuIVJnMhqWmiMEFUG4z89pNhMTWyxoMs8kFeNA3"),
+                WrappedContentKey = System.Convert.FromBase64String("gQHONhYugkiEXIQer/i/pU2fWPwfQ+cOb23VnHqfKaYHES7R9xF/+UWvKWclSY9/lUSa78gF/LTIpndx"),
                 Role = SyncRole.Owner,
-                GrantedByContactId = System.Guid.Parse("d50f504f-520c-44b0-bb2a-46d21387ae98"),
-                UpdatedAt = new System.DateTime(639115398063975130L, System.DateTimeKind.Utc),
+                AdminSignature = System.Convert.FromBase64String("ryoLwPSgB3y/47bNfJ3NlCAdxee9AohC51Bz8by52yKhZdVs8ORXhiK+plBd7jyhZjKfmkoapDr4Y+GcdHlYBg=="),
+                GroupAdminEd25519PublicKey = "OBZwE49/GjJM9BteHA/VohAr2v3ScBHgknhQ4F4lJFA=",
+                GrantedByContactId = System.Guid.Parse("965df86d-4d39-4fef-9f47-9b8a29b6bd95"),
+                UpdatedAt = new System.DateTime(639116115066396130L, System.DateTimeKind.Utc),
                 SharingScope = SharingScope.Public,
                 SharingId = "system",
                 IsDeleted = false
             },
             new
             {
-                Id = System.Guid.Parse("d0d1d0dd-f19e-41e3-bd1f-490b0cec2a9b"),
-                ShareGroupId = System.Guid.Parse("635f2a53-0d20-4c56-804a-907f424c46cb"),
+                Id = System.Guid.Parse("8b4ba125-da2f-4a20-a490-b425ce724021"),
+                ShareGroupId = System.Guid.Parse("5cb8dce0-a4e7-4a94-9e1b-2ce153629f4c"),
                 KeyVersion = 1,
                 MemberPublicKey = "hsX5Q3fWqD8zyCsMe5PksvoDKUCckQUgYK90hdfxHm4=",
-                WrappedContentKey = System.Convert.FromBase64String("XGuyaZvFcEKm0lAfPDkB5naXX+B4FkOxelLFispCBANyzCXbud3Lh3KE2VEY+BfGb+8rMqiUSJlpK9Ne"),
+                WrappedContentKey = System.Convert.FromBase64String("KtXdjdSOEE9a/Qq+3CXw5OC7edgXrLSWFKx5PEktpC2jEn+1Q9gJ6r6oOgmbBuTPIUdT20wTexuaKA6r"),
                 Role = SyncRole.Owner,
-                GrantedByContactId = System.Guid.Parse("d50f504f-520c-44b0-bb2a-46d21387ae98"),
-                UpdatedAt = new System.DateTime(639115398063975130L, System.DateTimeKind.Utc),
+                AdminSignature = System.Convert.FromBase64String("Zz/J7Sx4TXKEkUbpy2XV77tJcMOcrhHBJtnv43cDCHTZVb/45vh4lt+kItjz5Os0mzJf3krnNP9/v/AyRouNBA=="),
+                GroupAdminEd25519PublicKey = "OBZwE49/GjJM9BteHA/VohAr2v3ScBHgknhQ4F4lJFA=",
+                GrantedByContactId = System.Guid.Parse("965df86d-4d39-4fef-9f47-9b8a29b6bd95"),
+                UpdatedAt = new System.DateTime(639116115066396130L, System.DateTimeKind.Utc),
                 SharingScope = SharingScope.Client,
                 SharingId = "system",
                 IsDeleted = false
@@ -105,12 +109,12 @@ public partial class TestSyncContext
 
         modelBuilder.Entity<DeviceSettings>().HasData(new
         {
-            Id = System.Guid.Parse("e1d0e6e6-bb32-4039-9ef0-8ae97d7e9112"),
-            ClientGuid = "ef4b21e7-4640-4746-879c-e5532fb0b06e",
+            Id = System.Guid.Parse("e9645015-cf09-428b-83e3-f4eb9c052a4b"),
+            ClientGuid = "ebb48cab-a71c-4609-a569-2995b636dbfc",
             DeviceName = "Seed Device",
             IsAdmin = true,
-            AdminContactId = System.Guid.Parse("d50f504f-520c-44b0-bb2a-46d21387ae98"),
-            OwnContactId = System.Guid.Parse("d50f504f-520c-44b0-bb2a-46d21387ae98")
+            AdminContactId = System.Guid.Parse("965df86d-4d39-4fef-9f47-9b8a29b6bd95"),
+            OwnContactId = System.Guid.Parse("965df86d-4d39-4fef-9f47-9b8a29b6bd95")
         });
     }
 }

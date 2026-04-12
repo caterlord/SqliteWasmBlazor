@@ -105,7 +105,7 @@ public class SaveChangesInterceptorTests : IDisposable
             Id = Guid.NewGuid(),
             GroupContext = "self-test-system-table:v1",
             KeyVersion = 1,
-            AdminPublicKey = Convert.ToBase64String(new byte[32]),
+            GroupAdminPublicKey = Convert.ToBase64String(new byte[32]),
             CreatedAt = DateTime.UtcNow,
             // Deliberately Client + empty SharingId to confirm the
             // interceptor short-circuits both "leave alone" and "scope route".

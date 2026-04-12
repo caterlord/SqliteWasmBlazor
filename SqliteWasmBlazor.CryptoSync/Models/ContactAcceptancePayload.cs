@@ -61,6 +61,14 @@ public sealed class ContactAcceptancePayload
     [Key(10)] public required byte[] SelfWrappedContentKey { get; init; }
 
     /// <summary>
+    /// Contact's Ed25519 signature over their own self-group ShareTarget
+    /// credential (<c>MemberPublicKey | Role | GroupContext | KeyVersion</c>).
+    /// The contact is the GroupAdmin of their own self-group, so they sign
+    /// this credential. Persisted on the ShareTarget row as <c>AdminSignature</c>.
+    /// </summary>
+    [Key(11)] public required byte[] SelfShareTargetSignature { get; init; }
+
+    /// <summary>
     /// Ed25519 signature over the MessagePack-serialized payload with this
     /// field set to <c>[]</c> at sign time. Verified on accept by the
     /// admin device against <see cref="Ed25519PublicKey"/>.
@@ -68,10 +76,10 @@ public sealed class ContactAcceptancePayload
     /// <para>
     /// <b>INVARIANT:</b> must remain the highest <c>[Key(N)]</c> index on
     /// this type. Canonical signing clears this field, serializes, signs,
-    /// then restores. A new field at <c>[Key(12)]</c> would silently shift
-    /// the canonical bytes and break verification of every prior payload.
+    /// then restores. A new field would silently shift the canonical bytes
+    /// and break verification of every prior payload.
     /// A unit test pins this invariant.
     /// </para>
     /// </summary>
-    [Key(11)] public byte[] AcceptancePayloadSignature { get; set; } = [];
+    [Key(12)] public byte[] AcceptancePayloadSignature { get; set; } = [];
 }

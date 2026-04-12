@@ -51,7 +51,8 @@ public sealed class TestActor : IAsyncDisposable
 
         DeviceIdentity = new DeviceIdentityService(context);
         Contacts = new ContactService(context);
-        Bootstrap = new CryptoSyncBootstrap(new GroupEncryptionService(crypto));
+        var declarationSigner = new DeclarationSigner(crypto);
+        Bootstrap = new CryptoSyncBootstrap(new GroupEncryptionService(crypto), declarationSigner);
         Groups = new GroupService(context, new GroupEncryptionService(crypto));
         Gate = new SyncGate(Contacts);
     }

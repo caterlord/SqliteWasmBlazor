@@ -38,7 +38,8 @@ namespace SqliteWasmBlazor.CryptoSync;
 public class ContactInvitationService(
     CryptoSyncContextBase context,
     IGroupEncryption groupEncryption,
-    ICryptoProvider crypto)
+    ICryptoProvider crypto,
+    DeclarationSigner signer)
 {
     /// <summary>
     /// Contact-side: build a signed acceptance payload for delivery to the
@@ -80,6 +81,21 @@ public class ContactInvitationService(
 
             var wrapped = CryptoSyncBootstrap.SerializeWrappedCek(bundle.MemberKeys[0].WrappedContentKey);
 
+            // Sign the self-ShareTarget credential: contact is the GroupAdmin
+            // of their own self-group, so they sign their own Role grant.
+            var contactEd25519PrivForCred = Convert.FromBase64String(contactKeys.Ed25519PrivateKey);
+            byte[] selfTargetSig;
+            try
+            {
+                selfTargetSig = await signer.SignShareTargetAsync(
+                    contactEd25519PrivForCred, contactKeys.X25519PublicKey,
+                    SyncRole.Owner, selfGroupContext, bundle.KeyVersion);
+            }
+            finally
+            {
+                System.Security.Cryptography.CryptographicOperations.ZeroMemory(contactEd25519PrivForCred);
+            }
+
             var payload = new ContactAcceptancePayload
             {
                 ContactId = contactId,
@@ -91,7 +107,8 @@ public class ContactInvitationService(
                 SelfGroupId = Guid.NewGuid(),
                 SelfGroupContext = selfGroupContext,
                 SelfKeyVersion = bundle.KeyVersion,
-                SelfWrappedContentKey = wrapped
+                SelfWrappedContentKey = wrapped,
+                SelfShareTargetSignature = selfTargetSig
             };
 
             // Sign the canonical bytes (signature field empty), then store
@@ -176,7 +193,7 @@ public class ContactInvitationService(
             Id = payload.SelfGroupId,
             GroupContext = payload.SelfGroupContext,
             KeyVersion = payload.SelfKeyVersion,
-            AdminPublicKey = payload.X25519PublicKey,
+            GroupAdminPublicKey = payload.X25519PublicKey,
             CreatedAt = now,
             UpdatedAt = now,
             SharingScope = SharingScope.Client,
@@ -199,6 +216,8 @@ public class ContactInvitationService(
             MemberPublicKey = payload.X25519PublicKey,
             WrappedContentKey = payload.SelfWrappedContentKey,
             Role = SyncRole.Owner,
+            AdminSignature = payload.SelfShareTargetSignature,
+            GroupAdminEd25519PublicKey = payload.Ed25519PublicKey,
             GrantedByContactId = payload.ContactId,
             UpdatedAt = now,
             SharingScope = SharingScope.Client,
@@ -257,6 +276,20 @@ public class ContactInvitationService(
 
         // 5. Insert the new contact's system-group ShareTarget. Wrapped with
         // the system CEK so the contact can decrypt every existing system row.
+        // Signed by the admin (system group owner) as a credential.
+        var adminEd25519Priv = Convert.FromBase64String(adminKeys.Ed25519PrivateKey);
+        byte[] systemTargetSig;
+        try
+        {
+            systemTargetSig = await signer.SignShareTargetAsync(
+                adminEd25519Priv, payload.X25519PublicKey, systemRole,
+                systemGroup.GroupContext, systemGroup.KeyVersion);
+        }
+        finally
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(adminEd25519Priv);
+        }
+
         var contactSystemTarget = new ShareTarget
         {
             Id = Guid.NewGuid(),
@@ -265,6 +298,8 @@ public class ContactInvitationService(
             MemberPublicKey = payload.X25519PublicKey,
             WrappedContentKey = CryptoSyncBootstrap.SerializeWrappedCek(newMemberWrappedCek.WrappedContentKey),
             Role = systemRole,
+            AdminSignature = systemTargetSig,
+            GroupAdminEd25519PublicKey = adminContact.Ed25519PublicKey,
             GrantedByContactId = adminContact.Id,
             UpdatedAt = now,
             SharingScope = SharingScope.Public,

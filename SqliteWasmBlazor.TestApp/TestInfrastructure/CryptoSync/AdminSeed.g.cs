@@ -34,14 +34,14 @@ public partial class CryptoTestContext
     {
         modelBuilder.Entity<TrustedContact>().HasData(new
         {
-            Id = System.Guid.Parse("868494ad-a945-4466-8f90-ef5b41508bd0"),
+            Id = System.Guid.Parse("218b07af-4923-4f23-afca-d4077ca8b95d"),
             Username = "TestAdmin",
             Email = "admin@test.local",
             X25519PublicKey = "hsX5Q3fWqD8zyCsMe5PksvoDKUCckQUgYK90hdfxHm4=",
             Ed25519PublicKey = "OBZwE49/GjJM9BteHA/VohAr2v3ScBHgknhQ4F4lJFA=",
             IsAdmin = true,
             IsTrusted = true,
-            UpdatedAt = new System.DateTime(639115398305701200L, System.DateTimeKind.Utc),
+            UpdatedAt = new System.DateTime(639116115084816750L, System.DateTimeKind.Utc),
             SharingScope = SharingScope.Public,
             SharingId = "system",
             IsDeleted = false
@@ -50,24 +50,24 @@ public partial class CryptoTestContext
         modelBuilder.Entity<ShareGroup>().HasData(
             new
             {
-                Id = System.Guid.Parse("7bb5c078-718a-47e0-a497-9bc6e3ad56a9"),
+                Id = System.Guid.Parse("1b0b5d43-e5a3-49a1-8b1b-92602532c5c4"),
                 GroupContext = "system:v1",
                 KeyVersion = 1,
-                AdminPublicKey = "hsX5Q3fWqD8zyCsMe5PksvoDKUCckQUgYK90hdfxHm4=",
-                CreatedAt = new System.DateTime(639115398305701200L, System.DateTimeKind.Utc),
-                UpdatedAt = new System.DateTime(639115398305701200L, System.DateTimeKind.Utc),
+                GroupAdminPublicKey = "hsX5Q3fWqD8zyCsMe5PksvoDKUCckQUgYK90hdfxHm4=",
+                CreatedAt = new System.DateTime(639116115084816750L, System.DateTimeKind.Utc),
+                UpdatedAt = new System.DateTime(639116115084816750L, System.DateTimeKind.Utc),
                 SharingScope = SharingScope.Public,
                 SharingId = "system",
                 IsDeleted = false
             },
             new
             {
-                Id = System.Guid.Parse("9853b162-e371-43d9-bfff-244806fb3e44"),
-                GroupContext = "self-868494ada94544668f90ef5b41508bd0:v1",
+                Id = System.Guid.Parse("1a2707fc-4c1a-4a14-9572-c0e042924903"),
+                GroupContext = "self-218b07af49234f23afcad4077ca8b95d:v1",
                 KeyVersion = 1,
-                AdminPublicKey = "hsX5Q3fWqD8zyCsMe5PksvoDKUCckQUgYK90hdfxHm4=",
-                CreatedAt = new System.DateTime(639115398305701200L, System.DateTimeKind.Utc),
-                UpdatedAt = new System.DateTime(639115398305701200L, System.DateTimeKind.Utc),
+                GroupAdminPublicKey = "hsX5Q3fWqD8zyCsMe5PksvoDKUCckQUgYK90hdfxHm4=",
+                CreatedAt = new System.DateTime(639116115084816750L, System.DateTimeKind.Utc),
+                UpdatedAt = new System.DateTime(639116115084816750L, System.DateTimeKind.Utc),
                 SharingScope = SharingScope.Client,
                 SharingId = "system",
                 IsDeleted = false
@@ -76,28 +76,32 @@ public partial class CryptoTestContext
         modelBuilder.Entity<ShareTarget>().HasData(
             new
             {
-                Id = System.Guid.Parse("0847a67c-3669-49c0-a697-1266a783ea86"),
-                ShareGroupId = System.Guid.Parse("7bb5c078-718a-47e0-a497-9bc6e3ad56a9"),
+                Id = System.Guid.Parse("56291c01-e16e-41d2-b978-9332403c3023"),
+                ShareGroupId = System.Guid.Parse("1b0b5d43-e5a3-49a1-8b1b-92602532c5c4"),
                 KeyVersion = 1,
                 MemberPublicKey = "hsX5Q3fWqD8zyCsMe5PksvoDKUCckQUgYK90hdfxHm4=",
-                WrappedContentKey = System.Convert.FromBase64String("m3C2V+5WXucMoj0WuwP2Blv7EkNyDl10S8YFAOi+ulaF0ywQvUJp5xZMGOcr6xzg/RbAQyqv587z1Upy"),
+                WrappedContentKey = System.Convert.FromBase64String("5kBIsSpP5PZ1UolHWpwgYJJa0hFY+smTaYxI7Bkx6y2RoRy4FxmXchtJ4YR4nd0UAagrm/uu4ncpmInn"),
                 Role = SyncRole.Owner,
-                GrantedByContactId = System.Guid.Parse("868494ad-a945-4466-8f90-ef5b41508bd0"),
-                UpdatedAt = new System.DateTime(639115398305701200L, System.DateTimeKind.Utc),
+                AdminSignature = System.Convert.FromBase64String("ryoLwPSgB3y/47bNfJ3NlCAdxee9AohC51Bz8by52yKhZdVs8ORXhiK+plBd7jyhZjKfmkoapDr4Y+GcdHlYBg=="),
+                GroupAdminEd25519PublicKey = "OBZwE49/GjJM9BteHA/VohAr2v3ScBHgknhQ4F4lJFA=",
+                GrantedByContactId = System.Guid.Parse("218b07af-4923-4f23-afca-d4077ca8b95d"),
+                UpdatedAt = new System.DateTime(639116115084816750L, System.DateTimeKind.Utc),
                 SharingScope = SharingScope.Public,
                 SharingId = "system",
                 IsDeleted = false
             },
             new
             {
-                Id = System.Guid.Parse("9f4e4d02-461e-473b-a160-40e1a4e4c592"),
-                ShareGroupId = System.Guid.Parse("9853b162-e371-43d9-bfff-244806fb3e44"),
+                Id = System.Guid.Parse("ee4d51c0-01c5-430d-a789-7f9eda578bac"),
+                ShareGroupId = System.Guid.Parse("1a2707fc-4c1a-4a14-9572-c0e042924903"),
                 KeyVersion = 1,
                 MemberPublicKey = "hsX5Q3fWqD8zyCsMe5PksvoDKUCckQUgYK90hdfxHm4=",
-                WrappedContentKey = System.Convert.FromBase64String("mFNJ8wLOTHxlERxJkc/Wa/RnzDTHoqwbCn0knQBxyIo8lMcE4Mrp83kRehdQTmZs4idOF7GkLsKcvv45"),
+                WrappedContentKey = System.Convert.FromBase64String("OTPzzBYnW3A0Ozvuz5ZGGk+rTrinzoErAKkxL6RJ9vbT7vuGcbUUMieOmpLdul5ny7vH19o2+sj+OoeV"),
                 Role = SyncRole.Owner,
-                GrantedByContactId = System.Guid.Parse("868494ad-a945-4466-8f90-ef5b41508bd0"),
-                UpdatedAt = new System.DateTime(639115398305701200L, System.DateTimeKind.Utc),
+                AdminSignature = System.Convert.FromBase64String("s1YNaqGpZ5Bx3Mwckx6I64SmNJ17qhzWaDr6wZaCLHQVhOdbxWDT0hyBsSnVuLeMZT6CJMZRva4pdFgrPbAXCw=="),
+                GroupAdminEd25519PublicKey = "OBZwE49/GjJM9BteHA/VohAr2v3ScBHgknhQ4F4lJFA=",
+                GrantedByContactId = System.Guid.Parse("218b07af-4923-4f23-afca-d4077ca8b95d"),
+                UpdatedAt = new System.DateTime(639116115084816750L, System.DateTimeKind.Utc),
                 SharingScope = SharingScope.Client,
                 SharingId = "system",
                 IsDeleted = false
@@ -105,12 +109,12 @@ public partial class CryptoTestContext
 
         modelBuilder.Entity<DeviceSettings>().HasData(new
         {
-            Id = System.Guid.Parse("4125451a-be37-4658-9472-fbb317034c6e"),
-            ClientGuid = "da14cd6c-d2d6-46e7-a0f6-7e1f9738e10b",
+            Id = System.Guid.Parse("52a20023-87de-429d-9bd8-765ae04c7875"),
+            ClientGuid = "e6fd3c78-dc09-4588-923a-e57c92dd9a9a",
             DeviceName = "Seed Device",
             IsAdmin = true,
-            AdminContactId = System.Guid.Parse("868494ad-a945-4466-8f90-ef5b41508bd0"),
-            OwnContactId = System.Guid.Parse("868494ad-a945-4466-8f90-ef5b41508bd0")
+            AdminContactId = System.Guid.Parse("218b07af-4923-4f23-afca-d4077ca8b95d"),
+            OwnContactId = System.Guid.Parse("218b07af-4923-4f23-afca-d4077ca8b95d")
         });
     }
 }

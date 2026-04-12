@@ -400,7 +400,7 @@ internal class PermissionEnforcementTest(
             SystemTables = ["Contacts", "ShareGroups", "ShareTargets"],
             ClientContactId = (await ctx.Contacts.SingleAsync(c => c.IsAdmin)).Id,
             ClientX25519PrivateKey = Convert.FromBase64String(CryptoTestContext.AdminX25519PrivateKey),
-            AdminX25519PublicKey = Convert.FromBase64String(group.AdminPublicKey),
+            AdminX25519PublicKey = Convert.FromBase64String(group.GroupAdminPublicKey),
             GroupContext = group.GroupContext,
             KeyVersion = group.KeyVersion,
             WrappedCek = target.WrappedContentKey,

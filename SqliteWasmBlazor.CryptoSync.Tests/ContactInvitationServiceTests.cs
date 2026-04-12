@@ -41,7 +41,7 @@ public class ContactInvitationServiceTests : IAsyncLifetime
         var newUser = await TestActor.CreateAsync("Charlie", isAdmin: false, seedByte: 200, crypto);
         try
         {
-            var service = new ContactInvitationService(newUser.Context, groupEncryption, crypto);
+            var service = new ContactInvitationService(newUser.Context, groupEncryption, crypto, new DeclarationSigner(crypto));
 
             var payload = await service.BuildInvitationResponseAsync(
                 newUser.Keys,
@@ -76,7 +76,7 @@ public class ContactInvitationServiceTests : IAsyncLifetime
         var newUser = await TestActor.CreateAsync("Dave", isAdmin: false, seedByte: 201, crypto);
         try
         {
-            var service = new ContactInvitationService(newUser.Context, groupEncryption, crypto);
+            var service = new ContactInvitationService(newUser.Context, groupEncryption, crypto, new DeclarationSigner(crypto));
 
             var payload = await service.BuildInvitationResponseAsync(
                 newUser.Keys,
@@ -124,7 +124,7 @@ public class ContactInvitationServiceTests : IAsyncLifetime
 
         var userSelfGroup = await _scenario.Admin.Context.ShareGroups
             .SingleAsync(g => g.GroupContext.StartsWith("self-")
-                && g.AdminPublicKey == _scenario.User.Keys.X25519PublicKey);
+                && g.GroupAdminPublicKey == _scenario.User.Keys.X25519PublicKey);
         var userSelfTarget = await _scenario.Admin.Context.ShareTargets
             .SingleAsync(t => t.ShareGroupId == userSelfGroup.Id);
         Assert.Equal(SyncRole.Owner, userSelfTarget.Role);
@@ -139,7 +139,7 @@ public class ContactInvitationServiceTests : IAsyncLifetime
         // because they are [SystemTable]-routed transport rows.
         var userSelfGroup = await _scenario.Admin.Context.ShareGroups
             .SingleAsync(g => g.GroupContext.StartsWith("self-")
-                && g.AdminPublicKey == _scenario.User.Keys.X25519PublicKey);
+                && g.GroupAdminPublicKey == _scenario.User.Keys.X25519PublicKey);
         Assert.Equal(CryptoSyncBootstrap.SystemSharingId, userSelfGroup.SharingId);
         Assert.Equal(SharingScope.Client, userSelfGroup.SharingScope);
 
@@ -158,7 +158,7 @@ public class ContactInvitationServiceTests : IAsyncLifetime
     {
         var userSelfGroup = await _scenario.Admin.Context.ShareGroups
             .SingleAsync(g => g.GroupContext.StartsWith("self-")
-                && g.AdminPublicKey == _scenario.User.Keys.X25519PublicKey);
+                && g.GroupAdminPublicKey == _scenario.User.Keys.X25519PublicKey);
         var userSelfTarget = await _scenario.Admin.Context.ShareTargets
             .SingleAsync(t => t.ShareGroupId == userSelfGroup.Id);
 
@@ -187,7 +187,7 @@ public class ContactInvitationServiceTests : IAsyncLifetime
         // Positive control for the privacy claim — the contact CAN unwrap.
         var userSelfGroup = await _scenario.Admin.Context.ShareGroups
             .SingleAsync(g => g.GroupContext.StartsWith("self-")
-                && g.AdminPublicKey == _scenario.User.Keys.X25519PublicKey);
+                && g.GroupAdminPublicKey == _scenario.User.Keys.X25519PublicKey);
         var userSelfTarget = await _scenario.Admin.Context.ShareTargets
             .SingleAsync(t => t.ShareGroupId == userSelfGroup.Id);
 
@@ -216,7 +216,7 @@ public class ContactInvitationServiceTests : IAsyncLifetime
         var newUser = await TestActor.CreateAsync("Eve", isAdmin: false, seedByte: 210, crypto);
         try
         {
-            var userSvc = new ContactInvitationService(newUser.Context, groupEncryption, crypto);
+            var userSvc = new ContactInvitationService(newUser.Context, groupEncryption, crypto, new DeclarationSigner(crypto));
             var payload = await userSvc.BuildInvitationResponseAsync(
                 newUser.Keys,
                 new ContactUserData { Username = "Eve", Email = "eve@test.com" });
@@ -226,7 +226,7 @@ public class ContactInvitationServiceTests : IAsyncLifetime
                 .GetProperty(nameof(ContactAcceptancePayload.Username))!
                 .SetValue(payload, "Mallory");
 
-            var adminSvc = new ContactInvitationService(_scenario.Admin.Context, groupEncryption, crypto);
+            var adminSvc = new ContactInvitationService(_scenario.Admin.Context, groupEncryption, crypto, new DeclarationSigner(crypto));
             await Assert.ThrowsAsync<InvalidContactSignatureException>(() =>
                 adminSvc.AcceptInvitationResponseAsync(_scenario.Admin.Keys, payload).AsTask());
         }
@@ -244,7 +244,7 @@ public class ContactInvitationServiceTests : IAsyncLifetime
         var newUser = await TestActor.CreateAsync("Frank", isAdmin: false, seedByte: 211, crypto);
         try
         {
-            var userSvc = new ContactInvitationService(newUser.Context, groupEncryption, crypto);
+            var userSvc = new ContactInvitationService(newUser.Context, groupEncryption, crypto, new DeclarationSigner(crypto));
             var payload = await userSvc.BuildInvitationResponseAsync(
                 newUser.Keys,
                 new ContactUserData { Username = "Frank", Email = "frank@test.com" });
@@ -252,7 +252,7 @@ public class ContactInvitationServiceTests : IAsyncLifetime
             // Flip a byte in the signature itself.
             payload.AcceptancePayloadSignature[0] ^= 0xFF;
 
-            var adminSvc = new ContactInvitationService(_scenario.Admin.Context, groupEncryption, crypto);
+            var adminSvc = new ContactInvitationService(_scenario.Admin.Context, groupEncryption, crypto, new DeclarationSigner(crypto));
             await Assert.ThrowsAsync<InvalidContactSignatureException>(() =>
                 adminSvc.AcceptInvitationResponseAsync(_scenario.Admin.Keys, payload).AsTask());
         }
@@ -270,13 +270,13 @@ public class ContactInvitationServiceTests : IAsyncLifetime
         var newUser = await TestActor.CreateAsync("Grace", isAdmin: false, seedByte: 212, crypto);
         try
         {
-            var userSvc = new ContactInvitationService(newUser.Context, groupEncryption, crypto);
+            var userSvc = new ContactInvitationService(newUser.Context, groupEncryption, crypto, new DeclarationSigner(crypto));
             var payload = await userSvc.BuildInvitationResponseAsync(
                 newUser.Keys,
                 new ContactUserData { Username = "Grace", Email = "grace@test.com" });
             payload.AcceptancePayloadSignature = [];
 
-            var adminSvc = new ContactInvitationService(_scenario.Admin.Context, groupEncryption, crypto);
+            var adminSvc = new ContactInvitationService(_scenario.Admin.Context, groupEncryption, crypto, new DeclarationSigner(crypto));
             await Assert.ThrowsAsync<InvalidContactSignatureException>(() =>
                 adminSvc.AcceptInvitationResponseAsync(_scenario.Admin.Keys, payload).AsTask());
         }

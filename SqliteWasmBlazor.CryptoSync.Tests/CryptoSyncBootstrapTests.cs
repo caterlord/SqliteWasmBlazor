@@ -20,7 +20,7 @@ public class CryptoSyncBootstrapTests
     private async Task<(AdminSeedData Seed, BlazorPRF.Crypto.Abstractions.Models.DualKeyPairFull Keys)> CreateSeedAsync()
     {
         var groupEncryption = new GroupEncryptionService(_crypto);
-        var bootstrap = new CryptoSyncBootstrap(groupEncryption);
+        var bootstrap = new CryptoSyncBootstrap(groupEncryption, new DeclarationSigner(_crypto));
 
         var adminSeed = new byte[32];
         for (var i = 0; i < 32; i++) { adminSeed[i] = (byte)(i + 1); }
@@ -54,7 +54,7 @@ public class CryptoSyncBootstrapTests
         Assert.NotEqual(Guid.Empty, seed.SystemGroup.Id);
         Assert.Equal(CryptoSyncBootstrap.SystemGroupContext, seed.SystemGroup.GroupContext);
         Assert.Equal(1, seed.SystemGroup.KeyVersion);
-        Assert.Equal(keys.X25519PublicKey, seed.SystemGroup.AdminPublicKey);
+        Assert.Equal(keys.X25519PublicKey, seed.SystemGroup.GroupAdminPublicKey);
     }
 
     [Fact]
@@ -76,7 +76,7 @@ public class CryptoSyncBootstrapTests
         var wrapped = CryptoSyncBootstrap.DeserializeWrappedCek(seed.AdminShareTarget.WrappedContentKey);
         var adminPrivKey = Convert.FromBase64String(keys.X25519PrivateKey);
         var wrappingKeyResult = await _crypto.DeriveWrappingKeyAsync(
-            adminPrivKey, seed.SystemGroup.AdminPublicKey, seed.SystemGroup.GroupContext);
+            adminPrivKey, seed.SystemGroup.GroupAdminPublicKey, seed.SystemGroup.GroupContext);
         Assert.True(wrappingKeyResult.Success);
 
         var unwrapResult = await _crypto.UnwrapContentKeyAsync(wrapped, wrappingKeyResult.Value!);

@@ -189,7 +189,7 @@ public class TwoActorFixtureTests : IAsyncLifetime
         var adminWrapped = CryptoSyncBootstrap.DeserializeWrappedCek(adminTarget.WrappedContentKey);
         var adminPrivKey = Convert.FromBase64String(_scenario.Admin.Keys.X25519PrivateKey);
         var adminWkResult = await _scenario.Crypto.DeriveWrappingKeyAsync(
-            adminPrivKey, systemGroup.AdminPublicKey, systemGroup.GroupContext);
+            adminPrivKey, systemGroup.GroupAdminPublicKey, systemGroup.GroupContext);
         Assert.True(adminWkResult.Success);
         var adminCekResult = await _scenario.Crypto.UnwrapContentKeyAsync(adminWrapped, adminWkResult.Value!);
         Assert.True(adminCekResult.Success);
@@ -203,7 +203,7 @@ public class TwoActorFixtureTests : IAsyncLifetime
         var userWrapped = CryptoSyncBootstrap.DeserializeWrappedCek(userTarget.WrappedContentKey);
         var userPrivKey = Convert.FromBase64String(_scenario.User.Keys.X25519PrivateKey);
         var userWkResult = await _scenario.Crypto.DeriveWrappingKeyAsync(
-            userPrivKey, userGroup.AdminPublicKey, userGroup.GroupContext);
+            userPrivKey, userGroup.GroupAdminPublicKey, userGroup.GroupContext);
         Assert.True(userWkResult.Success);
         var userCekResult = await _scenario.Crypto.UnwrapContentKeyAsync(userWrapped, userWkResult.Value!);
         Assert.True(userCekResult.Success);

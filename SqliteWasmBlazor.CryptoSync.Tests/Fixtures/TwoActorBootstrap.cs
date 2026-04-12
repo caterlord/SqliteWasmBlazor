@@ -54,7 +54,8 @@ public sealed class TwoActorBootstrap : IAsyncDisposable
         // accept it. This atomically inserts the user TrustedContact, the
         // user's self-group ShareGroup + ShareTarget, and the admin-wrapped
         // system-group ShareTarget for the user.
-        var userInvitationOnUser = new ContactInvitationService(user.Context, groupEncryption, crypto);
+        var declarationSigner = new DeclarationSigner(crypto);
+        var userInvitationOnUser = new ContactInvitationService(user.Context, groupEncryption, crypto, declarationSigner);
         var payload = await userInvitationOnUser.BuildInvitationResponseAsync(
             user.Keys,
             new ContactUserData
@@ -63,7 +64,7 @@ public sealed class TwoActorBootstrap : IAsyncDisposable
                 Email = $"{userName.ToLowerInvariant()}@test.com"
             });
 
-        var adminInvitation = new ContactInvitationService(admin.Context, groupEncryption, crypto);
+        var adminInvitation = new ContactInvitationService(admin.Context, groupEncryption, crypto, declarationSigner);
         var userContactOnAdmin = await adminInvitation.AcceptInvitationResponseAsync(
             admin.Keys,
             payload,
@@ -140,7 +141,7 @@ public sealed class TwoActorBootstrap : IAsyncDisposable
             Id = systemGroup.Id,
             GroupContext = systemGroup.GroupContext,
             KeyVersion = systemGroup.KeyVersion,
-            AdminPublicKey = systemGroup.AdminPublicKey,
+            GroupAdminPublicKey = systemGroup.GroupAdminPublicKey,
             CreatedAt = systemGroup.CreatedAt,
             UpdatedAt = systemGroup.UpdatedAt,
             SharingScope = systemGroup.SharingScope,
@@ -154,7 +155,7 @@ public sealed class TwoActorBootstrap : IAsyncDisposable
             Id = userSelfGroup.Id,
             GroupContext = userSelfGroup.GroupContext,
             KeyVersion = userSelfGroup.KeyVersion,
-            AdminPublicKey = userSelfGroup.AdminPublicKey,
+            GroupAdminPublicKey = userSelfGroup.GroupAdminPublicKey,
             CreatedAt = userSelfGroup.CreatedAt,
             UpdatedAt = userSelfGroup.UpdatedAt,
             SharingScope = userSelfGroup.SharingScope,

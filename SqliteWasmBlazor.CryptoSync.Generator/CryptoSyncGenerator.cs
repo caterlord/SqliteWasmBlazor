@@ -865,6 +865,47 @@ public class CryptoSyncGenerator : IIncrementalGenerator
 
         sb.AppendLine("        );");
         sb.AppendLine("    }");
+        sb.AppendLine();
+
+        // Static accessor for the AdminSeed tool — same data, no ModelBuilder needed.
+        sb.AppendLine("    /// <summary>");
+        sb.AppendLine("    /// Returns domain permission seed data as an array. Used by the AdminSeed");
+        sb.AppendLine("    /// tool to compute the permission table hash without a DB instance.");
+        sb.AppendLine("    /// </summary>");
+        sb.AppendLine("    public static SqliteWasmBlazor.CryptoSync.SyncPermission[] GetDomainPermissions()");
+        sb.AppendLine("    {");
+        sb.AppendLine("        return");
+        sb.AppendLine("        [");
+
+        for (var j = 0; j < seedRows.Count; j++)
+        {
+            var p = seedRows[j];
+            byte[] h2;
+            using (var sha2 = System.Security.Cryptography.SHA256.Create())
+            {
+                h2 = sha2.ComputeHash(Encoding.UTF8.GetBytes($"DomainPermission:{p.Role}:{p.TableName}"));
+            }
+            var gb2 = new byte[16];
+            Array.Copy(h2, gb2, 16);
+            var g2 = new Guid(gb2);
+
+            sb.Append($"            new SqliteWasmBlazor.CryptoSync.SyncPermission {{ Id = System.Guid.Parse(\"{g2}\"), ");
+            sb.Append($"Role = (SqliteWasmBlazor.CryptoSync.SyncRole){p.Role}, ");
+            sb.Append($"TableName = \"{p.TableName}\", ");
+            sb.Append($"CanInsert = {(p.CanInsert ? "true" : "false")}, ");
+            sb.Append($"CanRead = {(p.CanRead ? "true" : "false")}, ");
+            sb.Append($"CanUpdate = {(p.CanUpdate ? "true" : "false")}, ");
+            sb.Append($"CanDelete = {(p.CanDelete ? "true" : "false")}, ");
+            sb.Append($"ReadonlyColumns = \"{p.ReadonlyColumns}\", ");
+            sb.Append($"ReadwriteColumns = \"{p.ReadwriteColumns}\", ");
+            sb.Append($"SharingScope = SqliteWasmBlazor.CryptoSync.SharingScope.PUBLIC, SharingId = \"system\", ");
+            sb.Append($"UpdatedAt = new System.DateTime(2026, 1, 1, 0, 0, 0, System.DateTimeKind.Utc)");
+            sb.Append(" }");
+            sb.AppendLine(j < seedRows.Count - 1 ? "," : "");
+        }
+
+        sb.AppendLine("        ];");
+        sb.AppendLine("    }");
         sb.AppendLine("}");
 
         return sb.ToString();

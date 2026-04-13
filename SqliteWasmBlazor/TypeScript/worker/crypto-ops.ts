@@ -40,6 +40,7 @@ import {
     clearBytes,
     type SymmetricEncryptedData
 } from '@blazorprf/crypto-core';
+import { sha256 } from '@blazorprf/crypto-core';
 import { openDatabases, sqlite3, bigIntUnpackr, MODULE_NAME } from './worker-state';
 import { convertValueForSqlite, convertValueFromSqlite } from './type-conversion';
 import { bulkInsertRows } from './bulk-ops';
@@ -299,6 +300,104 @@ function verifyGroupAdminIsTrusted(db: any, groupAdminEd25519PublicKeyBase64: st
     return rows && rows.length > 0;
 }
 
+/**
+ * Session cache for permission table signature verification (Step 2d).
+ * Once verified, the result is cached for the lifetime of the worker.
+ * Reset on worker restart (page reload).
+ */
+let permissionTableVerified: boolean | null = null;
+
+/**
+ * Verify the permission table signature (Step 2d). Reads PermissionTableSignature
+ * row, recomputes the canonical SHA-256 hash over all Permissions rows, verifies
+ * the hash matches and the Admin's Ed25519 signature is valid.
+ *
+ * Canonical format matches C# PermissionTableHash.Compute():
+ * Rows sorted by (TableName, Role), each: `TableName|Role|CanInsert|CanRead|CanUpdate|CanDelete|ReadonlyColumns|ReadwriteColumns\n`
+ */
+function verifyPermissionTableSignature(db: any): boolean {
+    // Return cached result if already verified this session
+    if (permissionTableVerified !== null) {
+        return permissionTableVerified;
+    }
+
+    // Read the signature row
+    const sigRows = db.exec({
+        sql: `SELECT PermissionHash, AdminSignature, AdminEd25519PublicKey FROM PermissionSignatures LIMIT 1`,
+        returnValue: 'resultRows',
+        rowMode: 'array'
+    }) as any[][];
+
+    if (!sigRows || sigRows.length === 0) {
+        logger.warn(MODULE_NAME, 'verifyPermissionTableSignature: no PermissionTableSignature row found');
+        permissionTableVerified = false;
+        return false;
+    }
+
+    const storedHash = sigRows[0][0] as Uint8Array;
+    const adminSignature = sigRows[0][1] as Uint8Array;
+    const adminEd25519PubBase64 = sigRows[0][2] as string;
+
+    // Read all permission rows, sorted canonically
+    const permRows = db.exec({
+        sql: `SELECT TableName, Role, CanInsert, CanRead, CanUpdate, CanDelete, ReadonlyColumns, ReadwriteColumns
+              FROM Permissions ORDER BY TableName, Role`,
+        returnValue: 'resultRows',
+        rowMode: 'array'
+    }) as any[][];
+
+    if (!permRows || permRows.length === 0) {
+        logger.warn(MODULE_NAME, 'verifyPermissionTableSignature: no Permissions rows found');
+        permissionTableVerified = false;
+        return false;
+    }
+
+    // Compute canonical hash — must match C# PermissionTableHash.Compute()
+    let canonical = '';
+    for (const row of permRows) {
+        const tableName = row[0] as string;
+        const role = row[1] as number;
+        const canInsert = row[2] ? '1' : '0';
+        const canRead = row[3] ? '1' : '0';
+        const canUpdate = row[4] ? '1' : '0';
+        const canDelete = row[5] ? '1' : '0';
+        const readonlyCols = (row[6] as string) ?? '';
+        const readwriteCols = (row[7] as string) ?? '';
+        canonical += `${tableName}|${role}|${canInsert}|${canRead}|${canUpdate}|${canDelete}|${readonlyCols}|${readwriteCols}\n`;
+    }
+
+    const computedHash = sha256(new TextEncoder().encode(canonical));
+
+    // Compare hashes
+    if (storedHash.length !== computedHash.length) {
+        logger.warn(MODULE_NAME, 'verifyPermissionTableSignature: hash length mismatch');
+        permissionTableVerified = false;
+        return false;
+    }
+    for (let i = 0; i < storedHash.length; i++) {
+        if (storedHash[i] !== computedHash[i]) {
+            logger.warn(MODULE_NAME, 'verifyPermissionTableSignature: hash mismatch — permission table tampered');
+            permissionTableVerified = false;
+            return false;
+        }
+    }
+
+    // Verify Admin's Ed25519 signature over the hash
+    const hashBase64 = btoa(Array.from(computedHash).map(b => String.fromCharCode(b)).join(''));
+    const messageBytes = new TextEncoder().encode(hashBase64);
+    const pubKeyBytes = Uint8Array.from(atob(adminEd25519PubBase64), c => c.charCodeAt(0));
+
+    if (!ed25519Verify(adminSignature, messageBytes, pubKeyBytes)) {
+        logger.warn(MODULE_NAME, 'verifyPermissionTableSignature: Admin signature invalid');
+        permissionTableVerified = false;
+        return false;
+    }
+
+    logger.info(MODULE_NAME, `✓ Permission table verified: ${permRows.length} rows, signature valid`);
+    permissionTableVerified = true;
+    return true;
+}
+
 interface ParsedPermissions {
     insertDenied: boolean;
     updateDenied: boolean;
@@ -384,6 +483,12 @@ function resolveSenderPermissions(
     // Step 2c: Verify the GroupAdmin who signed this credential is a trusted contact.
     if (!verifyGroupAdminIsTrusted(db, groupAdminEd25519PubKey)) {
         logger.warn(MODULE_NAME, `resolveSenderPermissions: GroupAdmin ${groupAdminEd25519PubKey.substring(0, 12)}… is not a trusted contact`);
+        return null;
+    }
+
+    // Step 2d: Verify permission table integrity before consulting it.
+    if (!verifyPermissionTableSignature(db)) {
+        logger.warn(MODULE_NAME, `resolveSenderPermissions: permission table signature invalid — rejecting`);
         return null;
     }
 

@@ -49,6 +49,7 @@ public abstract class CryptoSyncContextBase : DbContext
 
     // Permissions (compile-time schema, seeded via HasData)
     public DbSet<SyncPermission> Permissions => Set<SyncPermission>();
+    public DbSet<PermissionTableSignature> PermissionSignatures => Set<PermissionTableSignature>();
 
     // Schema metadata (seeded by generator, queried by worker at import time)
     public DbSet<ColumnRegistryEntry> ColumnRegistry => Set<ColumnRegistryEntry>();
@@ -116,28 +117,39 @@ public abstract class CryptoSyncContextBase : DbContext
             entity.HasKey(e => e.Id);
         });
 
+        modelBuilder.Entity<PermissionTableSignature>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+        });
+
         SeedSystemTablePermissions(modelBuilder);
     }
 
     private static void SeedSystemTablePermissions(ModelBuilder modelBuilder)
     {
-        var systemTables = new[] { "Contacts", "ShareGroups", "ShareTargets" };
+        modelBuilder.Entity<SyncPermission>().HasData(GetSystemPermissions());
+    }
 
+    /// <summary>
+    /// Returns the hardcoded system-table permission rows. Used by both
+    /// HasData seeding and the AdminSeed tool for permission table hash.
+    /// </summary>
+    public static SyncPermission[] GetSystemPermissions()
+    {
+        var systemTables = new[] { "Contacts", "ShareGroups", "ShareTargets" };
         var seeds = new List<SyncPermission>();
 
         foreach (var table in systemTables)
         {
-            // Owner: full CRUD on system tables
             seeds.Add(CreateSystemPermission(table, SyncRole.OWNER,
                 canInsert: true, canRead: true, canUpdate: true, canDelete: true));
-            // Editor/Viewer: read-only on system tables
             seeds.Add(CreateSystemPermission(table, SyncRole.EDITOR,
                 canInsert: false, canRead: true, canUpdate: false, canDelete: false));
             seeds.Add(CreateSystemPermission(table, SyncRole.VIEWER,
                 canInsert: false, canRead: true, canUpdate: false, canDelete: false));
         }
 
-        modelBuilder.Entity<SyncPermission>().HasData(seeds);
+        return seeds.ToArray();
     }
 
     private static SyncPermission CreateSystemPermission(
@@ -159,7 +171,7 @@ public abstract class CryptoSyncContextBase : DbContext
         };
     }
 
-    internal static Guid DeterministicGuid(string input)
+    public static Guid DeterministicGuid(string input)
     {
         var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(input));
         var guidBytes = new byte[16];

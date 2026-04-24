@@ -2,10 +2,10 @@
 
 At-rest encryption for SqliteWasmBlazor databases stored in OPFS. Every
 SQLite page is encrypted with ChaCha20-Poly1305 using a 32-byte key
-supplied either directly (PRF-derived by the caller) or via a user
-password (Argon2id-derived). Non-encrypted consumers are unaffected —
-the same VFS serves both paths and falls through to byte-for-byte vendor
-SAHPool behavior when no key is registered.
+supplied by the caller (typically PRF-derived via BlazorPRF's
+`DeriveDomainKeyAsync`). Non-encrypted consumers are unaffected — the
+same VFS falls through to byte-for-byte vendor SAHPool behavior when
+no key is registered.
 
 ## Why
 
@@ -39,12 +39,10 @@ policy, code review).
 | Role                          | Primitive                        | Standard / reference |
 |-------------------------------|----------------------------------|---------------------|
 | Page AEAD                     | ChaCha20-Poly1305                | RFC 8439            |
-| Password KDF (optional)       | Argon2id                         | RFC 9106            |
 | Nonce source                  | `crypto.getRandomValues` (CSPRNG)| Web Crypto          |
 | Key length                    | 256 bits (32 bytes)              | —                   |
 | Nonce length                  | 96 bits (12 bytes)               | per RFC 8439        |
 | AEAD tag                      | 128 bits (16 bytes)              | per RFC 8439        |
-| Argon2id parameters (default) | t=3, m=19 MiB, p=1               | OWASP PSH 2026 min  |
 
 All crypto flows through `@blazorprf/crypto-core`, which wraps
 `@awasm/noble` (WASM-SIMD implementations by Paul Miller) on the
@@ -104,7 +102,7 @@ physical    = slotIndex * 4124 + (logicalOffset mod 4096)
 report the logical size SQLite expects; `xTruncate` does the reverse.
 The SAHPool per-file 4096-byte header region at file offset 0 is outside
 the encrypted region and still holds the vendor's path/flags/digest
-metadata (plus our salt block — see below).
+metadata.
 
 Because the envelope applies uniformly to any byte offset the VFS sees,
 WAL frames (`[24B frame header][4096B page]` at unaligned offsets) and
@@ -195,72 +193,6 @@ Zeroization touchpoints:
 - Worker `plaintextScratch.fill(0)` zeros the per-op plaintext scratch
   after every `encryptedRead` / `encryptedWrite`.
 
-## Password-based encryption
-
-The `UseSqliteWasmPassword(cs, password)` extension routes through a
-parallel path that derives the 32-byte key inside the worker via
-Argon2id over a per-DB random salt persisted in the SAHPool per-file
-header region:
-
-```
-User-supplied password (byte[])
-   │
-   ▼
-SqliteWasmConnection.EncryptionPassword = pwBytes
-   │
-   ▼
-bridge.OpenDatabaseWithPasswordAsync
-   │   VfsPasswordHeader { Version=1, Password=bytes, AadVersion="v1" }
-   │   MessagePack serialize → worker (via binaryPayload)
-   │   finally: ZeroMemory(serializedBytes); header.Clear()
-   ▼
-Worker 'openWithPassword' handler
-   │   unpackVfsPasswordHeader → password (Uint8Array)
-   │   getSaltBlock(dbPath)         ← read from SAHPool header offset 524
-   │   if missing: generate random salt, setSaltBlock(dbPath, block)
-   │   deriveKeyFromPassword(password, salt, {t, m, p=1})  ← Argon2id
-   │   clearBytes(password)         ← zero the unpacked buffer
-   │   → openDatabase(dbName, derivedKey)   ← falls into the key path above
-```
-
-### Salt block
-
-Stored in SAHPool's per-file 4096-byte header, starting at offset 524
-(immediately after the vendor's path+flags+digest region). Layout:
-
-```
-offset 0..3    "PSLT" magic
-offset 4..7    version (uint32 LE)
-offset 8..23   16-byte salt
-offset 24..27  Argon2id t  (uint32 LE)
-offset 28..31  Argon2id m  (uint32 LE, memory in KiB)
-```
-
-- Written exactly once per DB at creation (no in-place salt rotation —
-  changing the password requires full re-encryption, future work).
-- Cleared when a SAHPool slot is returned to the pool (disassociation)
-  so a reused slot never inherits a stale salt.
-- `getSaltBlock` applies DoS bounds on the persisted `t` and `m`
-  (`t ≤ 50`, `m ≤ 1 GiB`) to reject hostile bytes that would block the
-  browser on derivation.
-
-### Argon2id parameters
-
-Defaults come from `@blazorprf/crypto-core`'s
-`DEFAULT_PASSWORD_KDF_PARAMS` and match OWASP Password Storage Cheat
-Sheet 2026 minimums for interactive login:
-
-| Param                | Value    | OWASP 2026 min |
-|----------------------|----------|----------------|
-| t (iterations)       | 3        | 2              |
-| m (memory, KiB)      | 19 456 (19 MiB) | 19 456 |
-| p (parallelism)      | 1        | 1              |
-| dkLen                | 32       | —              |
-
-Derivation takes roughly 200–600 ms on modern desktops and phones.
-Parameters are persisted in the salt block so a future default bump
-does not break existing DBs.
-
 ## SQLite storage pragmas on encrypted DBs
 
 | PRAGMA              | Value      | Why                                                              |
@@ -306,24 +238,20 @@ Both are exercised by the TestApp's `VFS_ModeMismatch` integration test.
 
 Three layers:
 
-1. **Unit** — `@blazorprf/crypto-core` vitest: Argon2id defaults,
-   round-trips, wrong-password sensitivity.
-2. **Integration (envelope)** — `SqliteWasmBlazor/TypeScript/worker/vfs-prf/__tests__/envelope.test.ts`
+1. **Integration (envelope)** — `SqliteWasmBlazor/TypeScript/worker/vfs-prf/__tests__/envelope.test.ts`
    (vitest): page-level AEAD round-trip, wrong key, AAD swap detection,
-   tamper detection, nonce uniqueness, password derivation end-to-end.
-3. **Cross-library** — `SqliteWasmBlazor.CryptoSync.Tests/PrfVfsEnvelopeTests.cs`
+   tamper detection, nonce uniqueness, physical slot layout.
+2. **Cross-library** — `SqliteWasmBlazor.CryptoSync.Tests/PrfVfsEnvelopeTests.cs`
    (xUnit + BouncyCastle): AAD bytes produced in C# match the worker's
-   construction, BouncyCastle's ChaCha20-Poly1305 + Argon2id produce
-   byte-identical output for shared inputs with `@awasm/noble`,
-   envelope types (VfsKeyHeader, VfsPasswordHeader) serialize and
-   zeroize as declared.
-4. **End-to-end (browser)** — `SqliteWasmBlazor.TestApp` under the "VFS
-   Encryption" category and the `/password-test` page: full SQL
-   round-trips through real OPFS SAHPool, on-disk-ciphertext
-   verification, plain pass-through regression, wrong-key failure,
-   tamper detection, mode mismatch, physical-slot layout invariant
-   (`VFS_PhysicalLayout`: exported size = N × 4124), perf smoke,
-   password-form create/reopen/wrong/reopen cycle.
+   construction, BouncyCastle's ChaCha20-Poly1305 produces byte-identical
+   output for shared inputs with `@awasm/noble`, `VfsKeyHeader`
+   serializes and zeroizes as declared.
+3. **End-to-end (browser)** — `SqliteWasmBlazor.TestApp` under the "VFS
+   Encryption" category: full SQL round-trips through real OPFS SAHPool,
+   on-disk-ciphertext verification, plain pass-through regression,
+   wrong-key failure, tamper detection, mode mismatch, physical-slot
+   layout invariant (`VFS_PhysicalLayout`: exported size = N × 4124),
+   perf smoke.
 
 ## Known limitations
 
@@ -366,8 +294,8 @@ in depth:
   hours).
 - Keys are held only for the DB's open lifetime and wiped with
   `clearBytes` on close.
-- The MessagePack envelope buffers that carried keys/passwords from
-  C# are zeroed after `postMessage` returns.
+- The MessagePack envelope buffers that carried keys from C# are
+  zeroed after `postMessage` returns.
 
 A complete heap dump of the running worker still exposes currently-
 mounted keys; the platform offers no user-space enclave to hide them.
@@ -387,11 +315,12 @@ Net: more files exist on disk than under a hypothetical
 every byte is authenticated ciphertext, so the crash-safety tradeoff
 favors this design.
 
-### Password change (future work)
+### Key rotation (future work)
 
-Changing the password requires re-encrypting every page under the new
-key. Not yet implemented — current flows are wipe + recreate. Tracked
-as a follow-up `rotateVfsKey(old, new)` worker operation.
+Changing the DB's encryption key requires re-encrypting every page
+under the new key. Not yet implemented — current flows are wipe +
+recreate. Tracked as a follow-up `rotateVfsKey(old, new)` worker
+operation.
 
 ### Multi-tab concurrency (unchanged from vendor)
 
@@ -405,10 +334,7 @@ encryption layer does not introduce new concurrency concerns.
 | AEAD cipher (ChaCha20-Poly1305)               | ✓      |
 | Random per-write nonce                        | ✓      |
 | AAD binds dbPath + slotIndex                  | ✓      |
-| Password KDF (Argon2id at OWASP 2026 minimum) | ✓      |
-| Per-DB random salt                            | ✓      |
-| Salt DoS bounds (`t`, `m`)                    | ✓      |
-| Envelope versioning (VfsKeyHeader, SaltBlock) | ✓      |
+| Envelope versioning (VfsKeyHeader)            | ✓      |
 | C# serialized-buffer zeroization              | ✓      |
 | Worker plaintext-scratch zeroization          | ✓      |
 | Worker key-registry wipe on close             | ✓      |
@@ -423,11 +349,9 @@ encryption layer does not introduce new concurrency concerns.
 - `SqliteWasmBlazor/TypeScript/worker/vfs-prf/sahpool-prf-vfs.ts` — forked SAHPool VFS with conditional ChaCha20-Poly1305.
 - `SqliteWasmBlazor/TypeScript/worker/vfs-prf/aad.ts` — AAD byte-layout builder.
 - `SqliteWasmBlazor/TypeScript/worker/vfs-prf/key-registry.ts` — per-path key lifecycle.
-- `SqliteWasmBlazor/TypeScript/worker/sqlite-worker.ts` — `openDatabase` / `openDatabaseWithPassword` entry points, `unpackVfsKeyHeader` / `unpackVfsPasswordHeader`.
-- `SqliteWasmBlazor/Services/VfsKeyHeader.cs`, `VfsPasswordHeader.cs` — C# envelopes with `Clear()` zeroization.
-- `SqliteWasmBlazor/Services/SqliteWasmWorkerBridge.cs` — `OpenDatabaseAsync(db, key, ct)` and `OpenDatabaseWithPasswordAsync(db, password, ct)`.
-- `SqliteWasmBlazor/Ado/SqliteWasmConnection.cs` — `EncryptionKey` / `EncryptionPassword` properties.
-- `SqliteWasmBlazor/Extensions/SqliteWasmDbContextOptionsExtensions.cs` — `UseSqliteWasm(cs, key)` and `UseSqliteWasmPassword(cs, password)` helpers.
-- `BlazorPRF.Crypto/TypeScript/packages/crypto-core/src/passwordKdf.ts` — `deriveKeyFromPassword` and `DEFAULT_PASSWORD_KDF_PARAMS`.
+- `SqliteWasmBlazor/TypeScript/worker/sqlite-worker.ts` — `openDatabase` entry point, `unpackVfsKeyHeader`.
+- `SqliteWasmBlazor/Services/VfsKeyHeader.cs` — C# envelope with `Clear()` zeroization.
+- `SqliteWasmBlazor/Services/SqliteWasmWorkerBridge.cs` — `OpenDatabaseAsync(db, key, ct)`.
+- `SqliteWasmBlazor/Ado/SqliteWasmConnection.cs` — `EncryptionKey` property.
+- `SqliteWasmBlazor/Extensions/SqliteWasmDbContextOptionsExtensions.cs` — `UseSqliteWasm(cs, key)` helper.
 - `BlazorPRF.Crypto/TypeScript/packages/crypto-core/src/chacha20Poly1305.ts` — AEAD wrapper over `@awasm/noble`.
-- `SqliteWasmBlazor.TestApp/Pages/PasswordTest.razor` — password-form integration page.

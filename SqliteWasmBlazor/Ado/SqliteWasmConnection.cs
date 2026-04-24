@@ -19,33 +19,9 @@ public sealed class SqliteWasmConnection : DbConnection
     private SqliteWasmTransaction? _currentTransaction;
     private ReadOnlyMemory<byte>? _encryptionKey;
 
-    private ReadOnlyMemory<byte>? _encryptionPassword;
-
     public SqliteWasmConnection()
     {
         _bridge = SqliteWasmWorkerBridge.Instance;
-    }
-
-    /// <summary>
-    /// Optional user password for at-rest encryption. When set (and
-    /// <see cref="EncryptionKey"/> is null), the connection opens via the
-    /// password path: the worker reads-or-creates a per-DB salt block and
-    /// derives the 32-byte VFS key via Argon2id. Mutually exclusive with
-    /// <see cref="EncryptionKey"/>; if both are set, the explicit key wins.
-    /// </summary>
-    public ReadOnlyMemory<byte>? EncryptionPassword
-    {
-        get => _encryptionPassword;
-        set
-        {
-            if (value is { } v && v.Length == 0)
-            {
-                throw new ArgumentException(
-                    "EncryptionPassword must be non-empty",
-                    nameof(value));
-            }
-            _encryptionPassword = value;
-        }
     }
 
     /// <summary>
@@ -53,9 +29,9 @@ public sealed class SqliteWasmConnection : DbConnection
     /// set BEFORE <see cref="Open"/> / <see cref="OpenAsync(CancellationToken)"/>
     /// is called; has no effect if the worker-side DB handle is already open.
     ///
-    /// When set, the DB opens through the PRF-keyed VFS path (reserved_bytes=28,
-    /// journal_mode=MEMORY, AEAD per page). When null, the DB opens as plain
-    /// SAHPool, identical to base-library behavior.
+    /// When set, the DB opens through the PRF-keyed VFS path (4124-byte
+    /// physical slots, AEAD per page, journal_mode=WAL). When null, the DB
+    /// opens as plain SAHPool, identical to base-library behavior.
     ///
     /// CryptoSync derives this via HKDF from the device's PRF seed and stamps
     /// it here before each connection open. Non-CryptoSync consumers leave it
@@ -158,19 +134,7 @@ public sealed class SqliteWasmConnection : DbConnection
 
         try
         {
-            if (EncryptionKey is not null)
-            {
-                // Explicit 32-byte key takes precedence when both are set.
-                await _bridge.OpenDatabaseAsync(Database, EncryptionKey, cancellationToken);
-            }
-            else if (EncryptionPassword is { } password)
-            {
-                await _bridge.OpenDatabaseWithPasswordAsync(Database, password, cancellationToken);
-            }
-            else
-            {
-                await _bridge.OpenDatabaseAsync(Database, encryptionKey: null, cancellationToken);
-            }
+            await _bridge.OpenDatabaseAsync(Database, EncryptionKey, cancellationToken);
 
             // PRAGMAs are set by the worker on first database open
             // This ensures they apply to the actual worker-side connection and persist

@@ -69,8 +69,6 @@ export interface PrfPoolUtil {
     wipeFiles(): Promise<void>;
     unlink(filename: string): boolean;
     renameFile(oldPath: string, newPath: string): true;
-    getSaltBlock(path: string): VfsSaltBlock | undefined;
-    setSaltBlock(path: string, block: VfsSaltBlock): void;
     removeVfs(): Promise<boolean>;
     pauseVfs(): PrfPoolUtil;
     unpauseVfs(): Promise<PrfPoolUtil>;
@@ -89,31 +87,6 @@ const HEADER_CORPUS_SIZE = HEADER_MAX_PATH_SIZE + HEADER_FLAGS_SIZE;
 const HEADER_OFFSET_FLAGS = HEADER_MAX_PATH_SIZE;
 const HEADER_OFFSET_DIGEST = HEADER_CORPUS_SIZE;
 const HEADER_OFFSET_DATA = SECTOR_SIZE;
-
-// Per-DB password-KDF salt block, stored in the unused portion of SAHPool's
-// 4096-byte per-file header (after path+flags+digest, which end at offset 524).
-// Layout (32 bytes at HEADER_OFFSET_SALT):
-//   0..3    magic "PSLT"
-//   4..7    version (uint32 LE, currently 1)
-//   8..23   16-byte salt
-//   24..27  Argon2id t parameter (uint32 LE)
-//   28..31  Argon2id m parameter (uint32 LE, memory in KB)
-// Parallelism (p) is pinned at 1 per DEFAULT_PASSWORD_KDF_PARAMS; if we ever
-// need it variable, bump the version and reuse bytes 32..35.
-const HEADER_OFFSET_SALT = 524;
-const SALT_BLOCK_SIZE = 32;
-const SALT_MAGIC_BYTES = new Uint8Array([0x50, 0x53, 0x4c, 0x54]); // "PSLT"
-const SALT_BLOCK_VERSION = 1;
-const SALT_DATA_OFFSET_IN_BLOCK = 8;
-const SALT_DATA_LEN = 16;
-const SALT_T_OFFSET_IN_BLOCK = 24;
-const SALT_M_OFFSET_IN_BLOCK = 28;
-
-export interface VfsSaltBlock {
-    salt: Uint8Array;
-    t: number;
-    m: number;
-}
 
 const OPAQUE_DIR_NAME = '.opaque';
 
@@ -491,11 +464,6 @@ class OpfsSAHPool {
             this.mapFilenameToSAH.set(path, sah);
             this.availableSAH.delete(sah);
         } else {
-            // Slot returning to the pool: clear any salt block the former
-            // tenant wrote. A future association (possibly a different DB)
-            // must see a fresh, empty salt region.
-            const zeros = new Uint8Array(SALT_BLOCK_SIZE);
-            sah.write(zeros, { at: HEADER_OFFSET_SALT });
             sah.truncate(HEADER_OFFSET_DATA);
             this.availableSAH.add(sah);
         }
@@ -545,69 +513,6 @@ class OpfsSAHPool {
             this.setAssociatedPath(sah, '', 0);
         }
         return !!sah;
-    }
-
-    /**
-     * Reads the per-DB password-KDF salt block from the given file's header
-     * region. Returns undefined if the file has no salt block yet (e.g. a
-     * fresh DB that hasn't been opened with a password), or if the magic
-     * bytes don't match (file was created under a pre-salt fork).
-     *
-     * Does NOT require the DB to be open — works against the SAH directly.
-     * Call after initial VFS installation but before the first open.
-     */
-    getSaltBlock(path: string): VfsSaltBlock | undefined {
-        const sah = this.mapFilenameToSAH.get(path);
-        if (!sah) return undefined;
-        const block = new Uint8Array(SALT_BLOCK_SIZE);
-        const n = sah.read(block, { at: HEADER_OFFSET_SALT });
-        if (n < SALT_BLOCK_SIZE) return undefined;
-        // Magic check
-        for (let i = 0; i < SALT_MAGIC_BYTES.length; i++) {
-            if (block[i] !== SALT_MAGIC_BYTES[i]) return undefined;
-        }
-        const dv = new DataView(block.buffer, block.byteOffset, SALT_BLOCK_SIZE);
-        const version = dv.getUint32(4, true);
-        if (version !== SALT_BLOCK_VERSION) return undefined;
-        const salt = block.slice(
-            SALT_DATA_OFFSET_IN_BLOCK,
-            SALT_DATA_OFFSET_IN_BLOCK + SALT_DATA_LEN
-        );
-        const t = dv.getUint32(SALT_T_OFFSET_IN_BLOCK, true);
-        const m = dv.getUint32(SALT_M_OFFSET_IN_BLOCK, true);
-        // DoS guard: reject absurd Argon2id params that would stall the
-        // derivation or OOM the browser. An attacker with local OPFS write
-        // access could otherwise flip our salt block bytes to t=2^31 and
-        // force the next password-open to hang. We cap at values well above
-        // any legitimate usage (OWASP max recommendation is t=6, m=128 MiB).
-        const MAX_T = 50;
-        const MAX_M_KB = 1024 * 1024; // 1 GiB
-        if (t <= 0 || t > MAX_T) return undefined;
-        if (m <= 0 || m > MAX_M_KB) return undefined;
-        return { salt, t, m };
-    }
-
-    /**
-     * Writes a per-DB salt block to the file's header region, overwriting
-     * any prior salt. Call exactly once at DB creation (before any page is
-     * written) — rotating the salt after data exists would require rederiving
-     * the key and re-encrypting every page.
-     */
-    setSaltBlock(path: string, block: VfsSaltBlock): void {
-        const sah = this.mapFilenameToSAH.get(path);
-        if (!sah) toss('setSaltBlock: file not found:', path);
-        if (block.salt.length !== SALT_DATA_LEN) {
-            toss(`setSaltBlock: salt must be ${SALT_DATA_LEN} bytes, got ${block.salt.length}`);
-        }
-        const buf = new Uint8Array(SALT_BLOCK_SIZE);
-        buf.set(SALT_MAGIC_BYTES, 0);
-        const dv = new DataView(buf.buffer, buf.byteOffset, SALT_BLOCK_SIZE);
-        dv.setUint32(4, SALT_BLOCK_VERSION, true);
-        buf.set(block.salt, SALT_DATA_OFFSET_IN_BLOCK);
-        dv.setUint32(SALT_T_OFFSET_IN_BLOCK, block.t, true);
-        dv.setUint32(SALT_M_OFFSET_IN_BLOCK, block.m, true);
-        sah!.write(buf, { at: HEADER_OFFSET_SALT });
-        sah!.flush();
     }
 
     /**
@@ -1312,12 +1217,6 @@ class OpfsSAHPoolUtil {
     }
     renameFile(oldPath: string, newPath: string) {
         return this.p.renameFile(oldPath, newPath);
-    }
-    getSaltBlock(path: string) {
-        return this.p.getSaltBlock(path);
-    }
-    setSaltBlock(path: string, block: VfsSaltBlock) {
-        this.p.setSaltBlock(path, block);
     }
     async removeVfs() {
         return this.p.removeVfs();

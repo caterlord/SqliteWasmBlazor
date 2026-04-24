@@ -190,68 +190,6 @@ public class PrfVfsEnvelopeTests
         Assert.All(header.Key, b => Assert.Equal(0, b));
     }
 
-    // -------- Password / Argon2id envelope contract --------
-
-    [Fact]
-    public void VfsPasswordHeader_SerializesWithVersion1AndAadV1Defaults()
-    {
-        var pwd = System.Text.Encoding.UTF8.GetBytes("correct-horse-battery-staple");
-        var header = new VfsPasswordHeader { Password = pwd };
-        var bytes = MessagePackSerializer.Serialize(header);
-
-        var decoded = MessagePackSerializer.Deserialize<object[]>(bytes,
-            MessagePackSerializerOptions.Standard.WithResolver(TypelessContractlessStandardResolver.Instance));
-
-        Assert.Equal(1, Convert.ToInt32(decoded[0]));
-        Assert.Equal(pwd, (byte[])decoded[1]);
-        Assert.Equal("v1", (string)decoded[2]);
-    }
-
-    [Fact]
-    public void VfsPasswordHeader_Clear_ZeroesPasswordBuffer()
-    {
-        var pwd = System.Text.Encoding.UTF8.GetBytes("leaky-secret");
-        var header = new VfsPasswordHeader { Password = pwd };
-        header.Clear();
-        Assert.All(header.Password, b => Assert.Equal(0, b));
-    }
-
-    [Fact]
-    public void Argon2id_BcDerivation_MatchesAwasmVector()
-    {
-        // Fixed test vector to cross-validate BouncyCastle's Argon2id (C#)
-        // against @awasm/noble's argon2id (JS/WASM). Any divergence here
-        // means the two libraries implement different variants and
-        // password-based encryption would break across the worker/test
-        // boundary.
-        //
-        // Params: t=1, m=256 KB, p=1, dkLen=32 (matches the vitest fast-params).
-        // Expected output produced by running @awasm/noble locally with
-        // those same inputs — if we ever bump @awasm/noble and this test
-        // fails, the two libraries drifted and we need to investigate.
-        var password = System.Text.Encoding.UTF8.GetBytes("correct-horse-battery-staple");
-        var salt = System.Text.Encoding.UTF8.GetBytes("saltsalt-1");
-        const int t = 1;
-        const int m = 256;
-        const int p = 1;
-        const int dkLen = 32;
-
-        var bcKey = CryptoOperations.DeriveKeyFromPassword(password, salt, t, m, p, dkLen);
-
-        // Re-derive with BC again — must be byte-stable.
-        var bcKey2 = CryptoOperations.DeriveKeyFromPassword(password, salt, t, m, p, dkLen);
-        Assert.Equal(bcKey, bcKey2);
-
-        // Flipping a byte of the password must change the key.
-        var wrong = (byte[])password.Clone();
-        wrong[0] ^= 0x01;
-        var bcKeyWrong = CryptoOperations.DeriveKeyFromPassword(wrong, salt, t, m, p, dkLen);
-        Assert.NotEqual(bcKey, bcKeyWrong);
-
-        // Output length matches the request.
-        Assert.Equal(dkLen, bcKey.Length);
-    }
-
     private static byte[] MakeKey(int seed)
     {
         var k = new byte[32];

@@ -19,12 +19,6 @@ import {
     clearKeyForPath,
     isPathEncrypted,
 } from './vfs-prf/key-registry';
-import {
-    deriveKeyFromPassword,
-    DEFAULT_PASSWORD_KDF_PARAMS,
-    clearBytes,
-    generateRandomBytes,
-} from '@blazorprf/crypto-core';
 
 // Re-export mutable state references for local use
 let sqlite3: any;
@@ -262,20 +256,6 @@ async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayB
                 binaryPayload ? unpackVfsKeyHeader(new Uint8Array(binaryPayload)) : undefined
             );
 
-        case 'openWithPassword':
-            // binaryPayload carries a MessagePack-serialized VfsPasswordHeader.
-            // Worker reads-or-creates the per-DB salt block, derives the key
-            // via Argon2id (@awasm/noble via @blazorprf/crypto-core), registers
-            // it for the path, and opens the DB through the encrypted VFS
-            // branch. The password bytes never survive the call.
-            if (!binaryPayload) {
-                throw new Error('openWithPassword requires binaryPayload (VfsPasswordHeader)');
-            }
-            return await openDatabaseWithPassword(
-                database!,
-                unpackVfsPasswordHeader(new Uint8Array(binaryPayload))
-            );
-
         case 'execute':
             return await executeSql(database!, sql!, parameters || {});
 
@@ -450,93 +430,6 @@ async function openDatabase(dbName: string, encryptionKey?: Uint8Array) {
     }
 
     return { success: true };
-}
-
-/**
- * Deserialize a VfsPasswordHeader (see SqliteWasmBlazor.Services.VfsPasswordHeader).
- *
- * Envelope shape (matches MessagePack [Key(n)] on the C# type):
- *   0: version (int, 1)
- *   1: password (bytes, UTF-8 encoded)
- *   2: aadVersion (string, "v1")
- */
-function unpackVfsPasswordHeader(headerBytes: Uint8Array): Uint8Array {
-    const decoded = unpack(headerBytes);
-    if (!Array.isArray(decoded) || decoded.length < 2) {
-        throw new Error('VfsPasswordHeader: invalid MessagePack envelope');
-    }
-    const [version, password, aadVersion] = decoded as [number, Uint8Array, string];
-    if (version !== 1) {
-        throw new Error(`VfsPasswordHeader: unsupported version ${version} (expected 1)`);
-    }
-    if (!(password instanceof Uint8Array) || password.length === 0) {
-        throw new Error('VfsPasswordHeader: password must be a non-empty Uint8Array');
-    }
-    if (aadVersion !== undefined && aadVersion !== 'v1') {
-        throw new Error(
-            `VfsPasswordHeader: unsupported aadVersion "${aadVersion}" (expected "v1")`
-        );
-    }
-    return password;
-}
-
-/**
- * Open a DB with a password. Reads the per-DB salt block if present (existing
- * DB); otherwise generates a random salt and writes it to the SAHPool's
- * per-file header before opening. The derived 32-byte key is then routed
- * through the same `openDatabase` path as the explicit-key case.
- *
- * The password bytes are zeroized before this function returns; the derived
- * key transfers ownership to the key registry where it lives for the
- * DB's open lifetime.
- */
-async function openDatabaseWithPassword(dbName: string, password: Uint8Array) {
-    if (!sqlite3 || !poolUtil) {
-        throw new Error('SQLite not initialized');
-    }
-
-    const dbPath = `/databases/${dbName}`;
-    try {
-        // If the SAHPool has no slot for this path yet, we need to claim one
-        // before we can read/write the salt block. Doing a cheap open+close
-        // cycle is the cleanest way — vendor SAHPool handles xOpen's "if no
-        // SAH for this path and SQLITE_OPEN_CREATE is set, claim one".
-        let block = poolUtil.getSaltBlock?.(dbPath);
-        if (!block) {
-            // Claim a slot for this path (fresh DB).
-            const tmp = new poolUtil.OpfsSAHPoolDb(dbPath);
-            tmp.close();
-            block = poolUtil.getSaltBlock?.(dbPath);
-        }
-
-        if (!block) {
-            // No salt yet — generate + persist.
-            block = {
-                salt: generateRandomBytes(16),
-                t: DEFAULT_PASSWORD_KDF_PARAMS.t,
-                m: DEFAULT_PASSWORD_KDF_PARAMS.m,
-            };
-            poolUtil.setSaltBlock!(dbPath, block);
-            logger.info(MODULE_NAME, `Generated fresh salt block for ${dbName}`);
-        }
-
-        // Derive the 32-byte key. Parallelism is fixed at 1 — see passwordKdf.ts.
-        const key = deriveKeyFromPassword(password, block.salt, {
-            t: block.t,
-            m: block.m,
-            p: 1,
-        });
-
-        // Clear the password buffer before handing control to openDatabase.
-        clearBytes(password);
-
-        // Delegate to the standard encrypted-open path.
-        return await openDatabase(dbName, key);
-    } finally {
-        // Best-effort zeroization if we bailed before clearBytes in the
-        // happy path.
-        clearBytes(password);
-    }
 }
 
 /**

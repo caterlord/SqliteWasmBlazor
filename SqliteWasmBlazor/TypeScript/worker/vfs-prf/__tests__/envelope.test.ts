@@ -11,7 +11,6 @@ import { describe, it, expect } from 'vitest';
 import {
     encryptChaCha20Poly1305,
     decryptChaCha20Poly1305,
-    deriveKeyFromPassword,
 } from '@blazorprf/crypto-core';
 import { buildPageAad } from '../aad.js';
 import {
@@ -259,51 +258,3 @@ describe('physical slot layout (offset-remap)', () => {
     });
 });
 
-describe('password-based key derivation end-to-end', () => {
-    const te = new TextEncoder();
-    // Fast params for tests — we're validating the plumbing, not Argon2 strength.
-    const testParams = { t: 1, m: 256, p: 1 };
-
-    it('same password + salt + params yields a usable page-encryption key', () => {
-        const password = te.encode('correct-horse-battery-staple');
-        const salt = te.encode('saltsalt-1'); // 10 bytes, >= 8
-        const key = deriveKeyFromPassword(password, salt, testParams);
-
-        const plaintext = new Uint8Array(PAGE_PLAINTEXT_LEN).fill(0x42);
-        const aad = buildPageAad('/pw.db', 0);
-        const enc = encryptChaCha20Poly1305(plaintext, key, aad);
-
-        // Re-derive with the exact same inputs — must produce the same key,
-        // which must decrypt the ciphertext.
-        const keyAgain = deriveKeyFromPassword(password, salt, testParams);
-        const decrypted = decryptChaCha20Poly1305(enc, keyAgain, aad);
-        expect(Buffer.from(decrypted).equals(Buffer.from(plaintext))).toBe(true);
-    });
-
-    it('wrong password derives a different key — decrypt fails', () => {
-        const salt = te.encode('saltsalt-2');
-        const keyA = deriveKeyFromPassword(
-            te.encode('right-password'),
-            salt,
-            testParams
-        );
-        const keyB = deriveKeyFromPassword(
-            te.encode('wrong-password'),
-            salt,
-            testParams
-        );
-        expect(Buffer.from(keyA).equals(Buffer.from(keyB))).toBe(false);
-
-        const plaintext = new Uint8Array(PAGE_PLAINTEXT_LEN).fill(0x42);
-        const aad = buildPageAad('/pw.db', 0);
-        const enc = encryptChaCha20Poly1305(plaintext, keyA, aad);
-        expect(() => decryptChaCha20Poly1305(enc, keyB, aad)).toThrow();
-    });
-
-    it('different salts yield different keys even with the same password', () => {
-        const password = te.encode('same-password');
-        const keyA = deriveKeyFromPassword(password, te.encode('salt-a-0'), testParams);
-        const keyB = deriveKeyFromPassword(password, te.encode('salt-b-0'), testParams);
-        expect(Buffer.from(keyA).equals(Buffer.from(keyB))).toBe(false);
-    });
-});

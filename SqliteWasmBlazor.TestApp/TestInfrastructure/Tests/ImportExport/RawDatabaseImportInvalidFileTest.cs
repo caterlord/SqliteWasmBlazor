@@ -15,18 +15,28 @@ internal class RawDatabaseImportInvalidFileTest(IDbContextFactory<TodoDbContext>
             throw new InvalidOperationException("ISqliteWasmDatabaseService not available");
         }
 
-        // Try importing random non-SQLite bytes
+        // Try importing random non-SQLite bytes. ImportDatabaseAsync now
+        // auto-detects ciphertext vs plaintext via the "SQLite format 3"
+        // magic, so random bytes are treated as opaque and written to OPFS
+        // without upfront rejection — encrypted-DB backup restore requires
+        // exactly this tolerance. The error surfaces on the NEXT open,
+        // when SQLite can't parse the random bytes as a valid database.
         var randomData = new byte[1024];
         Random.Shared.NextBytes(randomData);
 
+        await DatabaseService.ImportDatabaseAsync("TestDb.db", randomData);
+
         try
         {
-            await DatabaseService.ImportDatabaseAsync("TestDb.db", randomData);
-            throw new InvalidOperationException("Expected ArgumentException but import succeeded");
+            await using var context = await Factory.CreateDbContextAsync();
+            await context.TodoItems.CountAsync();
+            throw new InvalidOperationException(
+                "Expected SQLite open to fail on random-bytes DB, but it succeeded");
         }
-        catch (ArgumentException)
+        catch (Exception ex) when (ex is not InvalidOperationException
+            || !ex.Message.Contains("Expected SQLite open to fail"))
         {
-            // Expected — invalid SQLite header detected
+            // Expected — SQLite rejects the garbage bytes as not-a-database.
         }
 
         return "OK";

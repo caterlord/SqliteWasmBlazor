@@ -13,6 +13,7 @@ using SqliteWasmBlazor.TestApp.TestInfrastructure.Tests.Transactions;
 using SqliteWasmBlazor.TestApp.TestInfrastructure.Tests.TypeMarshalling;
 using SqliteWasmBlazor.TestApp.TestInfrastructure.Tests.EncryptedDelta;
 using SqliteWasmBlazor.TestApp.TestInfrastructure.CryptoSync;
+using SqliteWasmBlazor.TestApp.TestInfrastructure.VfsEncryption;
 
 namespace SqliteWasmBlazor.TestApp.TestInfrastructure;
 
@@ -29,12 +30,17 @@ internal class TestFactory
         IDbContextFactory<TodoDbContext> todoFactory,
         ISqliteWasmDatabaseService databaseService,
         IDbContextFactory<CryptoTestContext>? cryptoFactory = null,
-        BlazorPRF.Crypto.Abstractions.ICryptoProvider? cryptoProvider = null)
+        BlazorPRF.Crypto.Abstractions.ICryptoProvider? cryptoProvider = null,
+        IDbContextFactory<EncryptedTestContext>? encryptedFactory = null)
     {
         PopulateTests(todoFactory, databaseService);
         if (cryptoFactory is not null)
         {
             PopulateCryptoTests(cryptoFactory, databaseService, cryptoProvider);
+        }
+        if (encryptedFactory is not null)
+        {
+            PopulateVfsEncryptionTests(encryptedFactory, todoFactory, databaseService);
         }
     }
 
@@ -57,6 +63,41 @@ internal class TestFactory
     private void Add(string category, SqliteWasmTest test)
     {
         _entries.Add(new TestEntry(category, test.Name, () => test.RunTestWithFreshDatabaseAsync()));
+    }
+
+    private void PopulateVfsEncryptionTests(
+        IDbContextFactory<EncryptedTestContext> encryptedFactory,
+        IDbContextFactory<TodoDbContext> todoFactory,
+        ISqliteWasmDatabaseService databaseService)
+    {
+        const string cat = "VFS Encryption";
+
+        var t1 = new VfsEncryptedRoundTripTest(encryptedFactory, databaseService);
+        _entries.Add(new TestEntry(cat, t1.Name, () => t1.RunTestWithFreshDatabaseAsync()));
+
+        var t2 = new VfsOnDiskCiphertextTest(encryptedFactory, databaseService);
+        _entries.Add(new TestEntry(cat, t2.Name, () => t2.RunTestWithFreshDatabaseAsync()));
+
+        var t3 = new VfsPlainRegressionTest(todoFactory, databaseService);
+        _entries.Add(new TestEntry(cat, t3.Name, () => t3.RunTestWithFreshDatabaseAsync()));
+
+        var t4 = new VfsWrongKeyFailsTest(encryptedFactory, databaseService);
+        _entries.Add(new TestEntry(cat, t4.Name, () => t4.RunTestWithFreshDatabaseAsync()));
+
+        var t5 = new VfsTamperDetectionTest(encryptedFactory, databaseService);
+        _entries.Add(new TestEntry(cat, t5.Name, () => t5.RunTestWithFreshDatabaseAsync()));
+
+        var t6 = new VfsModeMismatchTest(encryptedFactory, databaseService);
+        _entries.Add(new TestEntry(cat, t6.Name, () => t6.RunTestWithFreshDatabaseAsync()));
+
+        var t7 = new VfsPhysicalLayoutTest(encryptedFactory, databaseService);
+        _entries.Add(new TestEntry(cat, t7.Name, () => t7.RunTestWithFreshDatabaseAsync()));
+
+        var t8 = new VfsEncryptedPerformanceSmokeTest(todoFactory, encryptedFactory, databaseService);
+        _entries.Add(new TestEntry(cat, t8.Name, () => t8.RunTestWithFreshDatabaseAsync()));
+
+        var t9 = new VfsSameJournalModePerformanceTest(todoFactory, encryptedFactory, databaseService);
+        _entries.Add(new TestEntry(cat, t9.Name, () => t9.RunTestWithFreshDatabaseAsync()));
     }
 
     private void PopulateCryptoTests(

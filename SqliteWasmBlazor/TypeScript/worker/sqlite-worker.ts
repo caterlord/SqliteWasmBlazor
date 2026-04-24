@@ -13,6 +13,18 @@ import {
 } from './worker-state';
 import { bulkInsertRows, type V2Header } from './bulk-ops';
 import { bulkExportEncryptedV2, bulkImportEncryptedV2, bulkRotateKeyV2 } from './crypto-ops';
+import { installOpfsSAHPoolVfs as installPrfVfs } from './vfs-prf/sahpool-prf-vfs';
+import {
+    registerKeyForPath,
+    clearKeyForPath,
+    isPathEncrypted,
+} from './vfs-prf/key-registry';
+import {
+    deriveKeyFromPassword,
+    DEFAULT_PASSWORD_KDF_PARAMS,
+    clearBytes,
+    generateRandomBytes,
+} from '@blazorprf/crypto-core';
 
 // Re-export mutable state references for local use
 let sqlite3: any;
@@ -128,9 +140,26 @@ async function initializeSQLite() {
             logger.debug(MODULE_NAME, 'OPFS VFS auto-installed, but we use SAHPool VFS instead');
         }
 
-        // Install OPFS SAHPool VFS
-        poolUtil = await sqlite3.installOpfsSAHPoolVfs({
-            initialCapacity: 10,
+        // Install PRF-keyed OPFS SAHPool VFS.
+        // This fork of sqlite-wasm's `opfs-sahpool` is a drop-in replacement:
+        // - For DBs opened without a registered key, it behaves byte-for-byte
+        //   like vendor (pass-through to the SAH).
+        // - For DBs with a registered key, each page is encrypted via
+        //   ChaCha20-Poly1305 (see vfs-prf/sahpool-prf-vfs.ts).
+        // Registered under the same name ('opfs-sahpool') and same directory
+        // ('/databases') so non-CryptoSync consumers see no change.
+        //
+        // Pool capacity: each DB occupies 1 slot for the main file; in
+        // journal_mode=WAL it may also claim `.db-wal` and `.db-shm` slots
+        // plus a transient `.db-journal` during the WAL mode transition
+        // (~4 slots per active WAL DB). Encrypted DBs use journal_mode=MEMORY
+        // and only need the 1 main slot. For apps that open multiple DBs
+        // (TodoDb + CryptoTestDb + EncryptedTestDb + PasswordTestDb +
+        // per-feature benchmarks) 10 slots is tight — we default to 25 so
+        // a realistic workload doesn't trip "SAH pool is full" on journal
+        // creation. 25 × ~4 KiB preallocated = ~100 KiB, negligible.
+        poolUtil = await installPrfVfs(sqlite3, {
+            initialCapacity: 25,
             directory: '/databases',
             name: 'opfs-sahpool',
             clearOnInit: false
@@ -138,7 +167,7 @@ async function initializeSQLite() {
         setPoolUtil(poolUtil);
 
         // Grow pool if previously created with smaller capacity (initialCapacity only applies on first creation)
-        await poolUtil.reserveMinimumCapacity(10);
+        await poolUtil.reserveMinimumCapacity(25);
 
         logger.info(MODULE_NAME, 'OPFS SAHPool VFS installed successfully');
         logger.debug(MODULE_NAME, 'Available VFS:', sqlite3.capi.sqlite3_vfs_find(null));
@@ -223,7 +252,29 @@ async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayB
 
     switch (type) {
         case 'open':
-            return await openDatabase(database!);
+            // Optional binaryPayload carries a MessagePack-serialized VfsKeyHeader
+            // (C# SqliteWasmBlazor.VfsKeyHeader). Its presence switches the DB to
+            // the encrypted VFS path. Matches the V2CryptoHeader envelope shape
+            // used by bulkExportEncryptedV2 / bulkImportEncryptedV2 so every C# →
+            // worker path that ships key material uses a versioned envelope.
+            return await openDatabase(
+                database!,
+                binaryPayload ? unpackVfsKeyHeader(new Uint8Array(binaryPayload)) : undefined
+            );
+
+        case 'openWithPassword':
+            // binaryPayload carries a MessagePack-serialized VfsPasswordHeader.
+            // Worker reads-or-creates the per-DB salt block, derives the key
+            // via Argon2id (@awasm/noble via @blazorprf/crypto-core), registers
+            // it for the path, and opens the DB through the encrypted VFS
+            // branch. The password bytes never survive the call.
+            if (!binaryPayload) {
+                throw new Error('openWithPassword requires binaryPayload (VfsPasswordHeader)');
+            }
+            return await openDatabaseWithPassword(
+                database!,
+                unpackVfsPasswordHeader(new Uint8Array(binaryPayload))
+            );
 
         case 'execute':
             return await executeSql(database!, sql!, parameters || {});
@@ -244,7 +295,11 @@ async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayB
             if (!binaryPayload) {
                 throw new Error('importDb requires binaryPayload');
             }
-            return await importDatabase(database!, new Uint8Array(binaryPayload));
+            return await importDatabase(
+                database!,
+                new Uint8Array(binaryPayload),
+                (data as any).opaque === true
+            );
 
         case 'exportDb':
             return await exportDatabase(database!);
@@ -288,9 +343,24 @@ async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayB
     }
 }
 
-async function openDatabase(dbName: string) {
+async function openDatabase(dbName: string, encryptionKey?: Uint8Array) {
     if (!sqlite3 || !poolUtil) {
         throw new Error('SQLite not initialized');
+    }
+
+    const dbPath = `/databases/${dbName}`;
+
+    // Register the key BEFORE opening the DB. The VFS's xOpen reads the
+    // registry to decide whether to stamp `file.key` on the opened file.
+    // A re-open of an already-open DB with a different key is a caller
+    // error; we don't support swapping keys for a live handle.
+    if (encryptionKey) {
+        if (encryptionKey.length !== 32) {
+            throw new Error(
+                `encryptionKey must be 32 bytes, got ${encryptionKey.length}`
+            );
+        }
+        registerKeyForPath(dbPath, encryptionKey);
     }
 
     // Check if database needs to be opened
@@ -299,7 +369,6 @@ async function openDatabase(dbName: string) {
         try {
             // Use OpfsSAHPoolDb from the pool utility
             // Wrap in timeout to detect multi-tab lock conflicts
-            const dbPath = `/databases/${dbName}`;
             const openPromise = new Promise<any>((resolve, reject) => {
                 try {
                     const database = new poolUtil.OpfsSAHPoolDb(dbPath);
@@ -317,7 +386,10 @@ async function openDatabase(dbName: string) {
 
             db = await Promise.race([openPromise, timeoutPromise]);
             openDatabases.set(dbName, db);
-            logger.info(MODULE_NAME, `✓ Opened database: ${dbName} with OPFS SAHPool`);
+            logger.info(
+                MODULE_NAME,
+                `✓ Opened database: ${dbName} with OPFS SAHPool${isPathEncrypted(dbPath) ? ' (encrypted)' : ''}`
+            );
 
             // Debug: Verify database is in OPFS
             if (poolUtil.getFileNames) {
@@ -329,6 +401,11 @@ async function openDatabase(dbName: string) {
                 }
             }
         } catch (error) {
+            // If we registered a key but the open failed, clear it to avoid
+            // a stale entry on a future retry.
+            if (encryptionKey) {
+                clearKeyForPath(dbPath);
+            }
             logger.error(MODULE_NAME, `Failed to open database ${dbName}:`, error);
             throw error;
         }
@@ -337,13 +414,35 @@ async function openDatabase(dbName: string) {
     // Always check if PRAGMAs need to be set (even if database was already open)
     // This handles the case where database was closed and reopened
     if (!pragmasSet.has(dbName)) {
-        // WAL mode with OPFS requires exclusive locking mode (SQLite 3.47+)
-        // Must be set BEFORE activating WAL mode
-        db.exec("PRAGMA locking_mode = exclusive;");
-        db.exec("PRAGMA journal_mode = WAL;");
-        db.exec("PRAGMA synchronous = FULL;");
+        if (isPathEncrypted(dbPath)) {
+            // Encrypted DBs use the offset-remapping PRF-VFS, which encrypts
+            // every file type (main DB, WAL frames, rollback journals, temp)
+            // uniformly under the same AEAD envelope. That makes WAL safe
+            // on-disk, so we match the plain-DB journal mode and get full
+            // crash recovery back.
+            //
+            // page_size MUST be 4096: the VFS's logical→physical slot math
+            // assumes a 4096-byte plaintext block per slot. Any other
+            // page_size would desync the slot boundaries on READs.
+            db.exec("PRAGMA page_size = 4096;");
+            db.exec("PRAGMA locking_mode = exclusive;");
+            db.exec("PRAGMA journal_mode = WAL;");
+            db.exec("PRAGMA synchronous = FULL;");
+            logger.debug(
+                MODULE_NAME,
+                `Set PRAGMAs for ${dbName} (encrypted: page_size=4096, journal_mode=WAL)`
+            );
+        } else {
+            // Plain DBs: existing behavior unchanged.
+            db.exec("PRAGMA locking_mode = exclusive;");
+            db.exec("PRAGMA journal_mode = WAL;");
+            db.exec("PRAGMA synchronous = FULL;");
+            logger.debug(
+                MODULE_NAME,
+                `Set PRAGMAs for ${dbName} (locking_mode=exclusive, journal_mode=WAL, synchronous=FULL)`
+            );
+        }
         pragmasSet.add(dbName);
-        logger.debug(MODULE_NAME, `Set PRAGMAs for ${dbName} (locking_mode=exclusive, journal_mode=WAL, synchronous=FULL)`);
 
         // Register EF Core scalar and aggregate functions for feature completeness
         // These functions enable full decimal arithmetic and comparison support in EF Core queries
@@ -351,6 +450,126 @@ async function openDatabase(dbName: string) {
     }
 
     return { success: true };
+}
+
+/**
+ * Deserialize a VfsPasswordHeader (see SqliteWasmBlazor.Services.VfsPasswordHeader).
+ *
+ * Envelope shape (matches MessagePack [Key(n)] on the C# type):
+ *   0: version (int, 1)
+ *   1: password (bytes, UTF-8 encoded)
+ *   2: aadVersion (string, "v1")
+ */
+function unpackVfsPasswordHeader(headerBytes: Uint8Array): Uint8Array {
+    const decoded = unpack(headerBytes);
+    if (!Array.isArray(decoded) || decoded.length < 2) {
+        throw new Error('VfsPasswordHeader: invalid MessagePack envelope');
+    }
+    const [version, password, aadVersion] = decoded as [number, Uint8Array, string];
+    if (version !== 1) {
+        throw new Error(`VfsPasswordHeader: unsupported version ${version} (expected 1)`);
+    }
+    if (!(password instanceof Uint8Array) || password.length === 0) {
+        throw new Error('VfsPasswordHeader: password must be a non-empty Uint8Array');
+    }
+    if (aadVersion !== undefined && aadVersion !== 'v1') {
+        throw new Error(
+            `VfsPasswordHeader: unsupported aadVersion "${aadVersion}" (expected "v1")`
+        );
+    }
+    return password;
+}
+
+/**
+ * Open a DB with a password. Reads the per-DB salt block if present (existing
+ * DB); otherwise generates a random salt and writes it to the SAHPool's
+ * per-file header before opening. The derived 32-byte key is then routed
+ * through the same `openDatabase` path as the explicit-key case.
+ *
+ * The password bytes are zeroized before this function returns; the derived
+ * key transfers ownership to the key registry where it lives for the
+ * DB's open lifetime.
+ */
+async function openDatabaseWithPassword(dbName: string, password: Uint8Array) {
+    if (!sqlite3 || !poolUtil) {
+        throw new Error('SQLite not initialized');
+    }
+
+    const dbPath = `/databases/${dbName}`;
+    try {
+        // If the SAHPool has no slot for this path yet, we need to claim one
+        // before we can read/write the salt block. Doing a cheap open+close
+        // cycle is the cleanest way — vendor SAHPool handles xOpen's "if no
+        // SAH for this path and SQLITE_OPEN_CREATE is set, claim one".
+        let block = poolUtil.getSaltBlock?.(dbPath);
+        if (!block) {
+            // Claim a slot for this path (fresh DB).
+            const tmp = new poolUtil.OpfsSAHPoolDb(dbPath);
+            tmp.close();
+            block = poolUtil.getSaltBlock?.(dbPath);
+        }
+
+        if (!block) {
+            // No salt yet — generate + persist.
+            block = {
+                salt: generateRandomBytes(16),
+                t: DEFAULT_PASSWORD_KDF_PARAMS.t,
+                m: DEFAULT_PASSWORD_KDF_PARAMS.m,
+            };
+            poolUtil.setSaltBlock!(dbPath, block);
+            logger.info(MODULE_NAME, `Generated fresh salt block for ${dbName}`);
+        }
+
+        // Derive the 32-byte key. Parallelism is fixed at 1 — see passwordKdf.ts.
+        const key = deriveKeyFromPassword(password, block.salt, {
+            t: block.t,
+            m: block.m,
+            p: 1,
+        });
+
+        // Clear the password buffer before handing control to openDatabase.
+        clearBytes(password);
+
+        // Delegate to the standard encrypted-open path.
+        return await openDatabase(dbName, key);
+    } finally {
+        // Best-effort zeroization if we bailed before clearBytes in the
+        // happy path.
+        clearBytes(password);
+    }
+}
+
+/**
+ * Deserialize a VfsKeyHeader (see SqliteWasmBlazor.Services.VfsKeyHeader).
+ * Returns just the 32-byte key after version/AAD validation. Throws on an
+ * envelope we don't recognize rather than opening the DB with a misparsed
+ * key and corrupting pages.
+ *
+ * Envelope shape (matches MessagePack [Key(n)] on the C# type):
+ *   0: version (int)
+ *   1: key (bytes, 32)
+ *   2: aadVersion (string)
+ */
+function unpackVfsKeyHeader(headerBytes: Uint8Array): Uint8Array {
+    const decoded = unpack(headerBytes);
+    if (!Array.isArray(decoded) || decoded.length < 2) {
+        throw new Error('VfsKeyHeader: invalid MessagePack envelope');
+    }
+    const [version, key, aadVersion] = decoded as [number, Uint8Array, string];
+    if (version !== 1) {
+        throw new Error(`VfsKeyHeader: unsupported version ${version} (expected 1)`);
+    }
+    if (!(key instanceof Uint8Array) || key.length !== 32) {
+        throw new Error(
+            `VfsKeyHeader: key must be a 32-byte Uint8Array (got length=${(key as any)?.length})`
+        );
+    }
+    if (aadVersion !== undefined && aadVersion !== 'v1') {
+        throw new Error(
+            `VfsKeyHeader: unsupported aadVersion "${aadVersion}" (expected "v1")`
+        );
+    }
+    return key;
 }
 
 // Get schema info for a table by querying PRAGMA table_info
@@ -572,6 +791,10 @@ async function closeDatabase(dbName: string) {
         db.close();
         openDatabases.delete(dbName);
         pragmasSet.delete(dbName); // Clear PRAGMA tracking when database is closed
+        // Wipe the ChaCha20-Poly1305 key (if this DB was encrypted). No-op
+        // for non-encrypted DBs. clearKeyForPath zero-fills the buffer
+        // before removing the registry entry.
+        clearKeyForPath(`/databases/${dbName}`);
         logger.info(MODULE_NAME, `Closed database: ${dbName}`);
     }
     return { success: true };
@@ -693,20 +916,28 @@ async function renameDatabase(oldName: string, newName: string) {
     }
 }
 
-async function importDatabase(dbName: string, data: Uint8Array) {
+async function importDatabase(dbName: string, data: Uint8Array, opaque = false) {
     if (!sqlite3 || !poolUtil) {
         throw new Error('SQLite not initialized');
     }
 
     try {
-        logger.info(MODULE_NAME, `Importing database ${dbName} (${data.length} bytes)`);
+        logger.info(
+            MODULE_NAME,
+            `Importing database ${dbName} (${data.length} bytes${opaque ? ', opaque' : ''})`
+        );
 
-        // Close database if open (SAHPool requirement)
+        // Close database if open (SAHPool requirement). Note: for encrypted
+        // paths this ALSO clears the key registry entry, so a subsequent
+        // opaque import cannot be detected via isEncryptedPath — the opaque
+        // signal must flow explicitly through the import call.
         await closeDatabase(dbName);
 
-        // Import the raw database file into OPFS SAHPool
+        // Import the raw database file into OPFS SAHPool. When opaque=true,
+        // the fork skips the 'SQLite format 3' header check and the byte-18
+        // WAL-mode patch, which would corrupt an AEAD tag for encrypted DBs.
         const dbPath = `/databases/${dbName}`;
-        poolUtil.importDb(dbPath, data);
+        poolUtil.importDb(dbPath, data, opaque);
 
         logger.info(MODULE_NAME, `✓ Imported database: ${dbName} (${data.length} bytes)`);
 

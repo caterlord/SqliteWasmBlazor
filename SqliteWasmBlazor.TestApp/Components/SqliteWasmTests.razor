@@ -2,11 +2,13 @@
 @using SqliteWasmBlazor
 @using SqliteWasmBlazor.TestApp.TestInfrastructure
 @using SqliteWasmBlazor.TestApp.TestInfrastructure.CryptoSync
+@using SqliteWasmBlazor.TestApp.TestInfrastructure.VfsEncryption
 @using Microsoft.EntityFrameworkCore
 @using SqliteWasmBlazor.Models
 @using BlazorPRF.Crypto.Abstractions.Services
 @inject IDbContextFactory<TodoDbContext> DbContextFactory
 @inject IDbContextFactory<CryptoTestContext> CryptoFactory
+@inject IDbContextFactory<EncryptedTestContext> EncryptedFactory
 @inject ISqliteWasmDatabaseService DatabaseService
 @inject IGroupEncryption GroupEncryption
 @inject BlazorPRF.Crypto.Abstractions.ICryptoProvider CryptoProvider
@@ -76,7 +78,7 @@
 
             try
             {
-                var testFactory = new TestFactory(_factory, DatabaseService, CryptoFactory, CryptoProvider);
+                var testFactory = new TestFactory(_factory, DatabaseService, CryptoFactory, CryptoProvider, EncryptedFactory);
                 _tests.AddRange(testFactory.GetTests(TestName, CategoryFilter));
 
                 _running = true;

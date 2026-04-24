@@ -10,7 +10,9 @@
     "copy:wasm": "cp node_modules/@sqlite.org/sqlite-wasm/dist/sqlite3.wasm ../wwwroot/",
     "build:release": "npm run build:worker:release && npm run build:bridge:release && npm run copy:wasm",
     "build:worker:release": "esbuild worker/sqlite-worker.ts --bundle --format=esm --minify --outfile=../wwwroot/sqlite-wasm-worker.js",
-    "build:bridge:release": "esbuild bridge/worker-bridge.ts --bundle --format=esm --minify --outfile=../wwwroot/sqlite-wasm-bridge.js"
+    "build:bridge:release": "esbuild bridge/worker-bridge.ts --bundle --format=esm --minify --outfile=../wwwroot/sqlite-wasm-bridge.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@blazorprf/crypto-core": "file:../../../BlazorPRF/BlazorPRF.Crypto/TypeScript/packages/crypto-core",
@@ -23,6 +25,7 @@
   "devDependencies": {
     "esbuild": "^0.27.0",
     "patch-package": "^8.0.1",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.4"
   }
 }

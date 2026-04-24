@@ -7,6 +7,7 @@ using SqliteWasmBlazor;
 using SqliteWasmBlazor.Models;
 using BlazorPRF.Crypto.Extensions;
 using SqliteWasmBlazor.TestApp.TestInfrastructure.CryptoSync;
+using SqliteWasmBlazor.TestApp.TestInfrastructure.VfsEncryption;
 
 var builder = WebAssemblyHostBuilder.CreateDefault(args);
 
@@ -54,6 +55,15 @@ builder.Services.AddDbContextFactory<CryptoTestContext>(options =>
     var cryptoConnection = new SqliteWasmConnection("Data Source=CryptoTestDb.db");
 #endif
     options.UseSqliteWasm(cryptoConnection);
+});
+
+// Add PRF-VFS integration-test context. Opens via the encrypted VFS path
+// using the deterministic test key in VfsEncryptionTestBase.TestKey.
+builder.Services.AddDbContextFactory<EncryptedTestContext>(options =>
+{
+    options.UseSqliteWasm(
+        $"Data Source={VfsEncryptionTestBase.EncryptedDatabaseName}",
+        VfsEncryptionTestBase.TestKey);
 });
 
 // Register SqliteWasm database management service

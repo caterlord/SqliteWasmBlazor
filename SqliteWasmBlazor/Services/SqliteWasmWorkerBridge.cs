@@ -112,17 +112,195 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
     /// <summary>
     /// Open a database connection in the worker.
     /// </summary>
-    public async Task OpenDatabaseAsync(string database, CancellationToken cancellationToken = default)
+    /// <param name="database">Database file name inside the SAHPool.</param>
+    /// <param name="encryptionKey">
+    /// Optional 32-byte ChaCha20-Poly1305 key. When supplied, the worker opens
+    /// the DB through the PRF-keyed VFS path and sets reserved_bytes=28 on
+    /// first-page creation. When omitted, the DB is opened as plain SAHPool —
+    /// identical to base-library behavior. CryptoSync callers supply the key;
+    /// non-CryptoSync consumers omit it.
+    /// </param>
+    public async Task OpenDatabaseAsync(
+        string database,
+        ReadOnlyMemory<byte>? encryptionKey = null,
+        CancellationToken cancellationToken = default)
     {
         await EnsureInitializedAsync(cancellationToken);
 
-        var request = new
+        if (encryptionKey is null)
         {
-            type = "open", database
+            // Plain DB — existing path, pure JSON request.
+            var request = new { type = "open", database };
+            await SendRequestAsync(request, cancellationToken);
+            _openDatabases.Add(database);
+            return;
+        }
+
+        var keyBytes = encryptionKey.Value;
+        if (keyBytes.Length != 32)
+        {
+            throw new ArgumentException(
+                $"encryptionKey must be exactly 32 bytes, got {keyBytes.Length}",
+                nameof(encryptionKey));
+        }
+
+        // Wrap the key in a versioned MessagePack envelope. Same shape as the
+        // V2CryptoHeader path used by bulkExportEncryptedV2 / bulkImportEncryptedV2
+        // so the C# → worker contract is uniform. Keeps a clean Clear() path
+        // for zeroization after the call returns.
+        var header = new VfsKeyHeader
+        {
+            Version = 1,
+            Key = keyBytes.ToArray(),
+            AadVersion = "v1",
         };
 
-        await SendRequestAsync(request, cancellationToken);
-        _openDatabases.Add(database);
+        var requestId = Interlocked.Increment(ref _nextRequestId);
+        var tcs = new TaskCompletionSource<SqlQueryResult>();
+        _pendingRequests[requestId] = tcs;
+
+        try
+        {
+            await using var registration = cancellationToken.Register(() =>
+            {
+                _pendingRequests.TryRemove(requestId, out _);
+                tcs.TrySetCanceled();
+            });
+
+            var metadataJson = JsonSerializer.Serialize(new
+            {
+                id = requestId,
+                data = new { type = "open", database }
+            });
+
+            byte[]? headerBytes = null;
+            try
+            {
+                headerBytes = MessagePackSerializer.Serialize(header);
+                SendBinaryToWorker(headerBytes.AsSpan(), metadataJson);
+
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                timeoutCts.CancelAfter(30_000);
+
+                try
+                {
+                    await tcs.Task.WaitAsync(timeoutCts.Token);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException("Encrypted open timed out after 30 seconds.");
+                }
+
+                _openDatabases.Add(database);
+            }
+            finally
+            {
+                // The serialized envelope contains the raw key bytes; zero
+                // both the envelope buffer and the header.Key copy so the
+                // only remaining reference to the secret lives in the
+                // worker's key registry.
+                if (headerBytes is not null)
+                {
+                    System.Security.Cryptography.CryptographicOperations.ZeroMemory(headerBytes);
+                }
+            }
+        }
+        catch
+        {
+            _pendingRequests.TryRemove(requestId, out _);
+            throw;
+        }
+        finally
+        {
+            header.Clear();
+        }
+    }
+
+    /// <summary>
+    /// Open a database with a user password. Worker reads-or-creates the
+    /// per-DB salt block in the SAHPool header, derives a 32-byte
+    /// ChaCha20-Poly1305 key via Argon2id, registers it for the path, and
+    /// opens via the encrypted VFS. On first use the salt is fresh-random
+    /// and persisted; subsequent opens reuse it so the same password always
+    /// yields the same key.
+    /// </summary>
+    public async Task OpenDatabaseWithPasswordAsync(
+        string database,
+        ReadOnlyMemory<byte> password,
+        CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken);
+
+        if (password.Length == 0)
+        {
+            throw new ArgumentException("password must be non-empty", nameof(password));
+        }
+
+        var header = new VfsPasswordHeader
+        {
+            Version = 1,
+            Password = password.ToArray(),
+            AadVersion = "v1",
+        };
+
+        var requestId = Interlocked.Increment(ref _nextRequestId);
+        var tcs = new TaskCompletionSource<SqlQueryResult>();
+        _pendingRequests[requestId] = tcs;
+
+        try
+        {
+            await using var registration = cancellationToken.Register(() =>
+            {
+                _pendingRequests.TryRemove(requestId, out _);
+                tcs.TrySetCanceled();
+            });
+
+            var metadataJson = JsonSerializer.Serialize(new
+            {
+                id = requestId,
+                data = new { type = "openWithPassword", database }
+            });
+
+            byte[]? headerBytes = null;
+            try
+            {
+                headerBytes = MessagePackSerializer.Serialize(header);
+                SendBinaryToWorker(headerBytes.AsSpan(), metadataJson);
+
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                // Argon2id adds ~100-500ms depending on params + device; allow ample time.
+                timeoutCts.CancelAfter(60_000);
+
+                try
+                {
+                    await tcs.Task.WaitAsync(timeoutCts.Token);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException("Password-based open timed out after 60 seconds.");
+                }
+
+                _openDatabases.Add(database);
+            }
+            finally
+            {
+                // Zero the serialized envelope — it contains the raw password
+                // bytes. header.Clear() below zeros the object's internal copy.
+                if (headerBytes is not null)
+                {
+                    System.Security.Cryptography.CryptographicOperations.ZeroMemory(headerBytes);
+                }
+            }
+        }
+        catch
+        {
+            _pendingRequests.TryRemove(requestId, out _);
+            throw;
+        }
+        finally
+        {
+            header.Clear();
+        }
     }
 
     /// <summary>
@@ -221,17 +399,22 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
 
     /// <summary>
     /// Import a raw .db file into OPFS SAHPool storage.
-    /// Validates SQLite header before sending to worker.
+    ///
+    /// Auto-detects ciphertext vs plaintext by inspecting the first 16 bytes:
+    /// if they are <c>"SQLite format 3\0"</c>, the input is treated as a plain
+    /// SQLite file (normal path with byte-18 WAL-mode patch). Otherwise the
+    /// input is treated as opaque ciphertext of a PRF-VFS-encrypted DB —
+    /// both the header validation and the byte-18 patch are skipped because
+    /// they would corrupt the AEAD tag on slot 0.
     /// </summary>
-    public async Task ImportDatabaseAsync(string databaseName, byte[] data, CancellationToken cancellationToken = default)
+    public async Task ImportDatabaseAsync(
+        string databaseName,
+        byte[] data,
+        CancellationToken cancellationToken = default)
     {
         await EnsureInitializedAsync(cancellationToken);
 
-        // Validate SQLite header
-        if (data.Length < 16 || !data.AsSpan(0, 16).SequenceEqual(SqliteHeaderMagic))
-        {
-            throw new ArgumentException("Data is not a valid SQLite database file (invalid header).", nameof(data));
-        }
+        var opaque = data.Length < 16 || !data.AsSpan(0, 16).SequenceEqual(SqliteHeaderMagic);
 
         var requestId = Interlocked.Increment(ref _nextRequestId);
         var tcs = new TaskCompletionSource<SqlQueryResult>();
@@ -249,7 +432,12 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
             var metadataJson = JsonSerializer.Serialize(new
             {
                 id = requestId,
-                data = new { type = "importDb", database = databaseName }
+                data = new
+                {
+                    type = "importDb",
+                    database = databaseName,
+                    opaque,
+                }
             });
 
             SendBinaryToWorker(data.AsSpan(), metadataJson);

@@ -32,6 +32,39 @@ public enum VfsKeyInstallResult
 }
 
 /// <summary>
+/// Selects the slot-rekey flavour applied by
+/// <see cref="ISqliteWasmDatabaseService.ExportDatabaseAsync"/>. The worker
+/// always closes the DB for a consistent snapshot; the mode controls whether
+/// the bytes returned are passed through verbatim, decrypted under the
+/// registered source key, or re-wrapped under a caller-supplied key.
+/// </summary>
+public enum VfsExportMode
+{
+    /// <summary>
+    /// Verbatim raw bytes from OPFS. Plain DBs return SQLite pages,
+    /// PRF-VFS-encrypted DBs return slot-format ciphertext (4124-byte slots)
+    /// under the currently registered key.
+    /// </summary>
+    VERBATIM = 0,
+
+    /// <summary>
+    /// Decrypt every slot under the registered source key and return plain
+    /// SQLite pages a standard SQLite implementation can open. If no key is
+    /// registered, the result is identical to <see cref="VERBATIM"/>.
+    /// </summary>
+    PLAIN = 1,
+
+    /// <summary>
+    /// Decrypt every slot under the registered source key (if any) and
+    /// re-encrypt under a caller-supplied 32-byte ChaCha20-Poly1305 key with
+    /// the same path-bound AAD. Requires the <c>newKey</c> argument to be
+    /// exactly 32 bytes; AAD binds <c>dbPath</c> so the recipient must
+    /// import to the same database name.
+    /// </summary>
+    REKEY = 2,
+}
+
+/// <summary>
 /// Outcome returned by <see cref="ISqliteWasmDatabaseService.ImportDatabaseAsync"/>.
 /// Plain (non-opaque) imports always return <see cref="OK"/> on success and
 /// throw on byte-level failures. Opaque (encrypted) imports go through the
@@ -123,57 +156,45 @@ public interface ISqliteWasmDatabaseService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Exports a raw .db file from OPFS verbatim. The database is closed
-    /// before export for a consistent snapshot. Caller must re-open the
-    /// database after export.
+    /// Exports a raw .db file from OPFS in one of three slot-rekey flavours.
+    /// The worker always closes the DB before exporting for a consistent
+    /// snapshot — caller must re-open afterwards.
     ///
-    /// For plain DBs, returns SQLite-format pages. For PRF-VFS-encrypted
-    /// DBs, returns the on-disk slot-format ciphertext (4124-byte slots) —
-    /// effectively the "UNCHANGED" rekey mode. Use
-    /// <see cref="ExportPlainAsync"/> to get decrypted plain pages or
-    /// <see cref="ExportRekeyedAsync"/> to re-wrap under a new key.
-    /// </summary>
-    /// <param name="databaseName">The database filename (e.g., "mydb.db")</param>
-    /// <param name="cancellationToken">Cancellation token</param>
-    /// <returns>Raw bytes (plain pages or slot-format ciphertext, depending
-    /// on the DB's registered key state).</returns>
-    Task<byte[]> ExportDatabaseAsync(string databaseName, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Export an encrypted DB as plain SQLite pages. The worker snapshots
-    /// the registered key, closes the DB, decrypts every slot, and returns
-    /// a normal .db file the caller can open under any standard SQLite
-    /// implementation. If the DB has no registered key, the result is
-    /// identical to <see cref="ExportDatabaseAsync"/>.
-    /// </summary>
-    /// <param name="databaseName">The database filename.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>Plain SQLite database bytes.</returns>
-    Task<byte[]> ExportPlainAsync(string databaseName, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Re-export the DB under a caller-supplied 32-byte ChaCha20-Poly1305
-    /// key. The worker snapshots the source key (if any), closes the DB,
-    /// decrypts every slot under the source key, and re-encrypts under
+    /// Flavour is selected via <paramref name="mode"/>:
+    /// <list type="bullet">
+    /// <item><description><see cref="VfsExportMode.VERBATIM"/> — raw OPFS
+    /// bytes; plain pages for plain DBs, slot-format ciphertext for
+    /// encrypted DBs.</description></item>
+    /// <item><description><see cref="VfsExportMode.PLAIN"/> — decrypts every
+    /// slot under the registered key and returns plain SQLite pages. No-op
+    /// for plain DBs.</description></item>
+    /// <item><description><see cref="VfsExportMode.REKEY"/> — decrypts under
+    /// the registered source key (if any) and re-encrypts under
     /// <paramref name="newKey"/> with the same path-bound AAD. The resulting
     /// bytes can be handed to <see cref="ImportDatabaseAsync"/> on the
-    /// recipient side, where they will verify-on-write under the same
-    /// <paramref name="newKey"/> registered via
-    /// <see cref="InstallEncryptionKeyAsync"/>.
+    /// recipient side, where they verify-on-write under the same key
+    /// registered via <see cref="InstallEncryptionKeyAsync"/>.</description></item>
+    /// </list>
     ///
-    /// AAD constraint: the recipient must import to the same database name
-    /// the sender exported from (AAD binds <c>dbPath</c>). Cross-path
+    /// AAD constraint (REKEY): the recipient must import to the same database
+    /// name the sender exported from — AAD binds <c>dbPath</c>. Cross-path
     /// migration is not supported by this primitive.
     ///
-    /// The span is consumed synchronously — bytes are copied into a
-    /// MessagePack envelope, posted to the worker, and the envelope buffer
-    /// is zeroed before this method returns.
+    /// REKEY transport: <paramref name="newKey"/> is consumed synchronously;
+    /// bytes are copied into a MessagePack envelope, posted to the worker,
+    /// and the envelope buffer is zeroed before this method returns. Callers
+    /// should source the memory from <c>SecureKeyCache.UseKey</c> so the key
+    /// never crosses an async boundary as a managed <c>byte[]</c>.
     /// </summary>
-    /// <param name="databaseName">The database filename.</param>
-    /// <param name="newKey">Exactly 32 bytes of new key material.</param>
+    /// <param name="databaseName">The database filename (e.g., "mydb.db").</param>
+    /// <param name="mode">Slot-rekey flavour. Defaults to <see cref="VfsExportMode.VERBATIM"/>.</param>
+    /// <param name="newKey">For <see cref="VfsExportMode.REKEY"/> only:
+    /// exactly 32 bytes of new key material. Must be empty for the other modes.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>Slot-format ciphertext bytes under <paramref name="newKey"/>.</returns>
-    Task<byte[]> ExportRekeyedAsync(string databaseName, ReadOnlyMemory<byte> newKey,
+    /// <returns>Raw bytes in the format selected by <paramref name="mode"/>.</returns>
+    Task<byte[]> ExportDatabaseAsync(string databaseName,
+        VfsExportMode mode = VfsExportMode.VERBATIM,
+        ReadOnlyMemory<byte> newKey = default,
         CancellationToken cancellationToken = default);
 
     /// <summary>

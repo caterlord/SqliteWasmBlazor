@@ -1,5 +1,5 @@
-// Tests for the slot-rekey primitive that drives ExportPlainAsync,
-// ExportRekeyedAsync, and (future) RotateVfsKeyAsync.
+// Tests for the slot-rekey primitive that drives ExportDatabaseAsync
+// (mode=PLAIN / mode=REKEY) and (future) RotateVfsKeyAsync.
 //
 // Scope: pure helper. We synthesize input buffers in the same shapes the
 // worker would produce via poolUtil.exportFile() (4096-byte plain pages or

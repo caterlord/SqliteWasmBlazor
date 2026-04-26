@@ -587,7 +587,7 @@
             // 1. Worker snapshots the currently-registered key, closes the
             //    DB, decrypts every slot under K_old, re-encrypts under CK
             //    with the same path-bound AAD, returns slot-format ciphertext.
-            var rekeyed = await DatabaseService.ExportRekeyedAsync(DatabaseName, ck);
+            var rekeyed = await DatabaseService.ExportDatabaseAsync(DatabaseName, VfsExportMode.REKEY, ck);
 
             // 2. Wipe the local DB (opaque import refuses-on-existing) and
             //    drop any stale registry entry left over from the export.

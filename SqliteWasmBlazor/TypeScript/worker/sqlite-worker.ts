@@ -309,32 +309,23 @@ async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayB
                 (data as any).opaque === true
             );
 
-        case 'exportDb':
-            return await exportDatabase(database!);
-
-        case 'exportPlain':
-            // PRF-keyed export to plain SQLite pages. The worker reads the
-            // registered key for this path, snapshots it, closes the DB
-            // (which clears the registry), and decrypts every slot back to
-            // 4096-byte plaintext. Output bytes are a normal .db file. If
-            // no key is registered, the result is identical to exportDb
-            // (verbatim plain pages from the SAH).
-            return await exportPlain(database!);
-
-        case 'exportRekeyed':
-            // PRF-keyed export rekeyed under a caller-supplied K_new. Worker
-            // snapshots the source key from the registry (if any), closes
-            // the DB, then for every slot decrypts under K_old and
-            // re-encrypts under K_new with the same path-bound AAD. Output
-            // bytes are slot-format ciphertext and ImportDatabaseAsync will
-            // verify-on-write under K_new on the recipient side.
-            if (!binaryPayload) {
-                throw new Error('exportRekeyed requires binaryPayload (VfsKeyHeader for K_new)');
+        case 'exportDb': {
+            // Slot-rekey primitive with three flavours selected by `mode`:
+            //   verbatim → raw OPFS bytes (slot-format ciphertext or plain pages)
+            //   plain    → decrypt under registered K_old → plain pages
+            //   rekey    → decrypt under K_old, re-encrypt under caller-supplied
+            //              K_new (binaryPayload carries VfsKeyHeader)
+            const mode = (data as any).mode as 'verbatim' | 'plain' | 'rekey';
+            let newKey: Uint8Array | undefined;
+            if (mode === 'rekey') {
+                if (!binaryPayload) {
+                    throw new Error(
+                        "exportDb mode='rekey' requires binaryPayload (VfsKeyHeader for K_new)");
+                }
+                newKey = unpackVfsKeyHeader(new Uint8Array(binaryPayload));
             }
-            return await exportRekeyed(
-                database!,
-                unpackVfsKeyHeader(new Uint8Array(binaryPayload)),
-            );
+            return await exportDatabase(database!, mode, newKey);
+        }
 
         case 'importRows':
             if (!binaryPayload) {
@@ -1002,78 +993,52 @@ function snapshotKeyForPath(dbPath: string): Uint8Array | undefined {
     return copy;
 }
 
-async function exportPlain(dbName: string) {
+/**
+ * Slot-rekey primitive — the single export entry point. Always closes the
+ * DB first for a consistent SAH snapshot, then post-processes the raw bytes
+ * according to mode:
+ *   verbatim → return raw bytes (plain pages or slot-format ciphertext as-is)
+ *   plain    → rekeySlots(raw, sourceKey, undefined) → plain SQLite pages
+ *   rekey    → rekeySlots(raw, sourceKey, newKey)    → slot ciphertext under K_new
+ *
+ * AAD binds dbPath, so REKEY output must be re-imported to the same DB name.
+ */
+async function exportDatabase(
+    dbName: string,
+    mode: 'verbatim' | 'plain' | 'rekey',
+    newKey?: Uint8Array,
+) {
     if (!sqlite3 || !poolUtil) {
         throw new Error('SQLite not initialized');
     }
 
     try {
         const dbPath = `/databases/${dbName}`;
-        const sourceKey = snapshotKeyForPath(dbPath);
+        // Verbatim does not touch slot encoding, so the registered key is
+        // irrelevant. Plain and rekey both need K_old to decrypt the source
+        // slots, snapshotted before closeDatabase clears the registry.
+        const sourceKey = mode === 'verbatim' ? undefined : snapshotKeyForPath(dbPath);
 
         await closeDatabase(dbName);
 
         const raw: Uint8Array = poolUtil.exportFile(dbPath);
-        const plain = rekeySlots(raw, dbPath, sourceKey, undefined);
+
+        if (mode === 'verbatim') {
+            logger.info(MODULE_NAME, `✓ Exported verbatim ${dbName}: ${raw.length}B`);
+            return { rawBinary: true, data: raw };
+        }
+
+        const targetKey = mode === 'rekey' ? newKey : undefined;
+        const out = rekeySlots(raw, dbPath, sourceKey, targetKey);
 
         logger.info(
             MODULE_NAME,
-            `✓ Exported plain ${dbName}: ${raw.length}B (slot format) → ${plain.length}B (plain pages)`,
+            `✓ Exported ${mode} ${dbName}: ${raw.length}B → ${out.length}B`,
         );
 
-        return { rawBinary: true, data: plain };
+        return { rawBinary: true, data: out };
     } catch (error) {
-        logger.error(MODULE_NAME, `Failed to export plain ${dbName}:`, error);
-        throw error;
-    }
-}
-
-async function exportRekeyed(dbName: string, newKey: Uint8Array) {
-    if (!sqlite3 || !poolUtil) {
-        throw new Error('SQLite not initialized');
-    }
-
-    try {
-        const dbPath = `/databases/${dbName}`;
-        const sourceKey = snapshotKeyForPath(dbPath);
-
-        await closeDatabase(dbName);
-
-        const raw: Uint8Array = poolUtil.exportFile(dbPath);
-        const rekeyed = rekeySlots(raw, dbPath, sourceKey, newKey);
-
-        logger.info(
-            MODULE_NAME,
-            `✓ Exported rekeyed ${dbName}: ${raw.length}B in → ${rekeyed.length}B out (under K_new)`,
-        );
-
-        return { rawBinary: true, data: rekeyed };
-    } catch (error) {
-        logger.error(MODULE_NAME, `Failed to export rekeyed ${dbName}:`, error);
-        throw error;
-    }
-}
-
-async function exportDatabase(dbName: string) {
-    if (!sqlite3 || !poolUtil) {
-        throw new Error('SQLite not initialized');
-    }
-
-    try {
-        logger.info(MODULE_NAME, `Exporting database ${dbName}`);
-
-        // Close database for consistent snapshot (SAHPool requirement)
-        await closeDatabase(dbName);
-
-        // Export the raw database file from OPFS SAHPool
-        const dbPath = `/databases/${dbName}`;
-        const data: Uint8Array = poolUtil.exportFile(dbPath);
-
-        logger.info(MODULE_NAME, `✓ Exported database: ${dbName} (${data.length} bytes)`);
-
-        return { rawBinary: true, data };
-    } catch (error) {
-        logger.error(MODULE_NAME, `Failed to export database ${dbName}:`, error);
+        logger.error(MODULE_NAME, `Failed to export ${mode} ${dbName}:`, error);
         throw error;
     }
 }

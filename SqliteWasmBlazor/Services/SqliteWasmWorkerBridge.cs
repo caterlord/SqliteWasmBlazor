@@ -497,44 +497,48 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
         }
     }
 
-    /// <summary>
-    /// Export a raw .db file from OPFS SAHPool storage.
-    /// Database is closed before export for a consistent snapshot.
-    /// </summary>
-    public async Task<byte[]> ExportDatabaseAsync(string databaseName, CancellationToken cancellationToken = default)
+    /// <inheritdoc />
+    public Task<byte[]> ExportDatabaseAsync(
+        string databaseName,
+        VfsExportMode mode = VfsExportMode.VERBATIM,
+        ReadOnlyMemory<byte> newKey = default,
+        CancellationToken cancellationToken = default)
     {
-        return await SendRawBinaryRequestAsync(
+        if (mode == VfsExportMode.REKEY)
+        {
+            if (newKey.Length != 32)
+            {
+                throw new ArgumentException(
+                    $"newKey must be exactly 32 bytes for mode={mode}, got {newKey.Length}",
+                    nameof(newKey));
+            }
+            return ExportRekeyAsync(databaseName, newKey, cancellationToken);
+        }
+
+        if (!newKey.IsEmpty)
+        {
+            throw new ArgumentException(
+                $"newKey must be empty for mode={mode}; only mode={VfsExportMode.REKEY} accepts a key",
+                nameof(newKey));
+        }
+
+        var modeWire = mode == VfsExportMode.PLAIN ? "plain" : "verbatim";
+        return SendRawBinaryRequestAsync(
             databaseName,
-            new { type = "exportDb", database = databaseName },
-            "Export database",
+            new { type = "exportDb", database = databaseName, mode = modeWire },
+            $"Export {modeWire}",
             cancellationToken);
     }
 
-    /// <inheritdoc />
-    public async Task<byte[]> ExportPlainAsync(string databaseName, CancellationToken cancellationToken = default)
-    {
-        return await SendRawBinaryRequestAsync(
-            databaseName,
-            new { type = "exportPlain", database = databaseName },
-            "Export plain",
-            cancellationToken);
-    }
-
-    /// <inheritdoc />
-    public Task<byte[]> ExportRekeyedAsync(
+    private Task<byte[]> ExportRekeyAsync(
         string databaseName,
         ReadOnlyMemory<byte> newKey,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken)
     {
         if (!_isInitialized)
         {
             throw new InvalidOperationException(
                 "Worker bridge not initialized. Ensure InitializeSqliteWasmAsync ran before exporting.");
-        }
-        if (newKey.Length != 32)
-        {
-            throw new ArgumentException(
-                $"newKey must be exactly 32 bytes, got {newKey.Length}", nameof(newKey));
         }
 
         var header = new VfsKeyHeader
@@ -555,7 +559,7 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
             var metadataJson = JsonSerializer.Serialize(new
             {
                 id = requestId,
-                data = new { type = "exportRekeyed", database = databaseName }
+                data = new { type = "exportDb", database = databaseName, mode = "rekey" }
             });
             SendBinaryToWorker(envelope.AsSpan(), metadataJson);
         }

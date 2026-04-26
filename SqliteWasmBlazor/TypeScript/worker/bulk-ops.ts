@@ -66,7 +66,7 @@ export function buildInsertSql(header: V2Header, conflictStrategy: number): stri
 
 /**
  * Core bulk insert: builds SQL from header, converts values, inserts rows in a transaction.
- * Shared by bulkImport (V2 header in payload) and bulkImportRaw (metadata in JSON).
+ * Shared by importRows (plain V2 path) and the V2 encrypted import path in crypto-ops.
  */
 export function bulkInsertRows(db: any, header: V2Header, rows: any[][], conflictStrategy: number, label: string, readonlyColumnsMap?: Record<string, string[]>) {
     const columns = header[8];

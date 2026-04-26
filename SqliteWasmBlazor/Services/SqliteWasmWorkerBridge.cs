@@ -144,7 +144,7 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
         }
 
         // Wrap the key in a versioned MessagePack envelope. Same shape as the
-        // V2CryptoHeader path used by bulkExportEncryptedV2 / bulkImportEncryptedV2
+        // V2CryptoHeader path used by deltaExportEncrypted / deltaImportEncrypted
         // so the C# → worker contract is uniform. Keeps a clean Clear() path
         // for zeroization after the call returns.
         var header = new VfsKeyHeader
@@ -653,7 +653,7 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
         }
     }
 
-    public async Task<int> BulkImportAsync(
+    public async Task<int> ImportRowsAsync(
         string databaseName, byte[] data,
         CancellationToken cancellationToken = default)
     {
@@ -676,7 +676,7 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
                 id = requestId,
                 data = new
                 {
-                    type = "bulkImport",
+                    type = "importRows",
                     database = databaseName
                 }
             });
@@ -691,7 +691,7 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
-            throw new TimeoutException("Bulk import timed out.");
+            throw new TimeoutException("Row import timed out.");
         }
         finally
         {
@@ -699,7 +699,7 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
         }
     }
 
-    public async Task<byte[]> BulkExportEncryptedV2Async(
+    public async Task<byte[]> DeltaExportAsync(
         string databaseName, BulkExportMetadata exportMetadata,
         byte[] headerBytes, CancellationToken cancellationToken = default)
     {
@@ -723,7 +723,7 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
             // path to read rows from the open table.
             var dataDict = JsonSerializer.SerializeToNode(exportMetadata, JsonOptions)?.AsObject()
                 ?? new System.Text.Json.Nodes.JsonObject();
-            dataDict["type"] = "bulkExportEncryptedV2";
+            dataDict["type"] = "deltaExportEncrypted";
             dataDict["database"] = databaseName;
 
             var metadataJson = JsonSerializer.Serialize(new { id = requestId, data = dataDict });
@@ -746,7 +746,7 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
         }
     }
 
-    public async Task<byte[]> BulkImportEncryptedV2Async(
+    public async Task<byte[]> DeltaImportAsync(
         string databaseName, byte[] headerBytes,
         byte[] envelopeBytes, CancellationToken cancellationToken = default)
     {
@@ -765,14 +765,14 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
             });
 
             // Binary payload = V2CryptoHeader, binary header = DeltaEnvelope.
-            // Worker dispatches as 'bulkImportEncryptedV2' which now consumes
+            // Worker dispatches as 'deltaImportEncrypted' which now consumes
             // a multi-group envelope and staggers system tables first.
             var metadataJson = JsonSerializer.Serialize(new
             {
                 id = requestId,
                 data = new
                 {
-                    type = "bulkImportEncryptedV2",
+                    type = "deltaImportEncrypted",
                     database = databaseName
                 }
             });
@@ -795,7 +795,7 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
         }
     }
 
-    public async Task<int> BulkRotateKeyAsync(
+    public async Task<int> DeltaRotateKeyAsync(
         string databaseName,
         byte[] oldHeaderBytes, byte[] newHeaderBytes,
         string sharingId, int? newKeyVersion = null,

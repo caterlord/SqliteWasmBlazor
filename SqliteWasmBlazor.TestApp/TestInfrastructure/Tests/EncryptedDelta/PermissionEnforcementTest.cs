@@ -360,7 +360,7 @@ internal class PermissionEnforcementTest(
                     }
                 ]
             };
-            return await DatabaseService!.BulkExportEncryptedV2Async(
+            return await DatabaseService!.DeltaExportAsync(
                 CryptoDatabaseName, metadata, headerBytes);
         }
         finally
@@ -376,7 +376,7 @@ internal class PermissionEnforcementTest(
         byte[] reportBytes;
         try
         {
-            reportBytes = await DatabaseService!.BulkImportEncryptedV2Async(
+            reportBytes = await DatabaseService!.DeltaImportAsync(
                 CryptoDatabaseName, headerBytes, envelopeBytes);
         }
         finally

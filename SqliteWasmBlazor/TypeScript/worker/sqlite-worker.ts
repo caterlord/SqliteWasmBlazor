@@ -12,7 +12,7 @@ import {
     setSqlite3, setPoolUtil, setBaseHref
 } from './worker-state';
 import { bulkInsertRows, type V2Header } from './bulk-ops';
-import { bulkExportEncryptedV2, bulkImportEncryptedV2, bulkRotateKeyV2 } from './crypto-ops';
+import { deltaExportEncrypted, deltaImportEncrypted, bulkRotateKeyV2 } from './crypto-ops';
 import { installOpfsSAHPoolVfs as installPrfVfs } from './vfs-prf/sahpool-prf-vfs';
 import {
     registerKeyForPath,
@@ -257,7 +257,7 @@ async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayB
             // Optional binaryPayload carries a MessagePack-serialized VfsKeyHeader
             // (C# SqliteWasmBlazor.VfsKeyHeader). Its presence switches the DB to
             // the encrypted VFS path. Matches the V2CryptoHeader envelope shape
-            // used by bulkExportEncryptedV2 / bulkImportEncryptedV2 so every C# →
+            // used by deltaExportEncrypted / deltaImportEncrypted so every C# →
             // worker path that ships key material uses a versioned envelope.
             return await openDatabase(
                 database!,
@@ -336,23 +336,23 @@ async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayB
                 unpackVfsKeyHeader(new Uint8Array(binaryPayload)),
             );
 
-        case 'bulkImport':
+        case 'importRows':
             if (!binaryPayload) {
-                throw new Error('bulkImport requires binaryPayload (V2 MessagePack)');
+                throw new Error('importRows requires binaryPayload (V2 MessagePack)');
             }
-            return bulkImport(database!, new Uint8Array(binaryPayload), data as any);
+            return importRows(database!, new Uint8Array(binaryPayload), data as any);
 
-        case 'bulkExportEncryptedV2':
+        case 'deltaExportEncrypted':
             if (!binaryPayload) {
-                throw new Error('bulkExportEncryptedV2 requires binaryPayload (V2CryptoHeader)');
+                throw new Error('deltaExportEncrypted requires binaryPayload (V2CryptoHeader)');
             }
-            return await bulkExportEncryptedV2(database!, new Uint8Array(binaryPayload), data as any);
+            return await deltaExportEncrypted(database!, new Uint8Array(binaryPayload), data as any);
 
-        case 'bulkImportEncryptedV2':
+        case 'deltaImportEncrypted':
             if (!binaryPayload || !binaryHeader) {
-                throw new Error('bulkImportEncryptedV2 requires binaryPayload (V2CryptoHeader) + binaryHeader (ShadowRowGroup)');
+                throw new Error('deltaImportEncrypted requires binaryPayload (V2CryptoHeader) + binaryHeader (ShadowRowGroup)');
             }
-            return await bulkImportEncryptedV2(
+            return await deltaImportEncrypted(
                 database!,
                 new Uint8Array(binaryPayload),
                 new Uint8Array(binaryHeader),
@@ -1079,12 +1079,17 @@ async function exportDatabase(dbName: string) {
 }
 
 /**
- * Plain (non-encrypted) bulk import from V2 MessagePack payload.
- * Used for seeding, initial data load, admin baseline creation.
- * Column metadata comes from _column_registry (generator-seeded, single source of truth).
- * The C# header provides tableName, row data, and conflict strategy.
+ * Plain (non-encrypted) row import from V2 MessagePack payload.
+ * Used for seeding, initial data load, test-data generation.
+ *
+ * DB-agnostic: column metadata comes from the payload header itself
+ * (name, sqlType, csharpType per column), which the C# side builds from
+ * the DTO via reflection. No dependency on _column_registry, so this
+ * works on any open database whose target table matches the header
+ * column list — INSERT names columns explicitly, so SQLite handles the
+ * rest.
  */
-function bulkImport(dbName: string, payload: Uint8Array, metadata: any) {
+function importRows(dbName: string, payload: Uint8Array, metadata: any) {
     const db = openDatabases.get(dbName);
     if (!db) {
         throw new Error(`Database ${dbName} not open`);
@@ -1092,54 +1097,14 @@ function bulkImport(dbName: string, payload: Uint8Array, metadata: any) {
 
     const objects = bigIntUnpackr.unpackMultiple(payload);
     if (objects.length < 1) {
-        throw new Error('bulkImport: empty payload');
+        throw new Error('importRows: empty payload');
     }
 
-    const headerFromPayload = objects[0] as V2Header;
+    const header = objects[0] as V2Header;
     const rows = objects.slice(1) as any[][];
-    const tableName = headerFromPayload[7];
-    const conflictStrategy = metadata.conflictStrategy ?? headerFromPayload[6] ?? 0;
+    const conflictStrategy = metadata.conflictStrategy ?? header[6] ?? 0;
 
-    // Use _column_registry as the authoritative column metadata (types + PK).
-    // The payload rows are in the DTO [Key] attribute order (from C# header).
-    // The registry has a different column order (generator property walk order).
-    // Map payload columns → registry columns by name to reorder rows.
-    const colRows = db.exec({
-        sql: `SELECT ColumnName, SqlType, CSharpType, IsPrimaryKey FROM _column_registry WHERE TableName = ? ORDER BY ColumnIndex`,
-        bind: [tableName],
-        returnValue: 'resultRows',
-        rowMode: 'array'
-    }) as any[][];
-
-    if (!colRows || colRows.length === 0) {
-        throw new Error(`bulkImport: no _column_registry entries for table '${tableName}'`);
-    }
-
-    // Build column name → payload index map from the C# header
-    const payloadColumns = headerFromPayload[8] as string[][];
-    const payloadColNames = payloadColumns.map(c => c[0]);
-
-    // Registry column order with registry types
-    const registryColNames = colRows.map((r: any[]) => r[0] as string);
-    const reorderMap = registryColNames.map(name => payloadColNames.indexOf(name));
-
-    // Verify all registry columns exist in the payload
-    for (let i = 0; i < registryColNames.length; i++) {
-        if (reorderMap[i] < 0) {
-            throw new Error(`bulkImport: column '${registryColNames[i]}' from _column_registry not found in payload header`);
-        }
-    }
-
-    // Reorder each row from payload order → registry order
-    const reorderedRows = rows.map(row => reorderMap.map(srcIdx => row[srcIdx]));
-
-    const registryHeader: any = {
-        7: tableName,
-        8: colRows.map((r: any[]) => [r[0], r[1], r[2]]),
-        9: colRows.find((r: any[]) => r[3])?.[0] ?? 'Id'
-    };
-
-    return bulkInsertRows(db, registryHeader, reorderedRows, conflictStrategy, 'bulkImport');
+    return bulkInsertRows(db, header, rows, conflictStrategy, 'importRows');
 }
 
 // Bulk import/export and crypto operations are in separate modules:

@@ -636,7 +636,7 @@ async function encryptTableGroup(
     }) as any[][];
 
     if (!colRows || colRows.length === 0) {
-        throw new Error(`bulkExportEncryptedV2: no _column_registry entries for table '${tableName}'`);
+        throw new Error(`deltaExportEncrypted: no _column_registry entries for table '${tableName}'`);
     }
 
     const columnNames = colRows.map((r: any[]) => r[0] as string);
@@ -649,7 +649,7 @@ async function encryptTableGroup(
     const sharingIdIdx = columnNames.indexOf('SharingId');
     if (idIdx < 0 || scopeIdx < 0 || sharingIdIdx < 0) {
         throw new Error(
-            `bulkExportEncryptedV2: ${tableName} is not a SyncableEntity (missing Id/SharingScope/SharingId)`);
+            `deltaExportEncrypted: ${tableName} is not a SyncableEntity (missing Id/SharingScope/SharingId)`);
     }
 
     const tableCheck = db.exec({
@@ -659,7 +659,7 @@ async function encryptTableGroup(
         rowMode: 'array'
     });
     if (!tableCheck || tableCheck.length === 0) {
-        throw new Error(`bulkExportEncryptedV2: shadow table ${cryptoTableName} not found`);
+        throw new Error(`deltaExportEncrypted: shadow table ${cryptoTableName} not found`);
     }
 
     const whereClause = (spec.where && spec.where.length > 0) ? ` WHERE ${spec.where}` : '';
@@ -667,7 +667,7 @@ async function encryptTableGroup(
 
     const selectCols = columnNames.map(c => `"${c}"`).join(', ');
     const selectSql = `SELECT ${selectCols} FROM "${tableName}"${whereClause}`;
-    logger.info(MODULE_NAME, `bulkExportEncryptedV2: "${tableName}" — ${selectSql.substring(0, 120)}`);
+    logger.info(MODULE_NAME, `deltaExportEncrypted: "${tableName}" — ${selectSql.substring(0, 120)}`);
 
     const isInt64Col = csharpTypes.map(t => {
         const base = t.endsWith('?') ? t.slice(0, -1) : t;
@@ -753,7 +753,7 @@ async function encryptTableGroup(
     } catch (e) {
         try { stmt.finalize(); } catch { /* ignore */ }
         try { db.exec('ROLLBACK'); } catch { /* ignore */ }
-        logger.error(MODULE_NAME, `bulkExportEncryptedV2: shadow upsert failed in ${cryptoTableName}:`, e);
+        logger.error(MODULE_NAME, `deltaExportEncrypted: shadow upsert failed in ${cryptoTableName}:`, e);
         throw e;
     }
 
@@ -762,7 +762,7 @@ async function encryptTableGroup(
     const schemaHash = computeColumnRegistryHash(db, tableName);
 
     logger.info(MODULE_NAME,
-        `✓ bulkExportEncryptedV2: ${tableName} → ${shadowRowArrays.length} rows`);
+        `✓ deltaExportEncrypted: ${tableName} → ${shadowRowArrays.length} rows`);
 
     // Wire format: [tableName, isSystemTable, rows, schemaHash, batchSignature, senderPublicKeyHex]
     return [tableName, isSystemTable, shadowRowArrays, schemaHash, batchSignature, senderPubKeyHex];
@@ -789,7 +789,7 @@ async function encryptTableGroup(
  * flow that shipped). Multi-group-per-envelope CEK resolution via per-row
  * SharingId → ShareGroup lookup is a follow-up.
  */
-export async function bulkExportEncryptedV2(dbName: string, headerBytes: Uint8Array, metadata: any) {
+export async function deltaExportEncrypted(dbName: string, headerBytes: Uint8Array, metadata: any) {
     const db = openDatabases.get(dbName);
     if (!db) {
         throw new Error(`Database ${dbName} not open`);
@@ -797,7 +797,7 @@ export async function bulkExportEncryptedV2(dbName: string, headerBytes: Uint8Ar
 
     const tables: TableExportSpec[] = Array.isArray(metadata?.tables) ? metadata.tables : [];
     if (tables.length === 0) {
-        throw new Error('bulkExportEncryptedV2: metadata.tables is empty — nothing to export');
+        throw new Error('deltaExportEncrypted: metadata.tables is empty — nothing to export');
     }
 
     const cryptoHeader = parseV2CryptoHeader(headerBytes);
@@ -828,7 +828,7 @@ export async function bulkExportEncryptedV2(dbName: string, headerBytes: Uint8Ar
         const envelope = pack([1, senderPubKeyHex, outerSignature, groups]);
 
         logger.info(MODULE_NAME,
-            `✓ bulkExportEncryptedV2: delta envelope → ${groups.length} group(s), ${envelope.length} bytes`);
+            `✓ deltaExportEncrypted: delta envelope → ${groups.length} group(s), ${envelope.length} bytes`);
         return { rawBinary: true, data: envelope };
     } finally {
         if (cek) { clearBytes(cek); }
@@ -874,7 +874,7 @@ async function applyShadowRowGroup(
     let rowsDeleted = 0;
 
     if (!Array.isArray(group) || group.length < 3) {
-        throw new Error('bulkImportEncryptedV2: invalid ShadowRowGroup');
+        throw new Error('deltaImportEncrypted: invalid ShadowRowGroup');
     }
     const tableName = group[0] as string;
     const shadowRows = group[2] as unknown[][];
@@ -887,7 +887,7 @@ async function applyShadowRowGroup(
             const localHash = computeColumnRegistryHash(db, tableName);
             if (senderHash !== localHash) {
                 throw new Error(
-                    `bulkImportEncryptedV2: schema mismatch for table '${tableName}' — ` +
+                    `deltaImportEncrypted: schema mismatch for table '${tableName}' — ` +
                     `sender hash ${senderHash.substring(0, 16)}… ≠ local hash ${localHash.substring(0, 16)}…. ` +
                     `All clients must run the same app version.`);
             }
@@ -901,7 +901,7 @@ async function applyShadowRowGroup(
         const senderPubKeyHex = group.length >= 6 ? group[5] as string : null;
 
         if (!batchSignature || !senderPubKeyHex) {
-            throw new Error('bulkImportEncryptedV2: ShadowRowGroup missing batch signature or sender key');
+            throw new Error('deltaImportEncrypted: ShadowRowGroup missing batch signature or sender key');
         }
 
         const ciphertexts = shadowRows.map((sr: any[]) => sr[3] as Uint8Array);
@@ -959,7 +959,7 @@ async function applyShadowRowGroup(
             }) as any[][];
 
             if (!colRows || colRows.length === 0) {
-                throw new Error(`bulkImportEncryptedV2: no _column_registry entries for table '${tableName}'`);
+                throw new Error(`deltaImportEncrypted: no _column_registry entries for table '${tableName}'`);
             }
 
             const columnNames = colRows.map((r: any[]) => r[0] as string);
@@ -1123,7 +1123,7 @@ async function applyShadowRowGroup(
                     db.exec('COMMIT');
                 } catch (e) {
                     try { db.exec('ROLLBACK'); } catch { /* ignore */ }
-                    logger.error(MODULE_NAME, `bulkImportEncryptedV2: shadow upsert failed:`, e);
+                    logger.error(MODULE_NAME, `deltaImportEncrypted: shadow upsert failed:`, e);
                     throw e;
                 }
             }
@@ -1159,7 +1159,7 @@ async function applyShadowRowGroup(
                 const rows = approvedInserts.map(a => a.converted);
                 const result = bulkInsertRows(db, v2ImportHeader, rows,
                     3 /* DeltaWins = always overwrite; permission enforcement is the gatekeeper */,
-                    'bulkImportEncryptedV2');
+                    'deltaImportEncrypted');
                 rowsImported = result.rowsAffected;
             }
         }
@@ -1182,7 +1182,7 @@ async function applyShadowRowGroup(
  * Outer signature is verified via `verifyBatch([pack(groups)], [empty])`
  * — the identical byte layout the exporter signs.
  */
-export async function bulkImportEncryptedV2(
+export async function deltaImportEncrypted(
     dbName: string, headerBytes: Uint8Array, envelopeBytes: Uint8Array, metadata: any
 ) {
     const db = openDatabases.get(dbName);
@@ -1216,18 +1216,18 @@ export async function bulkImportEncryptedV2(
         // Unpack envelope: [version, senderEd25519PubHex, outerSignature, groups]
         const envelope = unpack(envelopeBytes) as unknown[];
         if (!Array.isArray(envelope) || envelope.length < 4) {
-            throw new Error('bulkImportEncryptedV2: invalid DeltaEnvelope (expected 4-element array)');
+            throw new Error('deltaImportEncrypted: invalid DeltaEnvelope (expected 4-element array)');
         }
         const version = envelope[0] as number;
         if (version !== 1) {
-            throw new Error(`bulkImportEncryptedV2: unsupported envelope version ${version}`);
+            throw new Error(`deltaImportEncrypted: unsupported envelope version ${version}`);
         }
         const senderPubHex = envelope[1] as string;
         const outerSignature = envelope[2] as Uint8Array;
         const groups = envelope[3] as unknown[][];
 
         if (!Array.isArray(groups)) {
-            throw new Error('bulkImportEncryptedV2: DeltaEnvelope.groups is not an array');
+            throw new Error('deltaImportEncrypted: DeltaEnvelope.groups is not an array');
         }
 
         // Verify outer signature using the identical byte layout the exporter
@@ -1269,7 +1269,7 @@ export async function bulkImportEncryptedV2(
         }
 
         logger.info(MODULE_NAME,
-            `✓ bulkImportEncryptedV2: envelope → ${indexedGroups.length} groups, ${totalImported} imported, ${totalDeleted} deleted, ${totalSkipped} skipped, ${errors.length} errors`);
+            `✓ deltaImportEncrypted: envelope → ${indexedGroups.length} groups, ${totalImported} imported, ${totalDeleted} deleted, ${totalSkipped} skipped, ${errors.length} errors`);
 
         return packReport(totalImported, totalSkipped, totalDeleted);
     } finally {

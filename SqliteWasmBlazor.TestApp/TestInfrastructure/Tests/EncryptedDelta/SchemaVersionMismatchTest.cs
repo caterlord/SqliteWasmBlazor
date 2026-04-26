@@ -90,7 +90,7 @@ internal class SchemaVersionMismatchTest(
         byte[] envelopeBytes;
         try
         {
-            envelopeBytes = await DatabaseService.BulkExportEncryptedV2Async(
+            envelopeBytes = await DatabaseService.DeltaExportAsync(
                 CryptoDatabaseName, exportMetadata, headerBytes);
         }
         finally
@@ -140,7 +140,7 @@ internal class SchemaVersionMismatchTest(
         headerBytes = MessagePackSerializer.Serialize(v2Header);
         try
         {
-            await DatabaseService.BulkImportEncryptedV2Async(
+            await DatabaseService.DeltaImportAsync(
                 CryptoDatabaseName, headerBytes, envelopeBytes);
 
             // If we get here without error, the schema check didn't work

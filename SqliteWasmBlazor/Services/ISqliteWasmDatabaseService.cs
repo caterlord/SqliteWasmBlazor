@@ -177,14 +177,22 @@ public interface ISqliteWasmDatabaseService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Plain (non-encrypted) bulk import from V2 MessagePack payload.
-    /// Used for seeding, initial data load, admin baseline creation.
+    /// Plain (non-encrypted) row import from a V2 MessagePack payload built
+    /// via <c>MessagePackFileHeaderV2</c>. Worker streams rows into the
+    /// named target table using a single prepared INSERT inside a
+    /// transaction.
+    ///
+    /// DB-agnostic: column metadata (name, SQL type, C# type) is read from
+    /// the payload header itself — no dependency on a CryptoSync
+    /// <c>_column_registry</c>. Suitable for plain SQLite databases
+    /// (test-data generation, seeding) as well as CryptoSync-bootstrapped
+    /// DBs.
     /// </summary>
     /// <param name="databaseName">Target database filename.</param>
     /// <param name="data">V2 MessagePack bytes: header + row arrays.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Number of rows imported.</returns>
-    Task<int> BulkImportAsync(string databaseName, byte[] data,
+    Task<int> ImportRowsAsync(string databaseName, byte[] data,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -193,7 +201,7 @@ public interface ISqliteWasmDatabaseService
     /// detection), signs per-row (Layer 2), upserts shadow, returns
     /// MessagePack-packed ShadowRowGroup.
     /// </summary>
-    Task<byte[]> BulkExportEncryptedV2Async(string databaseName, BulkExportMetadata exportMetadata,
+    Task<byte[]> DeltaExportAsync(string databaseName, BulkExportMetadata exportMetadata,
         byte[] headerBytes, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -210,7 +218,7 @@ public interface ISqliteWasmDatabaseService
     /// <param name="envelopeBytes">MessagePack-packed DeltaEnvelope.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>MessagePack-packed ImportReport bytes.</returns>
-    Task<byte[]> BulkImportEncryptedV2Async(string databaseName, byte[] headerBytes,
+    Task<byte[]> DeltaImportAsync(string databaseName, byte[] headerBytes,
         byte[] envelopeBytes, CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -232,7 +240,7 @@ public interface ISqliteWasmDatabaseService
     /// <param name="newKeyVersion">Optional new key version to stamp on rotated rows.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Number of shadow rows re-encrypted (across all tables).</returns>
-    Task<int> BulkRotateKeyAsync(string databaseName,
+    Task<int> DeltaRotateKeyAsync(string databaseName,
         byte[] oldHeaderBytes, byte[] newHeaderBytes,
         string sharingId, int? newKeyVersion = null,
         CancellationToken cancellationToken = default);

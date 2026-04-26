@@ -50,7 +50,7 @@ public class SyncOrchestrator(
         var headerBytes = MessagePackSerializer.Serialize(header);
         try
         {
-            return await databaseService.BulkExportEncryptedV2Async(
+            return await databaseService.DeltaExportAsync(
                 databaseName, metadata, headerBytes, cancellationToken);
         }
         finally
@@ -73,7 +73,7 @@ public class SyncOrchestrator(
         var headerBytes = MessagePackSerializer.Serialize(header);
         try
         {
-            var reportBytes = await databaseService.BulkImportEncryptedV2Async(
+            var reportBytes = await databaseService.DeltaImportAsync(
                 databaseName, headerBytes, envelopeBytes, cancellationToken);
             return MessagePackSerializer.Deserialize<ImportReport>(reportBytes);
         }

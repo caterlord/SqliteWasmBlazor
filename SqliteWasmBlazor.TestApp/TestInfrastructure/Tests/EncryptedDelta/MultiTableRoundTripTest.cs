@@ -108,7 +108,7 @@ internal class MultiTableRoundTripTest(
         byte[] envelopeBytes;
         try
         {
-            envelopeBytes = await DatabaseService.BulkExportEncryptedV2Async(
+            envelopeBytes = await DatabaseService.DeltaExportAsync(
                 CryptoDatabaseName, exportMetadata, headerBytes);
         }
         finally
@@ -167,7 +167,7 @@ internal class MultiTableRoundTripTest(
         byte[] reportBytes;
         try
         {
-            reportBytes = await DatabaseService.BulkImportEncryptedV2Async(
+            reportBytes = await DatabaseService.DeltaImportAsync(
                 CryptoDatabaseName, headerBytes, envelopeBytes);
         }
         finally

@@ -36,7 +36,7 @@
                       also populates the source's _crypto_ shadow per-row
         2. import₁  — BulkImportEncryptedAsync(tempA, envelope₁, keyOld)
                       populates tempA.open AND tempA._crypto_ shadow
-        3. rotate   — BulkRotateKeyAsync(tempA, keyOld → keyNew)
+        3. rotate   — DeltaRotateKeyAsync(tempA, keyOld → keyNew)
                       ← THE hot-path measurement (single worker call, in-place
                          shadow rewrite, no data round-trip to C#)
         4. export₂  — BulkExportEncryptedAsync(tempA, keyNew) → envelope₂
@@ -57,7 +57,7 @@
     subsequent export₂ (which doesn't read the shadow — it reads tempA.open)
     would still yield a valid envelope but tempA.open is unchanged by the
     rotation. The critical correctness check happens inside the rotate call
-    itself: BulkRotateKeyAsync reads each shadow row, calls AES-GCM decrypt
+    itself: DeltaRotateKeyAsync reads each shadow row, calls AES-GCM decrypt
     with keyOld (which authenticates the ciphertext via the GCM tag —
     tampering or corruption would throw), then encrypts with keyNew. A
     successful rotate return ⇒ every shadow row's GCM tag verified ⇒ the
@@ -274,7 +274,7 @@
 
             var sw1 = Stopwatch.StartNew();
             var oldHeaderBytes = MessagePackSerializer.Serialize(oldHeader);
-            var envelope1 = await DatabaseService.BulkExportEncryptedV2Async(
+            var envelope1 = await DatabaseService.DeltaExportAsync(
                 SourceDbName, exportMetadata, oldHeaderBytes);
             sw1.Stop();
             oldHeader.Clear();
@@ -288,7 +288,7 @@
             var sw2 = Stopwatch.StartNew();
             oldHeader = await BuildHeaderFromSourceAsync();
             oldHeaderBytes = MessagePackSerializer.Serialize(oldHeader);
-            var report1Bytes = await DatabaseService.BulkImportEncryptedV2Async(
+            var report1Bytes = await DatabaseService.DeltaImportAsync(
                 TempADbName, oldHeaderBytes, envelope1);
             sw2.Stop();
             oldHeader.Clear();
@@ -323,7 +323,7 @@
             var newHdrBytes = MessagePackSerializer.Serialize(newHeader);
 
             var sw3 = Stopwatch.StartNew();
-            var rotatedRowCount = await DatabaseService.BulkRotateKeyAsync(
+            var rotatedRowCount = await DatabaseService.DeltaRotateKeyAsync(
                 TempADbName, oldHdrBytes, newHdrBytes,
                 sharingId: CryptoSyncBootstrap.SystemSharingId,
                 newKeyVersion: 2);
@@ -342,7 +342,7 @@
             newHeader = await BuildHeaderAsync(TempADbName, newGroupContext);
             newHdrBytes = MessagePackSerializer.Serialize(newHeader);
             var sw4 = Stopwatch.StartNew();
-            var envelope2 = await DatabaseService.BulkExportEncryptedV2Async(
+            var envelope2 = await DatabaseService.DeltaExportAsync(
                 TempADbName, exportMetadata, newHdrBytes);
             sw4.Stop();
             newHeader.Clear();
@@ -359,7 +359,7 @@
             newHeader = await BuildHeaderAsync(TempBDbName, newGroupContext);
             newHdrBytes = MessagePackSerializer.Serialize(newHeader);
             var sw5 = Stopwatch.StartNew();
-            var report2Bytes = await DatabaseService.BulkImportEncryptedV2Async(
+            var report2Bytes = await DatabaseService.DeltaImportAsync(
                 TempBDbName, newHdrBytes, envelope2);
             sw5.Stop();
             newHeader.Clear();
@@ -676,7 +676,7 @@
                 MessagePackSerializer.Serialize(stream, dto);
             }
 
-            await DatabaseService.BulkImportAsync(SourceDbName, stream.ToArray());
+            await DatabaseService.ImportRowsAsync(SourceDbName, stream.ToArray());
 
             _statusText = $"Seeding... {batchStart + thisBatch:N0} / {count:N0}";
             StateHasChanged();

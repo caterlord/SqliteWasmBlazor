@@ -137,7 +137,7 @@ internal class WorkerEncryptedRoundTripTest(
 
         try
         {
-            envelopeBytes = await DatabaseService.BulkExportEncryptedV2Async(
+            envelopeBytes = await DatabaseService.DeltaExportAsync(
                 CryptoDatabaseName, exportMetadata, headerBytes);
         }
         finally
@@ -211,7 +211,7 @@ internal class WorkerEncryptedRoundTripTest(
         byte[] importReportBytes;
         try
         {
-            importReportBytes = await DatabaseService.BulkImportEncryptedV2Async(
+            importReportBytes = await DatabaseService.DeltaImportAsync(
                 CryptoDatabaseName, headerBytes, envelopeBytes);
         }
         finally

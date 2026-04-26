@@ -4,17 +4,20 @@ namespace SqliteWasmBlazor.CryptoSync;
 
 /// <summary>
 /// One row in a sync delta — exactly the shape of a row in the
-/// <c>_crypto_&lt;table&gt;</c> shadow table. Per-row encryption: the row's
-/// V2 MessagePack representation is AES-GCM encrypted under the scope's
-/// content key with a fresh per-row <see cref="Nonce"/>; the result lives
-/// in <see cref="EncryptedRow"/>.
+/// <c>_crypto_&lt;table&gt;</c> shadow table. The shadow exists so a node
+/// can forward rows to peers under the group CEK without decrypt+re-encrypt;
+/// at-rest confidentiality is a separate concern handled by the PRF-keyed
+/// VFS. Per-row encryption: the row's V2 MessagePack representation is
+/// AES-GCM encrypted under the scope's content key with a fresh per-row
+/// <see cref="Nonce"/>; the result lives in <see cref="EncryptedRow"/>.
 ///
 /// <para>
 /// <see cref="Id"/>, <see cref="SharingScope"/>, and <see cref="SharingId"/>
-/// are PLAINTEXT metadata so the receiver can route, filter, and store
-/// shadow rows without decrypting. Decisions §14 (plaintext role on
-/// ShareTarget — same principle here for the shadow row), §15
-/// (deterministic content keys), §17 (full re-encryption on revoke).
+/// stay outside the AEAD body so the receiver can route, filter, and store
+/// shadow rows without holding the group CEK. (Disk pages still travel
+/// through the encrypted VFS — these fields are not exposed to relays.)
+/// Decisions §14 (same role-on-ShareTarget principle), §15 (deterministic
+/// content keys), §17 (full re-encryption on revoke).
 /// </para>
 /// </summary>
 [MessagePackObject]
@@ -86,18 +89,20 @@ public sealed class ShadowRowGroup
 }
 
 /// <summary>
-/// Outer envelope shipped between actors via the relay. Plaintext header
-/// (sender public key, signature) wraps the encrypted body
-/// (<see cref="Groups"/> — each group's rows are individually encrypted
-/// under their scope's content key).
+/// Outer envelope shipped between actors via the relay. Header (sender
+/// public key, signature) wraps the body (<see cref="Groups"/> — each
+/// group's rows are individually encrypted under their scope's content
+/// key). The relay sees only what the sender chooses to put outside the
+/// per-row AEAD; the at-rest VFS layer plays no role here because the
+/// envelope leaves the device.
 ///
 /// <para>
 /// Wire format = the shadow rows themselves. There is NO secondary batch
 /// encryption of the whole payload; the per-row encryption inside each
-/// <see cref="ShadowRow.EncryptedRow"/> is the only confidentiality layer.
-/// The sender's Ed25519 signature over the MessagePack-serialized
-/// <see cref="Groups"/> field (NOT the whole envelope — just the body)
-/// gives integrity + authenticity.
+/// <see cref="ShadowRow.EncryptedRow"/> is the only confidentiality layer
+/// on the wire. The sender's Ed25519 signature over the MessagePack-
+/// serialized <see cref="Groups"/> field (NOT the whole envelope — just
+/// the body) gives integrity + authenticity.
 /// </para>
 ///
 /// <para>

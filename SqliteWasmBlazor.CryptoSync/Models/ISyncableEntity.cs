@@ -26,16 +26,18 @@ public abstract class SyncableEntity
 }
 
 /// <summary>
-/// Visibility scopes. All are encrypted — the difference is WHO gets the scope key.
+/// Visibility scopes. Determines WHO gets the group CEK that the row's
+/// shadow copy is encrypted under for sync forwarding. (At-rest pages are
+/// already protected by the PRF-keyed VFS regardless of scope.)
 /// </summary>
 public enum SharingScope
 {
-    /// <summary>Encrypted, ALL verified contacts get the scope key.</summary>
+    /// <summary>ALL verified contacts get the scope key.</summary>
     PUBLIC = 0,
 
-    /// <summary>Encrypted, only selected contacts get the scope key.</summary>
+    /// <summary>Only selected contacts get the scope key.</summary>
     SHARED = 1,
 
-    /// <summary>Encrypted, only this client's key.</summary>
+    /// <summary>Only this client's key.</summary>
     CLIENT = 2
 }

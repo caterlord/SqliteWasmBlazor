@@ -35,6 +35,11 @@ public static class SqliteWasmServiceCollectionExtensions
         }
 
         services.AddSingleton<ISqliteWasmDatabaseService>(SqliteWasmWorkerBridge.Instance);
+
+        services.AddSingleton<DbInitializationService>();
+        services.AddSingleton<IDbInitializationStatus>(sp => sp.GetRequiredService<DbInitializationService>());
+        services.AddSingleton<IDbInitializationReporter>(sp => sp.GetRequiredService<DbInitializationService>());
+
         return services;
     }
 
@@ -51,13 +56,18 @@ public static class SqliteWasmServiceCollectionExtensions
         CancellationToken cancellationToken = default)
     {
         var options = services.GetRequiredService<IOptions<SqliteWasmOptions>>().Value;
+        var reporter = services.GetRequiredService<IDbInitializationReporter>();
+
+        reporter.Report(DbInitState.INITIALIZING);
 
         try
         {
             await SqliteWasmWorkerBridge.Instance.InitializeAsync(options, cancellationToken);
+            reporter.Report(DbInitState.READY);
         }
         catch (Exception ex)
         {
+            reporter.Report(DbInitState.TAB_LOCKED, new TabLockedFailure(string.Empty));
             throw new InvalidOperationException(
 $"""
 {ex.Message}
@@ -71,6 +81,8 @@ Please close any other tabs running this application and refresh the page.
     /// <summary>
     /// Initializes the SqliteWasm worker bridge and applies pending EF Core migrations
     /// for <typeparamref name="TContext"/>, recovering the migration history when necessary.
+    /// Boot outcome is reported to <see cref="IDbInitializationReporter"/>; consumers
+    /// observe via <see cref="IDbInitializationStatus"/>.
     /// </summary>
     /// <typeparam name="TContext">The DbContext type to initialize.</typeparam>
     /// <param name="services">The service provider.</param>
@@ -78,8 +90,20 @@ Please close any other tabs running this application and refresh the page.
         this IServiceProvider services)
         where TContext : DbContext
     {
-        var initService = services.GetRequiredService<IDBInitializationService>();
+        var reporter = services.GetRequiredService<IDbInitializationReporter>();
+        var status = services.GetRequiredService<IDbInitializationStatus>();
         var options = services.GetRequiredService<IOptions<SqliteWasmOptions>>().Value;
+
+        // Skip if a previous boot stage already failed — don't overwrite that diagnosis.
+        if (status.State is DbInitState.TAB_LOCKED
+                          or DbInitState.SCHEMA_INCOMPATIBLE
+                          or DbInitState.TIMEOUT
+                          or DbInitState.FAILED)
+        {
+            return;
+        }
+
+        reporter.Report(DbInitState.INITIALIZING);
 
         try
         {
@@ -87,15 +111,11 @@ Please close any other tabs running this application and refresh the page.
         }
         catch (Exception ex)
         {
-            initService.ErrorMessage =
-$"""
-{ex.Message}
-Database is locked by another browser tab.
-This application uses OPFS (Origin Private File System) which only allows one tab to access the database at a time.
-Please close any other tabs running this application and refresh the page.
-""";
+            reporter.Report(DbInitState.TAB_LOCKED, new TabLockedFailure(GetDatabaseName<TContext>(services, ex)));
             return;
         }
+
+        var databaseName = GetDatabaseName<TContext>(services, null);
 
         try
         {
@@ -114,52 +134,86 @@ Please close any other tabs running this application and refresh the page.
                                             (ex.Message.Contains("table", StringComparison.OrdinalIgnoreCase) &&
                                              ex.Message.Contains("exist", StringComparison.OrdinalIgnoreCase)))
                 {
-                    var recovered = await RecoverMigrationHistoryAsync(dbContext);
+                    var recovery = await RecoverMigrationHistoryAsync(dbContext);
 
-                    if (!recovered)
+                    if (!recovery.Succeeded)
                     {
-                        initService.ErrorMessage =
-"""
-Database schema is incompatible with the current version.
-This can happen after updating the application or testing with different database formats.
-
-Click the "Reset Database" button below to delete the incompatible database and recreate it with the correct schema.
-""";
+                        reporter.Report(
+                            DbInitState.SCHEMA_INCOMPATIBLE,
+                            new SchemaIncompatibleFailure(databaseName, recovery.Mismatches));
+                        return;
                     }
                 }
             }
+
+            reporter.Report(DbInitState.READY);
         }
         catch (TimeoutException)
         {
-            initService.ErrorMessage =
-"""
-Database is locked by another browser tab.
-This application uses OPFS (Origin Private File System) which only allows one tab to access the database at a time.
-Please close any other tabs running this application and refresh the page.
-""";
+            reporter.Report(DbInitState.TIMEOUT, new TimeoutFailure(databaseName));
         }
         catch (Exception ex)
         {
-            initService.ErrorMessage = $"ERROR initializing database: {ex.GetType().Name}: {ex.Message}";
-            initService.ErrorMessage += Environment.NewLine;
-            initService.ErrorMessage += $"{ex.StackTrace}";
+            reporter.Report(DbInitState.FAILED, new GenericInitFailure(databaseName, ex));
         }
     }
 
+    private static string GetDatabaseName<TContext>(IServiceProvider services, Exception? _)
+        where TContext : DbContext
+    {
+        try
+        {
+            using var scope = services.CreateScope();
+            var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<TContext>>();
+            using var ctx = factory.CreateDbContext();
+            // SqliteWasmConnection's Data Source carries the OPFS filename.
+            var connectionString = ctx.Database.GetDbConnection().ConnectionString;
+            return ExtractDataSource(connectionString) ?? typeof(TContext).Name;
+        }
+        catch
+        {
+            return typeof(TContext).Name;
+        }
+    }
+
+    private static string? ExtractDataSource(string connectionString)
+    {
+        const string key = "Data Source=";
+        var idx = connectionString.IndexOf(key, StringComparison.OrdinalIgnoreCase);
+        if (idx < 0)
+        {
+            return null;
+        }
+
+        var start = idx + key.Length;
+        var end = connectionString.IndexOf(';', start);
+        return end < 0
+            ? connectionString[start..].Trim()
+            : connectionString[start..end].Trim();
+    }
+
+    /// <summary>
+    /// Outcome of <see cref="RecoverMigrationHistoryAsync"/>: whether recovery
+    /// landed on a usable schema, and any per-column mismatches detected
+    /// during verification.
+    /// </summary>
+    private sealed record RecoveryResult(bool Succeeded, IReadOnlyList<SchemaMismatch> Mismatches);
+
     /// <summary>
     /// Recovers the migration history table when it's missing or corrupted.
-    /// Verifies the schema matches expectations after recovery.
+    /// Walks every entity in the EF model and verifies its mapped columns
+    /// exist in the live SQLite schema. Returns structured per-column
+    /// diagnostics so callers can render actionable UI rather than a string.
     /// </summary>
-    /// <returns>True if recovery succeeded and schema is valid, false otherwise.</returns>
-    private static async Task<bool> RecoverMigrationHistoryAsync(DbContext dbContext)
+    private static async Task<RecoveryResult> RecoverMigrationHistoryAsync(DbContext dbContext)
     {
         var connection = dbContext.Database.GetDbConnection();
+        var mismatches = new List<SchemaMismatch>();
 
         try
         {
             await connection.OpenAsync();
 
-            // Create migrations history table if missing
             await using var cmd = connection.CreateCommand();
             cmd.CommandText = @"
                 CREATE TABLE IF NOT EXISTS __EFMigrationsHistory (
@@ -168,7 +222,6 @@ Please close any other tabs running this application and refresh the page.
                 );";
             await cmd.ExecuteNonQueryAsync();
 
-            // Mark all migrations as applied (assumes current schema matches latest migration)
             var allMigrations = dbContext.Database.GetMigrations();
             foreach (var migration in allMigrations)
             {
@@ -190,23 +243,15 @@ Please close any other tabs running this application and refresh the page.
                 await cmd.ExecuteNonQueryAsync();
             }
 
-            // Verify the schema is actually compatible
-            // Note: GetPendingMigrationsAsync will return empty since we just marked them all as applied,
-            // so we need to actually test if the schema works
-
-            // Check if tables exist
             cmd.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name != '__EFMigrationsHistory';";
             cmd.Parameters.Clear();
             var tableCount = await cmd.ExecuteScalarAsync();
 
             if (tableCount is null || Convert.ToInt64(tableCount) == 0)
             {
-                // No tables exist - schema is wrong
-                return false;
+                return new RecoveryResult(false, mismatches);
             }
 
-            // Try to actually use the DbContext to verify the schema matches
-            // This will throw if column names/types don't match
             var modelEntityTypes = dbContext.Model.GetEntityTypes();
             foreach (var entityType in modelEntityTypes)
             {
@@ -216,52 +261,46 @@ Please close any other tabs running this application and refresh the page.
                     continue;
                 }
 
-                // Query with SELECT * to force column mapping validation
-                // This will fail if column names or types don't match the model
                 cmd.CommandText = $"SELECT * FROM \"{tableName}\" LIMIT 0";
                 cmd.Parameters.Clear();
 
-                // ExecuteReader will force schema validation
                 await using var reader = await cmd.ExecuteReaderAsync();
 
-                // Get expected columns from the EF Core model (exclude shadow properties)
-                // Only include properties that map to database columns
                 var expectedColumns = entityType.GetProperties()
                     .Where(p => !p.IsShadowProperty())
                     .Select(p => p.GetColumnName())
+                    .Where(c => !string.IsNullOrEmpty(c))
+                    .Select(c => c!)
                     .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-                // Get actual columns from the database
                 var actualColumns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 for (int i = 0; i < reader.FieldCount; i++)
                 {
                     actualColumns.Add(reader.GetName(i));
                 }
 
-                // Check if all expected columns exist in the database
                 foreach (var expectedColumn in expectedColumns)
                 {
                     if (!actualColumns.Contains(expectedColumn))
                     {
-                        // Missing column - schema is incompatible (e.g., missing "CreatedAt")
-                        return false;
+                        mismatches.Add(new SchemaMismatch(tableName, expectedColumn, null));
                     }
                 }
 
-                // Check if column counts match (catches extra columns in DB)
-                if (actualColumns.Count != expectedColumns.Count)
+                foreach (var actualColumn in actualColumns)
                 {
-                    // Column count mismatch - schema is incompatible
-                    return false;
+                    if (!expectedColumns.Contains(actualColumn))
+                    {
+                        mismatches.Add(new SchemaMismatch(tableName, null, actualColumn));
+                    }
                 }
             }
 
-            return true;
+            return new RecoveryResult(mismatches.Count == 0, mismatches);
         }
         catch
         {
-            // Recovery or verification failed
-            return false;
+            return new RecoveryResult(false, mismatches);
         }
         finally
         {

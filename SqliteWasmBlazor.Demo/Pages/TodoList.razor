@@ -6,7 +6,7 @@
 @using SqliteWasmBlazor.Models.Extensions
 @inject IDbContextFactory<TodoDbContext> DbContextFactory
 @inject ISnackbar Snackbar
-@inject IDBInitializationService DBInitializationService
+@inject IDbInitializationStatus DbInitializationStatus
 @implements IDisposable
 
 <PageTitle>Todo List</PageTitle>
@@ -22,7 +22,7 @@
 
     <DatabaseErrorAlert />
 
-    @if (DBInitializationService.ErrorMessage is not null)
+    @if (DbInitializationStatus.State != DbInitState.READY)
     {
         return;
     }

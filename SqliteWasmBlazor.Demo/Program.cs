@@ -55,10 +55,7 @@ builder.Services.AddDbContextFactory<NoteDbContext>(options =>
     options.UseSqliteWasm(connection);
 });
 
-// Register database initialization service
-builder.Services.AddSingleton<IDBInitializationService, DBInitializationService>();
-
-// Register SqliteWasm database management service
+// Register SqliteWasm database management service (also registers IDbInitializationStatus / Reporter)
 builder.Services.AddSqliteWasm(o => o.HostEnvironment = builder.HostEnvironment);
 
 // Initialize FileOperations JS module for import/export

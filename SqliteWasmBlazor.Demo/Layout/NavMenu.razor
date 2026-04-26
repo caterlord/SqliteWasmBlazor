@@ -1,6 +1,6 @@
 <MudNavMenu>
     <MudNavLink Href="" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.Home">Home</MudNavLink>
-    @if (DBInitializationService.ErrorMessage is null)
+    @if (DbInitializationStatus.State == DbInitState.READY)
     {
         <MudNavLink Href="todos" Icon="@Icons.Material.Filled.CheckBox">Todo List</MudNavLink>
         <MudHidden Breakpoint="Breakpoint.SmAndDown">
@@ -16,5 +16,5 @@
 @code
 {
     [Inject]
-    public required IDBInitializationService DBInitializationService { get; init; }
+    public required IDbInitializationStatus DbInitializationStatus { get; init; }
 }

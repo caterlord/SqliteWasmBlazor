@@ -234,6 +234,106 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
         _openDatabases.Remove(databaseName);
     }
 
+    /// <inheritdoc />
+    public Task<VfsKeyInstallOutcome> InstallEncryptionKeyAsync(
+        string databaseName,
+        ReadOnlySpan<byte> key,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_isInitialized)
+        {
+            throw new InvalidOperationException(
+                "Worker bridge not initialized. Ensure InitializeSqliteWasmAsync ran before installing keys.");
+        }
+        if (key.Length != 32)
+        {
+            throw new ArgumentException(
+                $"key must be exactly 32 bytes, got {key.Length}", nameof(key));
+        }
+
+        // Span is valid only for this synchronous prologue. Copy → header →
+        // MessagePack envelope → postMessage all happen before any await.
+        // The async tail runs in a helper that owns zeroization of both the
+        // header.Key managed copy and the serialized envelope.
+        var header = new VfsKeyHeader
+        {
+            Version = 1,
+            Key = key.ToArray(),
+            AadVersion = "v1",
+        };
+
+        var requestId = Interlocked.Increment(ref _nextRequestId);
+        var tcs = new TaskCompletionSource<SqlQueryResult>();
+        _pendingRequests[requestId] = tcs;
+
+        byte[] envelope;
+        try
+        {
+            envelope = MessagePackSerializer.Serialize(header);
+            var metadataJson = JsonSerializer.Serialize(new
+            {
+                id = requestId,
+                data = new { type = "registerEncryptionKey", database = databaseName }
+            });
+            SendBinaryToWorker(envelope.AsSpan(), metadataJson);
+        }
+        catch
+        {
+            _pendingRequests.TryRemove(requestId, out _);
+            header.Clear();
+            throw;
+        }
+
+        return WaitAndZeroizeKeyEnvelope(tcs.Task, header, envelope, requestId, cancellationToken);
+    }
+
+    private async Task<VfsKeyInstallOutcome> WaitAndZeroizeKeyEnvelope(
+        Task<SqlQueryResult> response,
+        VfsKeyHeader header,
+        byte[] envelope,
+        int requestId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var registration = cancellationToken.Register(() =>
+            {
+                _pendingRequests.TryRemove(requestId, out _);
+                response.ContinueWith(_ => { }, TaskScheduler.Default);
+            });
+            var result = await response.WaitAsync(cancellationToken);
+            // Worker encodes the verify outcome in rowsAffected (same channel
+            // ExistsDatabaseAsync uses): 0=NoExistingDb, 1=Match, 2=WrongKey.
+            return result.RowsAffected switch
+            {
+                0 => VfsKeyInstallOutcome.NO_EXISTING_DB,
+                1 => VfsKeyInstallOutcome.MATCH,
+                2 => VfsKeyInstallOutcome.WRONG_KEY,
+                var other => throw new InvalidOperationException(
+                    $"Worker returned unexpected install outcome code {other}"),
+            };
+        }
+        finally
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(envelope);
+            header.Clear();
+            _pendingRequests.TryRemove(requestId, out _);
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task ClearEncryptionKeyAsync(
+        string databaseName,
+        CancellationToken cancellationToken = default)
+    {
+        if (!_isInitialized)
+        {
+            return; // Worker never initialized — nothing to clear.
+        }
+        var request = new { type = "clearEncryptionKey", database = databaseName };
+        await SendRequestAsync(request, cancellationToken);
+    }
+
     /// <summary>
     /// Execute SQL in the worker and return results.
     /// </summary>

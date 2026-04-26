@@ -4,6 +4,34 @@
 namespace SqliteWasmBlazor;
 
 /// <summary>
+/// Outcome returned by <see cref="ISqliteWasmDatabaseService.InstallEncryptionKeyAsync"/>.
+/// The worker stores the key, then — if a DB file already exists at the path —
+/// AEAD-tests slot 0 against the key. On <see cref="WRONG_KEY"/> the worker
+/// drops the registry entry before returning, so the registry never carries
+/// a known-wrong key.
+/// </summary>
+public enum VfsKeyInstallOutcome
+{
+    /// <summary>
+    /// No DB file exists at this path. The key is registered and the next
+    /// write through the encrypted VFS will materialize a fresh DB.
+    /// </summary>
+    NO_EXISTING_DB = 0,
+
+    /// <summary>
+    /// A DB file exists and slot 0 decrypts cleanly — key verified.
+    /// </summary>
+    MATCH = 1,
+
+    /// <summary>
+    /// A DB file exists but slot 0 failed AEAD authentication — the key
+    /// does not match what encrypted this DB. The worker has cleared the
+    /// registry entry; caller must re-install with a different key or wipe.
+    /// </summary>
+    WRONG_KEY = 2,
+}
+
+/// <summary>
 /// Service for managing SQLite databases in OPFS (Origin Private File System).
 /// Provides operations for checking existence, deleting, renaming, and closing databases.
 /// </summary>
@@ -119,5 +147,42 @@ public interface ISqliteWasmDatabaseService
     Task<int> BulkRotateKeyAsync(string databaseName,
         byte[] oldHeaderBytes, byte[] newHeaderBytes,
         string sharingId, int? newKeyVersion = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Registers a 32-byte ChaCha20-Poly1305 key for the given DB path in
+    /// the worker's key registry and immediately AEAD-tests slot 0 against
+    /// the key when a DB file already exists at that path. Subsequent
+    /// <c>OpenDatabaseAsync(database)</c> calls (without an explicit key)
+    /// will pick up the registered key at xOpen time and route through the
+    /// encrypted VFS path.
+    ///
+    /// The span is consumed synchronously: bytes are copied into a
+    /// MessagePack envelope, posted to the worker, and the envelope buffer
+    /// is zeroed before this method returns. Callers should source the span
+    /// from <c>SecureKeyCache.UseKey</c> so the key never crosses an async
+    /// boundary as a managed <c>byte[]</c>.
+    /// </summary>
+    /// <param name="databaseName">Database filename (e.g., "MyDb.db").</param>
+    /// <param name="key">Exactly 32 bytes of key material.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>
+    /// <see cref="VfsKeyInstallOutcome.NO_EXISTING_DB"/> for a fresh path,
+    /// <see cref="VfsKeyInstallOutcome.MATCH"/> if the existing DB decrypts
+    /// cleanly, or <see cref="VfsKeyInstallOutcome.WRONG_KEY"/> if AEAD
+    /// auth failed (worker has already cleared the registry entry in that case).
+    /// </returns>
+    Task<VfsKeyInstallOutcome> InstallEncryptionKeyAsync(string databaseName,
+        ReadOnlySpan<byte> key, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Removes any registered encryption key for the given DB path. Symmetric
+    /// to <see cref="InstallEncryptionKeyAsync"/>; called by consumers when
+    /// their domain key expires or the user explicitly locks the DB. The
+    /// worker zeroes the registry buffer in place.
+    /// </summary>
+    /// <param name="databaseName">Database filename.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task ClearEncryptionKeyAsync(string databaseName,
         CancellationToken cancellationToken = default);
 }

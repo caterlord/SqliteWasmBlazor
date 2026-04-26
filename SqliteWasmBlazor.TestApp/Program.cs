@@ -74,6 +74,17 @@ builder.Services.AddDbContextFactory<PlainVfsTestContext>(options =>
     options.UseSqliteWasm($"Data Source={PlainVfsTestContext.DatabaseName}");
 });
 
+// PRF-VFS demo page context. Registered without a key in DI: the page
+// derives the key via BlazorPRF DomainKeys (DeriveDomainKeyAsync +
+// SecureKeyCache.UseKey) and installs it directly into the worker
+// registry through ISqliteWasmDatabaseService.InstallEncryptionKeyAsync
+// before resolving this factory. xOpen picks up the registered key and
+// routes through the encrypted VFS — no key envelope flows through C#.
+builder.Services.AddDbContextFactory<PrfVfsTestContext>(options =>
+{
+    options.UseSqliteWasm($"Data Source={PrfVfsTestContext.DatabaseName}");
+});
+
 // Register SqliteWasm database management service
 builder.Services.AddSqliteWasm(o => o.HostEnvironment = builder.HostEnvironment);
 

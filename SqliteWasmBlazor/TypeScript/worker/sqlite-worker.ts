@@ -262,6 +262,26 @@ async function handleRequest(data: WorkerRequest['data'], binaryPayload?: ArrayB
                 binaryPayload ? unpackVfsKeyHeader(new Uint8Array(binaryPayload)) : undefined
             );
 
+        case 'registerEncryptionKey':
+            // PRF / DomainKeys path: caller derived a 32-byte key in C# from
+            // BlazorPRF's SecureKeyCache and is shipping it as a VfsKeyHeader
+            // envelope (same shape as 'open' with a key, minus the actual open).
+            // The key is stored in the per-path registry so the next plain
+            // 'open' message picks it up at xOpen.
+            if (!binaryPayload) {
+                throw new Error('registerEncryptionKey requires binaryPayload (VfsKeyHeader)');
+            }
+            return registerEncryptionKey(
+                database!,
+                unpackVfsKeyHeader(new Uint8Array(binaryPayload))
+            );
+
+        case 'clearEncryptionKey':
+            // Symmetric to registerEncryptionKey: drops the registry entry and
+            // wipes the buffer in place. Called by domain-key expiry handlers
+            // (KeyExpired subscriptions) and explicit lock UI.
+            return clearEncryptionKey(database!);
+
         case 'execute':
             return await executeSql(database!, sql!, parameters || {});
 
@@ -435,6 +455,58 @@ async function openDatabase(dbName: string, encryptionKey?: Uint8Array) {
         registerEFCoreFunctions(db, sqlite3);
     }
 
+    return { success: true };
+}
+
+/**
+ * Register a per-path encryption key in the worker's key registry without
+ * opening the DB. The next plain 'open' for the same dbName will see the
+ * registered key in xOpen and route through the encrypted VFS path.
+ *
+ * Used by the BlazorPRF DomainKeys flow: C# derives the key in
+ * SecureKeyCache, hands it to the bridge as a span (no managed copy), the
+ * bridge ships it here as a VfsKeyHeader envelope, and the page then
+ * resolves a normal DbContext factory which triggers the no-key 'open'.
+ *
+ * Atomic verify: when an existing DB file is present at this path, the
+ * worker AEAD-tests slot 0 against the freshly registered key. On mismatch
+ * the registry entry is cleared so a known-wrong key never sees a write.
+ * The outcome is encoded in `rowsAffected` (0 = no existing DB, 1 = match,
+ * 2 = wrong key); the C# bridge maps this to VfsKeyInstallOutcome.
+ */
+function registerEncryptionKey(dbName: string, key: Uint8Array) {
+    if (key.length !== 32) {
+        throw new Error(`encryptionKey must be 32 bytes, got ${key.length}`);
+    }
+    const dbPath = `/databases/${dbName}`;
+    registerKeyForPath(dbPath, key);
+
+    const outcome = poolUtil.verifyEncryptionKey(dbPath);
+    if (outcome === 'wrongKey') {
+        clearKeyForPath(dbPath);
+        logger.warn(
+            MODULE_NAME,
+            `Registered key rejected by AEAD on slot 0 of ${dbPath}; cleared registry.`
+        );
+        return { rowsAffected: 2 };
+    }
+
+    logger.debug(
+        MODULE_NAME,
+        `Registered encryption key for ${dbPath} (verify: ${outcome})`
+    );
+    return { rowsAffected: outcome === 'match' ? 1 : 0 };
+}
+
+/**
+ * Drops a previously-registered encryption key. Called by domain-key
+ * expiry handlers and explicit lock UI. Idempotent: safe to call when no
+ * key is registered.
+ */
+function clearEncryptionKey(dbName: string) {
+    const dbPath = `/databases/${dbName}`;
+    clearKeyForPath(dbPath);
+    logger.debug(MODULE_NAME, `Cleared encryption key for ${dbPath}`);
     return { success: true };
 }
 

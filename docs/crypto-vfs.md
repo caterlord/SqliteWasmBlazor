@@ -193,6 +193,60 @@ Zeroization touchpoints:
 - Worker `plaintextScratch.fill(0)` zeros the per-op plaintext scratch
   after every `encryptedRead` / `encryptedWrite`.
 
+## Key lifecycle (PRF / DomainKeys path)
+
+The recommended flow for app-supplied keys: derive the 32-byte VFS key
+from a WebAuthn PRF credential via BlazorPRF's `DeriveDomainKeyAsync`,
+register it directly into the worker key registry, then open the DB
+without a key envelope. Raw key bytes never touch a managed `byte[]`
+that survives an `await`. See `BlazorPRF/Docs/DomainKeysImplementationGuide.md`
+for the canonical contract; the SqliteWasmBlazor side is just a sink.
+
+```
+WebAuthn PRF ceremony (one user gesture per session)
+   │  → PrfService.DeriveKeysDiscoverableAsync (or DeriveKeysAsync)
+   │    → SecureKeyCache.Store("prf-seed:{salt}", seed)
+   ▼
+PrfService.DeriveDomainKeyAsync("sqlite-vfs:{dbName}",
+                                "blazorprf/sqlite-vfs/v1|{dbName}")
+   │   → HKDF-SHA256(seed, info=context, len=32)
+   │   → SecureKeyCache.Store("prf-domain:sqlite-vfs:{dbName}", derived)
+   │   ← PrfResult<string>.Value = cache handle
+   ▼
+SecureKeyCache.UseKey(handle, span =>
+{
+    // span = ReadOnlySpan<byte> over unmanaged memory; valid only for
+    // the synchronous callback. Bridge consumes it before any await.
+    installTask = bridge.InstallEncryptionKeyAsync(dbName, span);
+})
+await installTask;
+   │
+   │   bridge: VfsKeyHeader { Version=1, Key=span.ToArray(), AadVersion="v1" }
+   │           MessagePack serialize → postMessage(type='registerEncryptionKey')
+   │           finally: ZeroMemory(envelope); header.Clear()
+   ▼
+Worker 'registerEncryptionKey' handler
+   │   unpackVfsKeyHeader → 32-byte key
+   │   registerKeyForPath(/databases/{dbName}, key)
+   ▼
+EF resolves DbContextFactory<TContext>
+   │   → SqliteWasmConnection.OpenAsync (no EncryptionKey set)
+   │   → bridge sends plain 'open' (no binaryPayload)
+   ▼
+Worker 'open' handler
+   │   isPathEncrypted({dbPath}) === true (registry hit)
+   │   → encrypted PRAGMAs, xOpen reads getKeyForPath
+```
+
+Expiry: subscribe to `IPrfService.KeyExpired`, filter on the domain
+handle (and `prf-key:{salt}` for full-session expiry), and call
+`bridge.ClearEncryptionKeyAsync(dbName)` to drop the worker mirror.
+Re-derivation needs a fresh user gesture — gate the page UI behind
+`PrfService.HasCachedKeys()` (or `PrfModel.HasKeys` if the consumer
+adopts BlazorPRF.UI's reactive model).
+
+A working end-to-end demo lives at `SqliteWasmBlazor.TestApp/Pages/PrfVfsTest.razor`.
+
 ## SQLite storage pragmas on encrypted DBs
 
 | PRAGMA              | Value      | Why                                                              |

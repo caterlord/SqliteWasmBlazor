@@ -1,0 +1,445 @@
+@page "/prf-vfs-test"
+@using BlazorPRF.Crypto.Configuration
+@using BlazorPRF.Crypto.Services
+@using Microsoft.EntityFrameworkCore
+@using Microsoft.Extensions.Options
+@using R3
+@using SqliteWasmBlazor.TestApp.TestInfrastructure.VfsEncryption
+@inject IPrfService PrfService
+@inject ISecureKeyCache KeyCache
+@inject IOptions<PrfOptions> PrfOptionsAccessor
+@inject IDbContextFactory<PrfVfsTestContext> Factory
+@inject ISqliteWasmDatabaseService DatabaseService
+@implements IDisposable
+
+<MudContainer MaxWidth="MaxWidth.Medium" Class="my-4">
+    <MudPaper Class="pa-4">
+        <MudText Typo="Typo.h5" Class="mb-2">PRF-keyed VFS demo</MudText>
+        <MudText Typo="Typo.body2" Class="mb-2">
+            End-to-end check: derive a 32-byte VFS key from a WebAuthn PRF
+            credential via BlazorPRF's <code>DeriveDomainKeyAsync</code>,
+            install it in the worker registry through a span-only handoff
+            (<code>SecureKeyCache.UseKey</code>), open the encrypted DB
+            through EF, and round-trip rows. <code>KeyExpired</code>
+            subscriptions clear the worker mirror automatically.
+        </MudText>
+        <MudText Typo="Typo.body2" Class="mb-4">
+            <strong>The encrypted DB persists in OPFS</strong> across page
+            reloads and Lock/Unlock cycles — reload the page and tap
+            Unlock to confirm round-trip data survives. Registering a
+            second passkey and unlocking with it should fail on first
+            read (AEAD auth failure on a slot encrypted with the first
+            credential's derived key). Use Wipe when you want to start
+            from a fresh DB.
+        </MudText>
+
+        <MudStack Spacing="2">
+            <MudButton OnClick="RegisterAsync"
+                       Disabled="@_busy"
+                       Color="Color.Primary"
+                       Variant="Variant.Outlined"
+                       StartIcon="@Icons.Material.Filled.AddModerator">
+                Register passkey
+            </MudButton>
+            @if (!_keyInstalled)
+            {
+                <MudButton OnClick="UnlockAsync"
+                           Disabled="@_busy"
+                           Color="Color.Primary"
+                           Variant="Variant.Filled"
+                           StartIcon="@Icons.Material.Filled.LockOpen">
+                    Unlock + derive VFS key
+                </MudButton>
+            }
+            @* Switch passkey applies whenever a PRF seed is cached, even if the
+               last install returned WRONG_KEY (seed is fine, the derived key
+               just didn't match the existing DB). Hidden when no seed is
+               cached because PrfService.ClearKeys() is a no-op on an empty
+               cache and the button would be misleading. *@
+            @if (PrfService.HasCachedKeys())
+            {
+                <MudButton OnClick="SwitchPasskeyAsync"
+                           Disabled="@_busy"
+                           Color="Color.Warning"
+                           Variant="Variant.Outlined"
+                           StartIcon="@Icons.Material.Filled.SwapHoriz">
+                    Switch passkey (drop seed → next unlock prompts picker)
+                </MudButton>
+            }
+            <MudButton OnClick="RoundTripAsync"
+                       Disabled="@(!_keyInstalled || _busy)"
+                       Color="Color.Secondary"
+                       Variant="Variant.Filled"
+                       StartIcon="@Icons.Material.Filled.PlayArrow">
+                Insert + read 25 rows
+            </MudButton>
+            <MudButton OnClick="ReadCountAsync"
+                       Disabled="@(!_keyInstalled || _busy)"
+                       Color="Color.Secondary"
+                       Variant="Variant.Outlined"
+                       StartIcon="@Icons.Material.Filled.Visibility">
+                Read row count (no writes)
+            </MudButton>
+            <MudButton OnClick="LockAsync"
+                       Disabled="@(!_keyInstalled || _busy)"
+                       Color="Color.Default"
+                       Variant="Variant.Outlined"
+                       StartIcon="@Icons.Material.Filled.Lock">
+                Lock (clear worker key + close DB, keep file)
+            </MudButton>
+            <MudDivider Class="my-2" />
+            <MudButton OnClick="WipeAsync"
+                       Disabled="@_busy"
+                       Color="Color.Error"
+                       Variant="Variant.Outlined"
+                       StartIcon="@Icons.Material.Filled.DeleteForever">
+                Wipe DB file (destructive)
+            </MudButton>
+        </MudStack>
+
+        @if (_busy)
+        {
+            <MudProgressLinear Color="Color.Primary" Indeterminate="true" Class="mt-4" />
+        }
+
+        @if (!string.IsNullOrEmpty(_status))
+        {
+            <MudAlert Severity="@_severity" Class="mt-4">@_status</MudAlert>
+        }
+
+        <MudText Typo="Typo.caption" Class="mt-4 d-block">
+            Domain id: <code>@DomainId</code> · Cache handle: <code>@DomainCacheKey</code>
+        </MudText>
+    </MudPaper>
+</MudContainer>
+
+@code {
+    private const string DatabaseName = PrfVfsTestContext.DatabaseName;
+    private const string DomainId = "sqlite-vfs:" + DatabaseName;
+    private const string DerivationContext = "blazorprf/sqlite-vfs/v1|" + DatabaseName;
+
+    private string DomainCacheKey => BlazorPRF.Crypto.Services.PrfService.DomainCacheKeyPrefix + DomainId;
+    private string PrimaryCacheKey => "prf-key:" + PrfOptionsAccessor.Value.Salt;
+
+    private bool _keyInstalled;
+    private bool _busy;
+    private string? _status;
+    private Severity _severity = Severity.Info;
+    private IDisposable? _keyExpiredSubscription;
+
+    protected override void OnInitialized()
+    {
+        // Per DomainKeysImplementationGuide §5: drop the worker mirror when
+        // either our domain key OR the primary session expires (the latter
+        // implies the seed is gone too, so no further derivation is possible
+        // without a fresh ceremony).
+        _keyExpiredSubscription = PrfService.KeyExpired
+            .Where(k => k == DomainCacheKey || k == PrimaryCacheKey)
+            .Subscribe(OnKeyExpired);
+    }
+
+    private async Task RegisterAsync()
+    {
+        _busy = true;
+        try
+        {
+            var supported = await PrfService.IsPrfSupportedAsync();
+            if (!supported)
+            {
+                SetStatus("This browser/authenticator doesn't support the WebAuthn PRF extension.", Severity.Error);
+                return;
+            }
+            var result = await PrfService.RegisterAsync("PRF-VFS test passkey");
+            if (result.Success)
+            {
+                SetStatus($"Passkey registered. Tap 'Unlock' to derive the VFS key.", Severity.Success);
+            }
+            else if (result.Cancelled)
+            {
+                SetStatus("Registration cancelled.", Severity.Info);
+            }
+            else
+            {
+                SetStatus($"Registration failed: {result.ErrorCode} — {result.Error}", Severity.Error);
+            }
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task UnlockAsync()
+    {
+        _busy = true;
+        try
+        {
+            // Step 1: ensure a PRF seed is in the cache. DeriveKeysDiscoverable
+            // is the canonical "ceremony from a button click" entry — it pops
+            // the platform's passkey picker, which is the user gesture
+            // WebAuthn requires.
+            if (!PrfService.HasCachedKeys())
+            {
+                var ceremony = await PrfService.DeriveKeysDiscoverableAsync();
+                if (!ceremony.Success)
+                {
+                    var msg = ceremony.Cancelled
+                        ? "Ceremony cancelled."
+                        : $"Ceremony failed: {ceremony.ErrorCode} — {ceremony.Error}";
+                    SetStatus(msg, ceremony.Cancelled ? Severity.Info : Severity.Error);
+                    return;
+                }
+            }
+
+            // Step 2: HKDF-derive the 32-byte VFS key from the cached seed.
+            // No ceremony — pure HKDF. Returns the cache handle, NOT the key.
+            var derive = await PrfService.DeriveDomainKeyAsync(DomainId, DerivationContext);
+            if (!derive.Success || derive.Value is null)
+            {
+                SetStatus($"Derivation failed: {derive.ErrorCode} — {derive.Error}", Severity.Error);
+                return;
+            }
+
+            // Step 3: span-only handoff to the worker. UseKey runs the
+            // callback synchronously over unmanaged memory; the bridge
+            // serializes the envelope before we leave the span scope and
+            // returns a Task<VfsKeyInstallOutcome> we await outside.
+            //
+            // The worker stores the key AND immediately AEAD-tests slot 0
+            // when an existing DB file is present, so wrong-key surfaces
+            // here in one round trip — no separate probe step. On
+            // VfsKeyInstallOutcome.WRONG_KEY the worker has already cleared
+            // the registry entry; we just need to drop UI state.
+            Task<VfsKeyInstallOutcome>? installTask = null;
+            var ok = KeyCache.UseKey(derive.Value, span =>
+            {
+                installTask = DatabaseService.InstallEncryptionKeyAsync(DatabaseName, span);
+            });
+            if (!ok || installTask is null)
+            {
+                SetStatus("Failed to read the derived key from cache (cache miss).", Severity.Error);
+                return;
+            }
+            var outcome = await installTask;
+
+            switch (outcome)
+            {
+                case VfsKeyInstallOutcome.WRONG_KEY:
+                    _keyInstalled = false;
+                    SetStatus(
+                        "Wrong passkey for this DB (AEAD auth failed on slot 0). " +
+                        "Worker has cleared the registry entry — tap 'Switch passkey' to " +
+                        "drop the cached seed and pick a different credential, or 'Wipe DB file' " +
+                        "to start fresh.",
+                        Severity.Error);
+                    return;
+                case VfsKeyInstallOutcome.MATCH:
+                    _keyInstalled = true;
+                    SetStatus(
+                        "Key derived, installed, and verified against existing DB on slot 0.",
+                        Severity.Success);
+                    return;
+                case VfsKeyInstallOutcome.NO_EXISTING_DB:
+                    _keyInstalled = true;
+                    SetStatus(
+                        "Key derived and installed. DB file does not yet exist — tap Insert to materialize it.",
+                        Severity.Success);
+                    return;
+            }
+        }
+        catch (Exception ex)
+        {
+            await TryReleaseWorkerStateAsync();
+            SetStatus($"Unlock error: {ex.GetType().Name}: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task SwitchPasskeyAsync()
+    {
+        _busy = true;
+        try
+        {
+            // Clear PRF cache (drops prf-seed, prf-key, prf-ed25519-key,
+            // and any prf-domain:* entries). Next DeriveKeysDiscoverable
+            // call will re-prompt the platform picker so the user can
+            // choose a different credential.
+            PrfService.ClearKeys();
+            await TryReleaseWorkerStateAsync();
+            _keyInstalled = false;
+            SetStatus(
+                "PRF seed dropped and worker key cleared. Tap Unlock to pick a different passkey.",
+                Severity.Info);
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Switch error: {ex.GetType().Name}: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task RoundTripAsync()
+    {
+        _busy = true;
+        try
+        {
+            const int rowCount = 25;
+            await using (var ctx = await Factory.CreateDbContextAsync())
+            {
+                await ctx.Database.EnsureCreatedAsync();
+                for (var i = 0; i < rowCount; i++)
+                {
+                    ctx.Items.Add(new VfsTestItem
+                    {
+                        Marker = $"prf-{i}",
+                        Payload = $"payload-{i}-{Guid.NewGuid():N}",
+                    });
+                }
+                await ctx.SaveChangesAsync();
+            }
+
+            int read;
+            string? lastMarker;
+            await using (var ctx = await Factory.CreateDbContextAsync())
+            {
+                read = await ctx.Items.CountAsync();
+                lastMarker = await ctx.Items
+                    .OrderByDescending(x => x.Id)
+                    .Select(x => x.Marker)
+                    .FirstOrDefaultAsync();
+            }
+
+            SetStatus(
+                $"Round trip OK — total rows: {read} (last marker: {lastMarker}).",
+                Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            // AEAD failure on first read most often surfaces as a SQLite
+            // open/IO exception. Drop the worker mirror so the user can't
+            // accidentally re-attempt with the same wrong key, and tell
+            // them what they're looking at.
+            await TryReleaseWorkerStateAsync();
+            _keyInstalled = false;
+            SetStatus(
+                $"Round trip failed: {ex.GetType().Name}: {ex.Message}. " +
+                $"Likely AEAD auth failure (wrong passkey for this DB). " +
+                $"Re-unlock with the original passkey, or Wipe to start fresh.",
+                Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ReadCountAsync()
+    {
+        _busy = true;
+        try
+        {
+            int count;
+            await using (var ctx = await Factory.CreateDbContextAsync())
+            {
+                count = await ctx.Items.CountAsync();
+            }
+            SetStatus($"Row count: {count}.", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            await TryReleaseWorkerStateAsync();
+            _keyInstalled = false;
+            SetStatus(
+                $"Read failed: {ex.GetType().Name}: {ex.Message}. " +
+                $"Wrong key → AEAD auth failure on first read.",
+                Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task LockAsync()
+    {
+        _busy = true;
+        try
+        {
+            await TryReleaseWorkerStateAsync();
+            _keyInstalled = false;
+            SetStatus(
+                "Worker key cleared and DB handle closed — file kept in OPFS. " +
+                "Reload the page and Unlock with the same passkey to verify persistence.",
+                Severity.Info);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task WipeAsync()
+    {
+        _busy = true;
+        try
+        {
+            // Close + clear key first so the worker has no stale registry
+            // entry, then delete the file from OPFS.
+            await TryReleaseWorkerStateAsync();
+            await DatabaseService.DeleteDatabaseAsync(DatabaseName);
+            _keyInstalled = false;
+            SetStatus(
+                $"Wiped {DatabaseName}. Next Unlock + Insert will create a fresh DB.",
+                Severity.Warning);
+        }
+        catch (Exception ex)
+        {
+            SetStatus($"Wipe error: {ex.GetType().Name}: {ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task TryReleaseWorkerStateAsync()
+    {
+        // Close + clear are independent of the key being installed; both
+        // are idempotent and safe to call after a failed open.
+        try { await DatabaseService.CloseDatabaseAsync(DatabaseName); } catch { }
+        try { await DatabaseService.ClearEncryptionKeyAsync(DatabaseName); } catch { }
+    }
+
+    private void OnKeyExpired(string cacheKey)
+    {
+        // Fire-and-forget: clear worker mirror, drop UI state, no ceremony
+        // here (no gesture on the call stack — that's the user's next click).
+        _ = InvokeAsync(async () =>
+        {
+            await TryReleaseWorkerStateAsync();
+            _keyInstalled = false;
+            SetStatus(
+                $"Key expired ({cacheKey}). DB file still in OPFS — tap Unlock to re-derive.",
+                Severity.Warning);
+            StateHasChanged();
+        });
+    }
+
+    private void SetStatus(string message, Severity severity)
+    {
+        _status = message;
+        _severity = severity;
+        StateHasChanged();
+    }
+
+    public void Dispose()
+    {
+        _keyExpiredSubscription?.Dispose();
+    }
+}

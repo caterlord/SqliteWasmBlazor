@@ -55,6 +55,13 @@ export interface PrfSAHPoolOptions {
     forceReinitIfPreviouslyFailed?: boolean;
 }
 
+/**
+ * Tri-state result of {@link PrfPoolUtil.verifyEncryptionKey}. Mirrors the
+ * C# {@code VfsKeyInstallOutcome} enum; the bridge encodes these as 0/1/2
+ * in the response's {@code rowsAffected} field.
+ */
+export type VfsKeyVerifyOutcome = 'noExistingDb' | 'match' | 'wrongKey';
+
 export interface PrfPoolUtil {
     vfsName: string;
     OpfsSAHPoolDb?: new (...args: any[]) => any;
@@ -69,6 +76,7 @@ export interface PrfPoolUtil {
     wipeFiles(): Promise<void>;
     unlink(filename: string): boolean;
     renameFile(oldPath: string, newPath: string): true;
+    verifyEncryptionKey(path: string): VfsKeyVerifyOutcome;
     removeVfs(): Promise<boolean>;
     pauseVfs(): PrfPoolUtil;
     unpauseVfs(): Promise<PrfPoolUtil>;
@@ -533,6 +541,57 @@ class OpfsSAHPool {
         this.mapFilenameToSAH.delete(oldPath);
         this.setAssociatedPath(sah, newPath, flags);
         return true;
+    }
+
+    /**
+     * AEAD-test the registered key for {@link path} against slot 0 of the
+     * existing on-disk DB. Pure VFS-level probe — no SQLite engagement.
+     *
+     * Returns:
+     *   - `'noExistingDb'` if no SAH carries this path, or the SAH has not
+     *     yet had a full physical slot written (truly fresh DB).
+     *   - `'match'` if slot 0's ChaCha20-Poly1305 tag verifies under the
+     *     registered key + slot-0 AAD.
+     *   - `'wrongKey'` if the tag fails to verify.
+     *
+     * Caller is responsible for whatever follow-up the outcome demands —
+     * e.g. dropping the registry entry on `'wrongKey'` so a known-wrong
+     * key never sees a write.
+     */
+    verifyEncryptionKey(path: string): VfsKeyVerifyOutcome {
+        const sah = this.mapFilenameToSAH.get(path);
+        if (!sah) return 'noExistingDb';
+
+        const physicalDataSize = sah.getSize() - HEADER_OFFSET_DATA;
+        if (physicalDataSize < PHYSICAL_SLOT_SIZE) return 'noExistingDb';
+
+        const key = getKeyForPath(path);
+        if (!key) return 'noExistingDb';
+
+        const slot = new Uint8Array(PHYSICAL_SLOT_SIZE);
+        const nRead = sah.read(slot, { at: HEADER_OFFSET_DATA });
+        if (nRead < PHYSICAL_SLOT_SIZE) return 'noExistingDb';
+
+        const ciphertext = slot.subarray(0, PAGE_PLAINTEXT_LEN);
+        const nonce = slot.subarray(
+            PAGE_PLAINTEXT_LEN,
+            PAGE_PLAINTEXT_LEN + PAGE_NONCE_LEN
+        );
+        const tag = slot.subarray(PAGE_PLAINTEXT_LEN + PAGE_NONCE_LEN);
+        const cipherPlusTag = new Uint8Array(PAGE_PLAINTEXT_LEN + PAGE_TAG_LEN);
+        cipherPlusTag.set(ciphertext, 0);
+        cipherPlusTag.set(tag, PAGE_PLAINTEXT_LEN);
+        const aad = buildPageAad(path, 0);
+        try {
+            decryptChaCha20Poly1305(
+                { ciphertext: cipherPlusTag, nonce },
+                key,
+                aad
+            );
+            return 'match';
+        } catch {
+            return 'wrongKey';
+        }
     }
 
     storeErr(e?: any, code?: number): number | undefined {
@@ -1217,6 +1276,9 @@ class OpfsSAHPoolUtil {
     }
     renameFile(oldPath: string, newPath: string) {
         return this.p.renameFile(oldPath, newPath);
+    }
+    verifyEncryptionKey(path: string) {
+        return this.p.verifyEncryptionKey(path);
     }
     async removeVfs() {
         return this.p.removeVfs();

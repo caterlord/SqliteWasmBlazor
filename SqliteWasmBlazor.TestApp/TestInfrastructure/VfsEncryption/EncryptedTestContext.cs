@@ -60,3 +60,29 @@ public sealed class PlainVfsTestContext : DbContext
         });
     }
 }
+
+/// <summary>
+/// Context backing the PRF-VFS demo page. Registered with no key in DI:
+/// the key flows into the worker registry via
+/// <c>ISqliteWasmDatabaseService.InstallEncryptionKeyAsync</c> after the
+/// PRF ceremony completes, and the subsequent open picks it up at xOpen
+/// because <c>isPathEncrypted</c> sees the registry entry.
+/// </summary>
+public sealed class PrfVfsTestContext : DbContext
+{
+    public const string DatabaseName = "PrfVfsTestDb.db";
+
+    public PrfVfsTestContext(DbContextOptions<PrfVfsTestContext> options) : base(options) { }
+
+    public DbSet<VfsTestItem> Items => Set<VfsTestItem>();
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        base.OnModelCreating(modelBuilder);
+        modelBuilder.Entity<VfsTestItem>(e =>
+        {
+            e.HasKey(x => x.Id);
+            e.ToTable("VfsTestItems");
+        });
+    }
+}

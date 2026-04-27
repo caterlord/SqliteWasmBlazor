@@ -23,7 +23,8 @@ namespace SqliteWasmBlazor.CryptoSync;
 /// </summary>
 public class SyncOrchestrator(
     ISqliteWasmDatabaseService databaseService,
-    CryptoSyncContextBase context)
+    CryptoSyncContextBase context,
+    IImportNotifier importNotifier)
 {
     /// <summary>
     /// Assemble a delta envelope of every syncable table.
@@ -75,7 +76,9 @@ public class SyncOrchestrator(
         {
             var reportBytes = await databaseService.DeltaImportAsync(
                 databaseName, headerBytes, envelopeBytes, cancellationToken);
-            return MessagePackSerializer.Deserialize<ImportReport>(reportBytes);
+            var report = MessagePackSerializer.Deserialize<ImportReport>(reportBytes);
+            await importNotifier.NotifyImportedAsync(report, cancellationToken).ConfigureAwait(false);
+            return report;
         }
         finally
         {

@@ -56,7 +56,7 @@ internal class CryptoSyncRoundTripTest(
         byte[] envelope;
         await using (var ctx = await CryptoFactory.CreateDbContextAsync())
         {
-            var orchestrator = new SyncOrchestrator(DatabaseService, ctx);
+            var orchestrator = new SyncOrchestrator(DatabaseService, ctx, NullImportNotifier.Instance);
             var header = await BuildHeaderAsync(ctx);
             envelope = await orchestrator.ExportAsync(
                 CryptoDatabaseName, header, sinceCursor);
@@ -99,7 +99,7 @@ internal class CryptoSyncRoundTripTest(
         ImportReport report;
         await using (var ctx = await CryptoFactory.CreateDbContextAsync())
         {
-            var orchestrator = new SyncOrchestrator(DatabaseService, ctx);
+            var orchestrator = new SyncOrchestrator(DatabaseService, ctx, NullImportNotifier.Instance);
             var header = await BuildHeaderAsync(ctx);
             report = await orchestrator.ImportAsync(CryptoDatabaseName, header, envelope);
         }
@@ -146,7 +146,7 @@ internal class CryptoSyncRoundTripTest(
         ImportReport tamperReport;
         await using (var ctx = await CryptoFactory.CreateDbContextAsync())
         {
-            var orchestrator = new SyncOrchestrator(DatabaseService, ctx);
+            var orchestrator = new SyncOrchestrator(DatabaseService, ctx, NullImportNotifier.Instance);
             var header = await BuildHeaderAsync(ctx);
             tamperReport = await orchestrator.ImportAsync(CryptoDatabaseName, header, tampered);
         }

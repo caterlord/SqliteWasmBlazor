@@ -28,13 +28,13 @@
 
   <!-- ToDo use nuget for release
   <ItemGroup Condition="'$(Configuration)' == 'Release'">
-    <PackageReference Include="BlazorPRF.Crypto.Abstractions" Version="$(BlazorPRFVersion)" />
+    <PackageReference Include="BlazorPRF.Crypto.Abstractions" />
   </ItemGroup>
   -->
 
   <ItemGroup>
-    <PackageReference Include="MessagePack" Version="$(MessagePackVersion)" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.5" />
+    <PackageReference Include="MessagePack" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" />
   </ItemGroup>
 
 </Project>

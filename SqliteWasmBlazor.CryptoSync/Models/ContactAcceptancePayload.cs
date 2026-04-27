@@ -69,6 +69,18 @@ public sealed class ContactAcceptancePayload
     [Key(11)] public required byte[] SelfShareTargetSignature { get; init; }
 
     /// <summary>
+    /// One-shot 32-byte invitation token echoed from the
+    /// <see cref="InvitationBundle.Token"/> the admin handed out-of-band.
+    /// Null on legacy contact-initiated payloads (pre-Stage 4); set on
+    /// admin-initiated responses produced by
+    /// <c>ContactInvitationService.RespondToInvitationAsync</c>. The admin
+    /// uses this on accept to find the placeholder
+    /// <see cref="TrustedContact"/> row by
+    /// <see cref="TrustedContact.InvitationToken"/>.
+    /// </summary>
+    [Key(12)] public byte[]? InvitationToken { get; set; }
+
+    /// <summary>
     /// Ed25519 signature over the MessagePack-serialized payload with this
     /// field set to <c>[]</c> at sign time. Verified on accept by the
     /// admin device against <see cref="Ed25519PublicKey"/>.
@@ -81,5 +93,5 @@ public sealed class ContactAcceptancePayload
     /// A unit test pins this invariant.
     /// </para>
     /// </summary>
-    [Key(12)] public byte[] AcceptancePayloadSignature { get; set; } = [];
+    [Key(13)] public byte[] AcceptancePayloadSignature { get; set; } = [];
 }

@@ -12,7 +12,7 @@ namespace SqliteWasmBlazor.Crypto.Interop;
 [SupportedOSPlatform("browser")]
 internal static partial class NobleInterop
 {
-    private const string ModuleName = "sqliteWasmCryptoNoble";
+    private const string ModuleName = "sqliteWasmBlazorCryptoNoble";
     private static readonly SemaphoreSlim InitSemaphore = new(1, 1);
     private static bool _initialized;
     private static string? _baseHref;

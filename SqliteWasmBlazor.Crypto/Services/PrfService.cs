@@ -75,7 +75,7 @@ public sealed partial class PrfService : IPrfService, IEd25519PublicKeyProvider,
 
             var modulePath = $"{_sqliteWasmBlazorCryptoOptions.BaseHref}{_sqliteWasmBlazorCryptoOptions.AssetRoot}noble-prf.js";
 
-            await JSHost.ImportAsync("sqliteWasmCryptoPrf", modulePath);
+            await JSHost.ImportAsync("sqliteWasmBlazorCryptoPrf", modulePath);
             _initialized = true;
         }
         finally
@@ -300,16 +300,16 @@ public sealed partial class PrfService : IPrfService, IEd25519PublicKeyProvider,
     /// </summary>
     private static partial class JsInterop
     {
-        [JSImport("isPrfSupported", "sqliteWasmCryptoPrf")]
+        [JSImport("isPrfSupported", "sqliteWasmBlazorCryptoPrf")]
         public static partial Task<bool> IsPrfSupported();
 
-        [JSImport("register", "sqliteWasmCryptoPrf")]
+        [JSImport("register", "sqliteWasmBlazorCryptoPrf")]
         public static partial Task<string> Register(string? displayName, string optionsJson);
 
-        [JSImport("evaluatePrfOutput", "sqliteWasmCryptoPrf")]
+        [JSImport("evaluatePrfOutput", "sqliteWasmBlazorCryptoPrf")]
         public static partial Task<string> EvaluatePrfOutput(string credentialIdBase64, string salt, string optionsJson);
 
-        [JSImport("evaluatePrfDiscoverableOutput", "sqliteWasmCryptoPrf")]
+        [JSImport("evaluatePrfDiscoverableOutput", "sqliteWasmBlazorCryptoPrf")]
         public static partial Task<string> EvaluatePrfDiscoverableOutput(string salt, string optionsJson);
     }
 }

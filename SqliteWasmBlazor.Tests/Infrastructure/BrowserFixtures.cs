@@ -40,7 +40,10 @@ public class ChromiumFixture : WaFixtureBase, IWaFixture
 {
     public IWaFixture.BrowserType Type => IWaFixture.BrowserType.CHROMIUM;
     public int Port => PortNumber;
-    public bool OnePass => false;
+    // OnePass: navigate to /Tests once, run all tests in a single Blazor
+    // instance, and have each xUnit test assert its own per-test result
+    // label — instead of paying full WASM boot per test (the dominant cost).
+    public bool OnePass => true;
     public bool Headless => true;
 
     private static int PortNumber => 7051;

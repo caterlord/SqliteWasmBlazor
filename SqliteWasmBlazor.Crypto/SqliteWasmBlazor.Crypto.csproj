@@ -48,7 +48,8 @@
 
   <!-- TypeScript Build Integration - must run before static web assets are discovered -->
   <Target Name="NpmInstall" BeforeTargets="BuildTypeScriptDebug;BuildTypeScriptRelease">
-    <Exec WorkingDirectory="TypeScript" Command="npm install" Condition="Exists('TypeScript/package.json') And !Exists('TypeScript/node_modules')" />
+    <Exec WorkingDirectory="TypeScript" Command="npm audit signatures" Condition="Exists('TypeScript/package.json') And !Exists('TypeScript/node_modules')" />
+    <Exec WorkingDirectory="TypeScript" Command="npm ci --ignore-scripts" Condition="Exists('TypeScript/package.json') And !Exists('TypeScript/node_modules')" />
   </Target>
 
   <Target Name="BuildTypeScriptDebug" BeforeTargets="PrepareForBuild;ResolveStaticWebAssetsConfiguration" Condition="'$(Configuration)' == 'Debug'">

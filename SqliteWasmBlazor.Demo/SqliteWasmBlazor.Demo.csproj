@@ -134,54 +134,7 @@ catch (Exception ex)
         </Task>
     </UsingTask>
 
-    <!-- Sync cloudPartSizeMb from SeedApi .htaccess upload_max_filesize (with safety margin) -->
-    <UsingTask TaskName="SyncCloudPartSize" TaskFactory="RoslynCodeTaskFactory"
-               AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
-        <ParameterGroup>
-            <HtaccessFile ParameterType="System.String" Required="true"/>
-            <SettingsFile ParameterType="System.String" Required="true"/>
-        </ParameterGroup>
-        <Task>
-            <Using Namespace="System"/>
-            <Using Namespace="System.IO"/>
-            <Using Namespace="System.Text.RegularExpressions"/>
-            <Code Type="Fragment" Language="cs">
-                <![CDATA[
-try
-{
-    var htaccess = File.ReadAllText(HtaccessFile);
-    var match = Regex.Match(htaccess, @"upload_max_filesize\s+(\d+)M");
-    if (match.Success)
-    {
-        var serverLimitMb = int.Parse(match.Groups[1].Value);
-        // Use 80% of server limit as part size (leave room for multipart overhead)
-        var cloudPartSizeMb = (int)(serverLimitMb * 0.8);
-
-        var settings = File.ReadAllText(SettingsFile);
-        var updated = Regex.Replace(settings,
-            @"""cloudPartSizeMb"":\s*\d+",
-            $@"""cloudPartSizeMb"": {cloudPartSizeMb}");
-        File.WriteAllText(SettingsFile, updated);
-        Console.WriteLine($"Synced cloudPartSizeMb={cloudPartSizeMb} from server limit {serverLimitMb}M");
-    }
-}
-catch (Exception ex)
-{
-    Console.WriteLine($"SyncCloudPartSize: {ex.Message}");
-}
-                ]]>
-            </Code>
-        </Task>
-    </UsingTask>
-
-    <Target Name="SyncCloudSettings" BeforeTargets="BeforeCompile"
-            Condition="Exists('..\SeedApi\.htaccess')">
-        <SyncCloudPartSize
-                HtaccessFile="..\SeedApi\.htaccess"
-                SettingsFile="wwwroot\appsettings.json" />
-    </Target>
-
-    <Target Name="ReleaseServiceWorker" Condition="'$(Configuration)'=='Release'" BeforeTargets="BeforeCompile">
+<Target Name="ReleaseServiceWorker" Condition="'$(Configuration)'=='Release'" BeforeTargets="BeforeCompile">
         <ReplaceTextInFile
                 Filename="wwwroot\index.html"
                 Placeholder="&lt;!--SW_REGISTER_PLACEHOLDER--&gt;"

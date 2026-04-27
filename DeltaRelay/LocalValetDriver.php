@@ -11,8 +11,8 @@ class LocalValetDriver extends BasicValetDriver
 
     public function isStaticFile(string $sitePath, string $siteName, string $uri)
     {
-        // Deny access to seeds storage directory
-        if (str_starts_with($uri, '/seeds/')) {
+        // Deny direct access to the SQLite envelope store
+        if (str_starts_with($uri, '/relay.db')) {
             return false;
         }
 
@@ -25,16 +25,16 @@ class LocalValetDriver extends BasicValetDriver
 
     public function frontControllerPath(string $sitePath, string $siteName, string $uri): ?string
     {
-        // Deny direct access to seeds directory
-        if (str_starts_with($uri, '/seeds/')) {
+        // Deny direct access to the SQLite envelope store
+        if (str_starts_with($uri, '/relay.db')) {
             http_response_code(403);
             die(json_encode(['error' => 'Forbidden']));
         }
 
-        // Route /api/* to seed-api.php
+        // Route /api/* to delta-relay.php
         if (preg_match('#^/api/(.*)$#', $uri, $matches)) {
             $_GET['path'] = $matches[1];
-            return $sitePath . '/seed-api.php';
+            return $sitePath . '/delta-relay.php';
         }
 
         if (file_exists($sitePath . '/index.php')) {

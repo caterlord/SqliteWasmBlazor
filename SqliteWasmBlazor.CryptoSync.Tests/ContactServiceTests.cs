@@ -25,32 +25,6 @@ public class ContactServiceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Untrust_TransitionsToRevoked_WithoutMutatingSharingId()
-    {
-        var userContact = await _scenario.Admin.Contacts
-            .GetByEd25519PublicKeyAsync(_scenario.User.Keys.Ed25519PublicKey);
-        Assert.NotNull(userContact);
-        Assert.Equal(ContactStatus.Verified, userContact.Status);
-        var originalSharingId = userContact.SharingId;
-        var originalScope = userContact.SharingScope;
-
-        await _scenario.Admin.Contacts.UntrustAsync(userContact.Id);
-        await _scenario.Admin.Context.Entry(userContact).ReloadAsync();
-
-        Assert.Equal(ContactStatus.Revoked, userContact.Status);
-        // Immutable: SharingId / SharingScope unchanged.
-        Assert.Equal(originalSharingId, userContact.SharingId);
-        Assert.Equal(originalScope, userContact.SharingScope);
-    }
-
-    [Fact]
-    public async Task Untrust_NonExistentContact_Throws()
-    {
-        await Assert.ThrowsAsync<InvalidOperationException>(
-            () => _scenario.Admin.Contacts.UntrustAsync(Guid.NewGuid()).AsTask());
-    }
-
-    [Fact]
     public async Task GetByEd25519PublicKey_ReturnsMatchingContact()
     {
         var found = await _scenario.Admin.Contacts
@@ -77,11 +51,10 @@ public class ContactServiceTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task GetRecipientPublicKeys_ReturnsOnlyTrustedX25519Keys()
+    public async Task GetRecipientPublicKeys_ReturnsBothActorX25519Keys()
     {
         var keys = await _scenario.Admin.Contacts.GetRecipientPublicKeysAsync();
 
-        // Both admin + user are trusted from bootstrap.
         Assert.Equal(2, keys.Length);
         Assert.Contains(_scenario.Admin.Keys.X25519PublicKey, keys);
         Assert.Contains(_scenario.User.Keys.X25519PublicKey, keys);

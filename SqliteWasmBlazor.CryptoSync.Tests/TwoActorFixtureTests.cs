@@ -56,12 +56,11 @@ public class TwoActorFixtureTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Admin_UserContact_IsFullTrustInSystemScope()
+    public async Task Admin_UserContact_IsInSystemScope()
     {
         var userContact = await _scenario.Admin.Contacts
             .GetByEd25519PublicKeyAsync(_scenario.User.Keys.Ed25519PublicKey);
         Assert.NotNull(userContact);
-        Assert.Equal(ContactStatus.Verified, userContact.Status);
         Assert.Equal(SharingScope.PUBLIC, userContact.SharingScope);
         Assert.Equal(CryptoSyncBootstrap.SystemSharingId, userContact.SharingId);
     }
@@ -85,12 +84,12 @@ public class TwoActorFixtureTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Admin_GateAcceptsAdminAndUserAsFullTrustSenders()
+    public async Task Admin_GateAcceptsAdminAndUserAsKnownSenders()
     {
         var asAdmin = await _scenario.Admin.Gate.EnsureSenderTrustedAsync(_scenario.Admin.Keys.Ed25519PublicKey);
         var asUser = await _scenario.Admin.Gate.EnsureSenderTrustedAsync(_scenario.User.Keys.Ed25519PublicKey);
-        Assert.Equal(ContactStatus.Trusted, asAdmin.Status);
-        Assert.Equal(ContactStatus.Verified, asUser.Status);
+        Assert.Equal(_scenario.Admin.Keys.Ed25519PublicKey, asAdmin.Ed25519PublicKey);
+        Assert.Equal(_scenario.User.Keys.Ed25519PublicKey, asUser.Ed25519PublicKey);
     }
 
     // ----------------------------------------------------------------
@@ -147,10 +146,9 @@ public class TwoActorFixtureTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task User_GateAcceptsAdminAsFullTrustSender()
+    public async Task User_GateAcceptsAdminAsKnownSender()
     {
         var resolved = await _scenario.User.Gate.EnsureSenderTrustedAsync(_scenario.Admin.Keys.Ed25519PublicKey);
-        Assert.Equal(ContactStatus.Trusted, resolved.Status);
         Assert.Equal(_scenario.Admin.Keys.Ed25519PublicKey, resolved.Ed25519PublicKey);
     }
 

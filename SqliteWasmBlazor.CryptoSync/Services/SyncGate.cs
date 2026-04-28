@@ -36,12 +36,6 @@ public class SyncGate(ContactService contacts)
                 $"Sender is not a known contact on this device (key prefix: {hint}…). Sync blocked.");
         }
 
-        if (contact.Status != ContactStatus.Verified && contact.Status != ContactStatus.Trusted)
-        {
-            throw new SyncRejectedException(
-                $"Sender '{contact.Username}' is not trusted (status: {contact.Status}). Accept the invitation first.");
-        }
-
         return contact;
     }
 }

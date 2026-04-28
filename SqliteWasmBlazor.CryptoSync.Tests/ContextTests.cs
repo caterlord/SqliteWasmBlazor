@@ -135,7 +135,6 @@ public class ContextTests : IDisposable
             X25519PublicKey = Convert.ToBase64String(new byte[32]),
             Ed25519PublicKey = Convert.ToBase64String(new byte[32]),
             IsAdmin = true,
-            Status = ContactStatus.Verified,
             UpdatedAt = DateTime.UtcNow,
             SharingScope = SharingScope.PUBLIC,
             SharingId = "system"
@@ -148,6 +147,5 @@ public class ContextTests : IDisposable
         Assert.NotNull(loaded);
         Assert.Equal("Alice", loaded.Username);
         Assert.True(loaded.IsAdmin);
-        Assert.Equal(ContactStatus.Verified, loaded.Status);
     }
 }

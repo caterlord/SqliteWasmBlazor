@@ -46,20 +46,11 @@ public class ContactInvitationService(
     /// admin (out-of-band: QR, file, relay, …). The contact's self-group
     /// rows + wrapped CEK are pre-built so the admin can persist them
     /// without ever holding the plaintext CEK.
-    ///
-    /// <para>
-    /// When <paramref name="invitationToken"/> is non-null, it's bound into
-    /// <see cref="ContactAcceptancePayload.InvitationToken"/> before signing
-    /// — admin uses this to find the placeholder
-    /// <see cref="TrustedContact"/> row in the admin-initiated flow
-    /// (Stage 4). Legacy contact-initiated callers pass null.
-    /// </para>
     /// </summary>
     public async ValueTask<ContactAcceptancePayload> BuildInvitationResponseAsync(
         DualKeyPairFull contactKeys,
         ContactUserData userData,
         Guid? proposedContactId = null,
-        byte[]? invitationToken = null,
         CancellationToken cancellationToken = default)
     {
         var contactId = proposedContactId ?? Guid.NewGuid();
@@ -117,8 +108,7 @@ public class ContactInvitationService(
                 SelfGroupContext = selfGroupContext,
                 SelfKeyVersion = bundle.KeyVersion,
                 SelfWrappedContentKey = wrapped,
-                SelfShareTargetSignature = selfTargetSig,
-                InvitationToken = invitationToken
+                SelfShareTargetSignature = selfTargetSig
             };
 
             // Sign the canonical bytes (signature field empty), then store
@@ -151,19 +141,12 @@ public class ContactInvitationService(
     }
 
     /// <summary>
-    /// Contact-side: build the signed acceptance payload, AES-GCM-encrypt
-    /// it under a PSK derived from the bundle's invitation token, and ship
-    /// the resulting <see cref="EncryptedInvitationResponse"/> through
-    /// <paramref name="syncTransport"/> addressed to the admin's X25519
-    /// public key.
-    ///
-    /// <para>
-    /// Wraps the existing <see cref="BuildInvitationResponseAsync"/> logic;
-    /// the signed payload is unchanged on the inside. The wire is opaque
-    /// to anyone without the OOB invitation token.
-    /// </para>
+    /// Contact-side: respond to an admin invitation by pulling the channel
+    /// rows, filling in the Invitation row with the contact's identity, and
+    /// pushing the modified row back through standard sync. Rewritten in
+    /// commit 3 — current body intentionally throws.
     /// </summary>
-    public async ValueTask RespondToInvitationAsync(
+    public ValueTask RespondToInvitationAsync(
         InvitationBundle bundle,
         DualKeyPairFull contactKeys,
         ContactUserData userData,
@@ -171,78 +154,7 @@ public class ContactInvitationService(
         Guid? proposedContactId = null,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(bundle);
-        ArgumentNullException.ThrowIfNull(syncTransport);
-        if (bundle.Token.Length != ContactService.InvitationTokenSize)
-        {
-            throw new ArgumentException(
-                $"InvitationBundle.Token must be {ContactService.InvitationTokenSize} bytes; got {bundle.Token.Length}.",
-                nameof(bundle));
-        }
-
-        var payload = await BuildInvitationResponseAsync(
-            contactKeys,
-            userData,
-            proposedContactId,
-            invitationToken: bundle.Token,
-            cancellationToken: cancellationToken);
-
-        var canonicalBytes = MessagePackSerializer.Serialize(payload);
-        var canonicalBase64 = Convert.ToBase64String(canonicalBytes);
-
-        var psk = DeriveInvitationPsk(bundle.Token);
-        try
-        {
-            var encryptResult = await crypto.EncryptSymmetricAsync(canonicalBase64, psk);
-            if (!encryptResult.Success || encryptResult.Value is null)
-            {
-                throw new InvalidOperationException(
-                    $"ContactInvitationService.RespondToInvitationAsync: EncryptSymmetricAsync failed: {encryptResult.ErrorCode}");
-            }
-
-            var envelope = new EncryptedInvitationResponse
-            {
-                Ciphertext = encryptResult.Value.Ciphertext,
-                Nonce = encryptResult.Value.Nonce
-            };
-            var envelopeBytes = MessagePackSerializer.Serialize(envelope);
-
-            await syncTransport.SendAsync(
-                envelopeBytes,
-                [bundle.AdminX25519PublicKey],
-                cancellationToken).ConfigureAwait(false);
-        }
-        finally
-        {
-            System.Security.Cryptography.CryptographicOperations.ZeroMemory(psk);
-        }
-    }
-
-    /// <summary>
-    /// Derive the AES-256 PSK from a 32-byte invitation token via
-    /// HKDF-SHA256 with the fixed info string
-    /// <see cref="EncryptedInvitationResponse.PskInfoContext"/>.
-    /// Both contact (encrypt) and admin (decrypt) call this with the same
-    /// token to agree on the key.
-    /// </summary>
-    public static byte[] DeriveInvitationPsk(ReadOnlySpan<byte> invitationToken)
-    {
-        if (invitationToken.Length != ContactService.InvitationTokenSize)
-        {
-            throw new ArgumentException(
-                $"Invitation token must be {ContactService.InvitationTokenSize} bytes; got {invitationToken.Length}.",
-                nameof(invitationToken));
-        }
-
-        var info = System.Text.Encoding.UTF8.GetBytes(EncryptedInvitationResponse.PskInfoContext);
-        var key = new byte[32];
-        System.Security.Cryptography.HKDF.DeriveKey(
-            System.Security.Cryptography.HashAlgorithmName.SHA256,
-            ikm: invitationToken,
-            output: key,
-            salt: ReadOnlySpan<byte>.Empty,
-            info: info);
-        return key;
+        throw new NotImplementedException("RespondToInvitationAsync is rewritten in commit 3 of the invitation pivot.");
     }
 
     /// <summary>
@@ -284,8 +196,6 @@ public class ContactInvitationService(
             X25519PublicKey = payload.X25519PublicKey,
             Ed25519PublicKey = payload.Ed25519PublicKey,
             IsAdmin = false,
-            Status = ContactStatus.Verified,
-            VerifiedAt = now,
             UpdatedAt = now,
             SharingScope = SharingScope.PUBLIC,
             SharingId = CryptoSyncBootstrap.SystemSharingId
@@ -313,9 +223,6 @@ public class ContactInvitationService(
             ?? throw new InvalidOperationException(
                 "ContactInvitationService: no admin TrustedContact found in local DB. " +
                 "AcceptInvitationResponseAsync must run on a fully bootstrapped admin device.");
-        var adminEd25519PublicKey = adminContact.Ed25519PublicKey
-            ?? throw new InvalidOperationException(
-                "ContactInvitationService: admin TrustedContact has null Ed25519PublicKey — bootstrap invariant violated.");
 
         var contactSelfTarget = new ShareTarget
         {
@@ -408,7 +315,7 @@ public class ContactInvitationService(
             WrappedContentKey = CryptoSyncBootstrap.SerializeWrappedCek(newMemberWrappedCek.WrappedContentKey),
             Role = systemRole,
             AdminSignature = systemTargetSig,
-            GroupAdminEd25519PublicKey = adminEd25519PublicKey,
+            GroupAdminEd25519PublicKey = adminContact.Ed25519PublicKey,
             GrantedByContactId = adminContact.Id,
             UpdatedAt = now,
             SharingScope = SharingScope.PUBLIC,

@@ -54,8 +54,59 @@ public class ContactInvitationService(
         CancellationToken cancellationToken = default)
     {
         var contactId = proposedContactId ?? Guid.NewGuid();
-        var selfGroupContext = CryptoSyncBootstrap.BuildSelfGroupContext(contactId);
+        var selfMaterial = await BuildContactSelfGroupAsync(contactKeys, contactId).ConfigureAwait(false);
 
+        var payload = new ContactAcceptancePayload
+        {
+            ContactId = contactId,
+            Username = userData.Username,
+            Email = userData.Email,
+            Comment = userData.Comment,
+            X25519PublicKey = contactKeys.X25519PublicKey,
+            Ed25519PublicKey = contactKeys.Ed25519PublicKey,
+            SelfGroupId = Guid.NewGuid(),
+            SelfGroupContext = selfMaterial.GroupContext,
+            SelfKeyVersion = selfMaterial.KeyVersion,
+            SelfWrappedContentKey = selfMaterial.WrappedCek,
+            SelfShareTargetSignature = selfMaterial.ShareTargetSignature
+        };
+
+        // Sign the canonical bytes (signature field empty), then store
+        // the signature. Verification on the admin side does the same
+        // clear → serialize → verify → restore dance.
+        var canonical = MessagePackSerializer.Serialize(payload);
+        var signedCanonical = Convert.ToBase64String(canonical);
+        var contactEd25519Priv = Convert.FromBase64String(contactKeys.Ed25519PrivateKey);
+        try
+        {
+            var signResult = await crypto.SignAsync(signedCanonical, contactEd25519Priv);
+            if (!signResult.Success || signResult.Value is null)
+            {
+                throw new InvalidOperationException(
+                    $"ContactInvitationService: SignAsync failed: {signResult.ErrorCode}");
+            }
+            payload.AcceptancePayloadSignature = Convert.FromBase64String(signResult.Value);
+        }
+        finally
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(contactEd25519Priv);
+        }
+
+        return payload;
+    }
+
+    /// <summary>
+    /// Build the contact's privacy-preserving self-group rows: random CEK
+    /// wrapped via <c>HKDF(ECDH(contactPriv, contactPub), info=selfGroupContext)</c>
+    /// (only the contact can re-derive the wrapping key) plus the
+    /// ShareTarget credential signature. Shared between
+    /// <see cref="BuildInvitationResponseAsync"/> and
+    /// <see cref="RespondToInvitationAsync"/>.
+    /// </summary>
+    private async ValueTask<ContactSelfGroupMaterial> BuildContactSelfGroupAsync(
+        DualKeyPairFull contactKeys, Guid contactId)
+    {
+        var selfGroupContext = CryptoSyncBootstrap.BuildSelfGroupContext(contactId);
         var contactPrivKey = Convert.FromBase64String(contactKeys.X25519PrivateKey);
         try
         {
@@ -63,7 +114,7 @@ public class ContactInvitationService(
                 contactPrivKey,
                 contactKeys.X25519PublicKey,
                 [contactKeys.X25519PublicKey],
-                selfGroupContext);
+                selfGroupContext).ConfigureAwait(false);
 
             if (!bundleResult.Success)
             {
@@ -81,64 +132,33 @@ public class ContactInvitationService(
 
             var wrapped = CryptoSyncBootstrap.SerializeWrappedCek(bundle.MemberKeys[0].WrappedContentKey);
 
-            // Sign the self-ShareTarget credential: contact is the GroupAdmin
-            // of their own self-group, so they sign their own Role grant.
-            var contactEd25519PrivForCred = Convert.FromBase64String(contactKeys.Ed25519PrivateKey);
+            var contactEd25519Priv = Convert.FromBase64String(contactKeys.Ed25519PrivateKey);
             byte[] selfTargetSig;
             try
             {
                 selfTargetSig = await signer.SignShareTargetAsync(
-                    contactEd25519PrivForCred, contactKeys.X25519PublicKey,
-                    SyncRole.OWNER, selfGroupContext, bundle.KeyVersion);
-            }
-            finally
-            {
-                System.Security.Cryptography.CryptographicOperations.ZeroMemory(contactEd25519PrivForCred);
-            }
-
-            var payload = new ContactAcceptancePayload
-            {
-                ContactId = contactId,
-                Username = userData.Username,
-                Email = userData.Email,
-                Comment = userData.Comment,
-                X25519PublicKey = contactKeys.X25519PublicKey,
-                Ed25519PublicKey = contactKeys.Ed25519PublicKey,
-                SelfGroupId = Guid.NewGuid(),
-                SelfGroupContext = selfGroupContext,
-                SelfKeyVersion = bundle.KeyVersion,
-                SelfWrappedContentKey = wrapped,
-                SelfShareTargetSignature = selfTargetSig
-            };
-
-            // Sign the canonical bytes (signature field empty), then store
-            // the signature. Verification on the admin side does the same
-            // clear → serialize → verify → restore dance.
-            var canonical = MessagePackSerializer.Serialize(payload);
-            var signedCanonical = Convert.ToBase64String(canonical);
-            var contactEd25519Priv = Convert.FromBase64String(contactKeys.Ed25519PrivateKey);
-            try
-            {
-                var signResult = await crypto.SignAsync(signedCanonical, contactEd25519Priv);
-                if (!signResult.Success || signResult.Value is null)
-                {
-                    throw new InvalidOperationException(
-                        $"ContactInvitationService: SignAsync failed: {signResult.ErrorCode}");
-                }
-                payload.AcceptancePayloadSignature = Convert.FromBase64String(signResult.Value);
+                    contactEd25519Priv, contactKeys.X25519PublicKey,
+                    SyncRole.OWNER, selfGroupContext, bundle.KeyVersion).ConfigureAwait(false);
             }
             finally
             {
                 System.Security.Cryptography.CryptographicOperations.ZeroMemory(contactEd25519Priv);
             }
 
-            return payload;
+            return new ContactSelfGroupMaterial(
+                selfGroupContext, bundle.KeyVersion, wrapped, selfTargetSig);
         }
         finally
         {
             System.Security.Cryptography.CryptographicOperations.ZeroMemory(contactPrivKey);
         }
     }
+
+    private readonly record struct ContactSelfGroupMaterial(
+        string GroupContext,
+        int KeyVersion,
+        byte[] WrappedCek,
+        byte[] ShareTargetSignature);
 
     /// <summary>
     /// Default invitation TTL. Bundles past <c>UtcNow + DefaultInvitationTtl</c>
@@ -295,9 +315,12 @@ public class ContactInvitationService(
             SharingId = CryptoSyncBootstrap.SystemSharingId
         });
 
+        // Reuse the invitation share group's Id as the Invitation row Id —
+        // simplifies the invitee's response signature (no need to pull the
+        // row first to learn its Id) and ties the row 1:1 to the channel.
         context.Invitations.Add(new Invitation
         {
-            Id = Guid.NewGuid(),
+            Id = groupId,
             Username = username,
             Email = email,
             Comment = comment,
@@ -318,6 +341,7 @@ public class ContactInvitationService(
             ExpiresAt = expiresAt,
             AdminSignature = bundleSignatureBytes,
             AdminEd25519PublicKey = adminKeys.Ed25519PublicKey,
+            AdminX25519PublicKey = adminKeys.X25519PublicKey,
             RelayHint = relayHint
         };
     }
@@ -377,12 +401,17 @@ public class ContactInvitationService(
     }
 
     /// <summary>
-    /// Contact-side: respond to an admin invitation by pulling the channel
-    /// rows, filling in the Invitation row with the contact's identity, and
-    /// pushing the modified row back through standard sync. Rewritten in
-    /// commit 3 — current body intentionally throws.
+    /// Contact-side: respond to an admin's invitation. Verifies the bundle's
+    /// admin signature + expiry, derives the transport keypair from the
+    /// shared secret, generates the contact's self-group rows locally, signs
+    /// the canonical
+    /// <c>InvitationId || ContactX25519 || ContactEd25519 || ExpiresAt.Ticks</c>
+    /// payload with the contact's Ed25519 key, AES-GCM-encrypts the response
+    /// under <c>HKDF(ECDH(transportPriv, adminX25519Pub), info=invitationGroupContext)</c>,
+    /// and ships the envelope through <paramref name="syncTransport"/> addressed
+    /// to <see cref="InvitationBundle.AdminX25519PublicKey"/>.
     /// </summary>
-    public ValueTask RespondToInvitationAsync(
+    public async ValueTask RespondToInvitationAsync(
         InvitationBundle bundle,
         DualKeyPairFull contactKeys,
         ContactUserData userData,
@@ -390,7 +419,133 @@ public class ContactInvitationService(
         Guid? proposedContactId = null,
         CancellationToken cancellationToken = default)
     {
-        throw new NotImplementedException("RespondToInvitationAsync is rewritten in commit 3 of the invitation pivot.");
+        ArgumentNullException.ThrowIfNull(bundle);
+        ArgumentNullException.ThrowIfNull(contactKeys);
+        ArgumentNullException.ThrowIfNull(syncTransport);
+
+        // 1. Derive transport keypair from the shared secret.
+        var transportKeyPair = await crypto.DeriveX25519KeyPairAsync(bundle.TransportSecret).ConfigureAwait(false);
+        var transportPub = transportKeyPair.PublicKeyBase64;
+
+        // 2. Verify admin's signature on the bundle.
+        var canonicalBundle = BuildBundleCanonical(transportPub, bundle.GroupId, bundle.ExpiresAt);
+        var bundleOk = await crypto.VerifyAsync(
+            canonicalBundle,
+            Convert.ToBase64String(bundle.AdminSignature),
+            bundle.AdminEd25519PublicKey).ConfigureAwait(false);
+        if (!bundleOk)
+        {
+            throw new InvalidInvitationBundleException(
+                "InvitationBundle.AdminSignature failed Ed25519 verification.");
+        }
+
+        // 3. Verify expiry.
+        if (DateTime.UtcNow >= bundle.ExpiresAt)
+        {
+            throw new InvitationExpiredException(
+                $"InvitationBundle expired at {bundle.ExpiresAt:O}.");
+        }
+
+        // 4. Build the contact's self-group rows (privacy invariant — admin can't unwrap).
+        var contactId = proposedContactId ?? Guid.NewGuid();
+        var selfMaterial = await BuildContactSelfGroupAsync(contactKeys, contactId).ConfigureAwait(false);
+        var selfGroupId = Guid.NewGuid();
+
+        // 5. Sign canonical (InvitationId || ContactX25519 || ContactEd25519 || ExpiresAt.Ticks).
+        var canonicalContact = BuildContactSignatureCanonical(
+            bundle.GroupId, contactKeys.X25519PublicKey, contactKeys.Ed25519PublicKey, bundle.ExpiresAt);
+        var contactEd25519Priv = Convert.FromBase64String(contactKeys.Ed25519PrivateKey);
+        byte[] contactSig;
+        try
+        {
+            var signResult = await crypto.SignAsync(canonicalContact, contactEd25519Priv).ConfigureAwait(false);
+            if (!signResult.Success || signResult.Value is null)
+            {
+                throw new InvalidOperationException(
+                    $"ContactInvitationService.RespondToInvitationAsync: SignAsync failed: {signResult.ErrorCode}");
+            }
+            contactSig = Convert.FromBase64String(signResult.Value);
+        }
+        finally
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(contactEd25519Priv);
+        }
+
+        var payload = new InvitationResponsePayload
+        {
+            ContactX25519PublicKey = contactKeys.X25519PublicKey,
+            ContactEd25519PublicKey = contactKeys.Ed25519PublicKey,
+            SelfGroupId = selfGroupId,
+            SelfGroupContext = selfMaterial.GroupContext,
+            SelfKeyVersion = selfMaterial.KeyVersion,
+            SelfWrappedContentKey = selfMaterial.WrappedCek,
+            SelfShareTargetSignature = selfMaterial.ShareTargetSignature,
+            ContactSignature = contactSig
+        };
+        var payloadBytes = MessagePackSerializer.Serialize(payload);
+
+        // 6. AES-GCM under HKDF(ECDH(transportPriv, adminPub), info=invitationGroupContext).
+        var groupContext = $"invitation-{bundle.GroupId:N}:v1";
+        var transportPriv = Convert.FromBase64String(transportKeyPair.PrivateKeyBase64);
+        SymmetricEncryptedData encrypted;
+        try
+        {
+            var wkResult = await crypto.DeriveWrappingKeyAsync(
+                transportPriv, bundle.AdminX25519PublicKey, groupContext).ConfigureAwait(false);
+            if (!wkResult.Success)
+            {
+                throw new InvalidOperationException(
+                    $"ContactInvitationService.RespondToInvitationAsync: DeriveWrappingKeyAsync failed: {wkResult.ErrorCode}");
+            }
+            var encResult = await crypto.EncryptSymmetricAsync(
+                Convert.ToBase64String(payloadBytes), wkResult.Value).ConfigureAwait(false);
+            if (!encResult.Success || encResult.Value is null)
+            {
+                throw new InvalidOperationException(
+                    $"ContactInvitationService.RespondToInvitationAsync: EncryptSymmetricAsync failed: {encResult.ErrorCode}");
+            }
+            encrypted = encResult.Value;
+        }
+        finally
+        {
+            System.Security.Cryptography.CryptographicOperations.ZeroMemory(transportPriv);
+        }
+
+        // 7. Build envelope + send through transport addressed to admin's pub.
+        var envelope = new InvitationResponseEnvelope
+        {
+            GroupId = bundle.GroupId,
+            Ciphertext = Convert.FromBase64String(encrypted.Ciphertext),
+            Nonce = Convert.FromBase64String(encrypted.Nonce)
+        };
+        var envelopeBytes = MessagePackSerializer.Serialize(envelope);
+
+        await syncTransport.SendAsync(
+            envelopeBytes,
+            [bundle.AdminX25519PublicKey],
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Build the canonical bytes the invitee signs over for
+    /// <see cref="InvitationResponsePayload.ContactSignature"/>:
+    /// <c>InvitationId || ContactX25519 || ContactEd25519 || ExpiresAt.Ticks</c>,
+    /// returned as Base64 for the string-based crypto API.
+    /// </summary>
+    internal static string BuildContactSignatureCanonical(
+        Guid invitationId, string contactX25519PubKey, string contactEd25519PubKey, DateTime expiresAt)
+    {
+        var idBytes = invitationId.ToByteArray();
+        var x = Convert.FromBase64String(contactX25519PubKey);
+        var e = Convert.FromBase64String(contactEd25519PubKey);
+        var ticks = BitConverter.GetBytes(expiresAt.Ticks);
+        var canonical = new byte[idBytes.Length + x.Length + e.Length + ticks.Length];
+        var offset = 0;
+        Buffer.BlockCopy(idBytes, 0, canonical, offset, idBytes.Length); offset += idBytes.Length;
+        Buffer.BlockCopy(x, 0, canonical, offset, x.Length); offset += x.Length;
+        Buffer.BlockCopy(e, 0, canonical, offset, e.Length); offset += e.Length;
+        Buffer.BlockCopy(ticks, 0, canonical, offset, ticks.Length);
+        return Convert.ToBase64String(canonical);
     }
 
     private async ValueTask DeleteInvitationChannelAsync(Invitation invitation, CancellationToken cancellationToken)

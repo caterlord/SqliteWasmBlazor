@@ -108,12 +108,46 @@ public class SyncEngineTests : IAsyncLifetime
             _scenario.Admin.Context, fakeDb, transport,
             NullImportNotifier.Instance, "admin.db");
 
-        Assert.Equal(default, engine.LastExportedAt);
+        Assert.Equal(default, await engine.GetLastExportedAtAsync());
         var before = DateTime.UtcNow;
         await engine.PushChangesAsync(_scenario.Admin.Keys);
         var after = DateTime.UtcNow;
 
-        Assert.InRange(engine.LastExportedAt, before.AddSeconds(-1), after.AddSeconds(1));
+        Assert.InRange(await engine.GetLastExportedAtAsync(), before.AddSeconds(-1), after.AddSeconds(1));
+    }
+
+    [Fact]
+    public async Task PushChanges_CursorPersistsAcrossEngineInstances()
+    {
+        var relay = new InMemorySyncRelay();
+        var transport = new InMemorySyncTransport(relay, _scenario.Admin.Keys.X25519PublicKey);
+        var nonEmpty = MessagePackSerializer.Serialize(new DeltaEnvelope
+        {
+            SenderEd25519PublicKey = _scenario.Admin.Keys.Ed25519PublicKey,
+            Groups =
+            [
+                new ShadowRowGroup
+                {
+                    TableName = "TestItems",
+                    IsSystemTable = false,
+                    Rows = [new ShadowRow { Id = Guid.NewGuid() }]
+                }
+            ]
+        });
+        var fakeDb = new FakeDatabaseService { CannedExportBytes = nonEmpty };
+
+        var engineA = new SyncEngine(
+            _scenario.Admin.Context, fakeDb, transport,
+            NullImportNotifier.Instance, "admin.db");
+        await engineA.PushChangesAsync(_scenario.Admin.Keys);
+        var savedCursor = await engineA.GetLastExportedAtAsync();
+        Assert.NotEqual(default, savedCursor);
+
+        // Fresh engine over the same DB picks up the persisted cursor.
+        var engineB = new SyncEngine(
+            _scenario.Admin.Context, fakeDb, transport,
+            NullImportNotifier.Instance, "admin.db");
+        Assert.Equal(savedCursor, await engineB.GetLastExportedAtAsync());
     }
 
     [Fact]
@@ -236,7 +270,7 @@ public class SyncEngineTests : IAsyncLifetime
             var sent = await engine.PushChangesAsync(solo.Keys);
 
             Assert.False(sent); // No recipients
-            Assert.NotEqual(default, engine.LastExportedAt); // Cursor advances
+            Assert.NotEqual(default, await engine.GetLastExportedAtAsync()); // Cursor advances
         }
         finally
         {

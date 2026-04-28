@@ -33,14 +33,29 @@ public class SyncEngine(
     IImportNotifier importNotifier,
     string databaseName)
 {
-    private DateTime _lastExportedAt;
+    private DateTime? _lastExportedAtCache;
 
     /// <summary>
-    /// The high-water mark this engine has exported up to. Persisted only
-    /// in process memory for now — Phase A3 moves it to OPFS so reload
-    /// doesn't reship envelopes.
+    /// High-water mark timestamp through which this engine has exported.
+    /// Backed by the deterministic <see cref="SyncState"/> row keyed by
+    /// <see cref="SyncState.EngineCursorId"/> — survives process restarts.
+    /// Returns <see cref="DateTime.MinValue"/> until the first push (or first
+    /// load). Cached after first read to avoid hitting the DB on every push.
     /// </summary>
-    public DateTime LastExportedAt => _lastExportedAt;
+    public async ValueTask<DateTime> GetLastExportedAtAsync(CancellationToken cancellationToken = default)
+    {
+        if (_lastExportedAtCache is { } cached)
+        {
+            return cached;
+        }
+        var row = await context.SyncStates
+            .AsNoTracking()
+            .FirstOrDefaultAsync(s => s.Id == SyncState.EngineCursorId, cancellationToken)
+            .ConfigureAwait(false);
+        var value = row?.LastExportedAt ?? default;
+        _lastExportedAtCache = value;
+        return value;
+    }
 
     /// <summary>
     /// Push then pull. Returns the number of rows applied locally from
@@ -66,7 +81,8 @@ public class SyncEngine(
         ArgumentNullException.ThrowIfNull(ownKeys);
 
         var orchestrator = new SyncOrchestrator(databaseService, context, importNotifier);
-        var since = _lastExportedAt == default ? (DateTime?)null : _lastExportedAt;
+        var lastExported = await GetLastExportedAtAsync(cancellationToken).ConfigureAwait(false);
+        var since = lastExported == default ? (DateTime?)null : lastExported;
         var now = DateTime.UtcNow;
 
         var header = await BuildHeaderAsync(ownKeys, cancellationToken).ConfigureAwait(false);
@@ -88,7 +104,7 @@ public class SyncEngine(
         }
         if (rowCount == 0)
         {
-            _lastExportedAt = now;
+            await SaveCursorAsync(now, cancellationToken).ConfigureAwait(false);
             return false;
         }
 
@@ -98,13 +114,34 @@ public class SyncEngine(
         {
             // Nobody else listening yet — still advance the cursor so we
             // don't keep re-encoding the same rows on the next push.
-            _lastExportedAt = now;
+            await SaveCursorAsync(now, cancellationToken).ConfigureAwait(false);
             return false;
         }
 
         await transport.SendAsync(envelopeBytes, recipients, cancellationToken).ConfigureAwait(false);
-        _lastExportedAt = now;
+        await SaveCursorAsync(now, cancellationToken).ConfigureAwait(false);
         return true;
+    }
+
+    private async ValueTask SaveCursorAsync(DateTime cursor, CancellationToken cancellationToken)
+    {
+        var row = await context.SyncStates
+            .FirstOrDefaultAsync(s => s.Id == SyncState.EngineCursorId, cancellationToken)
+            .ConfigureAwait(false);
+        if (row is null)
+        {
+            context.SyncStates.Add(new SyncState
+            {
+                Id = SyncState.EngineCursorId,
+                LastExportedAt = cursor
+            });
+        }
+        else
+        {
+            row.LastExportedAt = cursor;
+        }
+        await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        _lastExportedAtCache = cursor;
     }
 
     /// <summary>

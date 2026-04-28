@@ -4,12 +4,15 @@ namespace SqliteWasmBlazor.CryptoSync;
 /// Persistence seam for <see cref="HttpSyncTransport"/>'s receive cursor —
 /// the relay-side <c>cursor</c> integer the GET request passes via
 /// <c>?since=…</c>. Without persistence a process restart drains the
-/// inbox from cursor 0, replaying every envelope ever delivered.
+/// inbox from cursor 0, replaying every envelope ever delivered (P9
+/// violation, threat-model §7).
 ///
 /// <para>
-/// The interface is byte-opaque to where the cursor lives: in-memory
-/// (default for tests + dev), OPFS-backed file (production browser app),
-/// localStorage (smaller scopes), or a per-DB SyncState row. Consumer
+/// The interface is byte-opaque to where the cursor lives. Built-in impls:
+/// <see cref="InMemoryReceiveCursorStore"/> for tests + dev, and
+/// <see cref="EfReceiveCursorStore"/> for production browser apps —
+/// durability comes from the OPFS-hosted SQLite the rest of the app
+/// already uses, via <see cref="SyncState.LastReceivedCursor"/>. Consumer
 /// chooses the impl in DI; <see cref="HttpSyncTransport"/> doesn't care.
 /// </para>
 /// </summary>

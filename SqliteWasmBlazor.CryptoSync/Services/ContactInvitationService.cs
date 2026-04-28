@@ -7,32 +7,21 @@ using Microsoft.EntityFrameworkCore;
 namespace SqliteWasmBlazor.CryptoSync;
 
 /// <summary>
-/// Two-sided invitation flow for adding a new <see cref="TrustedContact"/>
-/// with a privacy-preserving self-group.
-///
-/// <list type="bullet">
-///   <item>
-///     <see cref="BuildInvitationResponseAsync"/> — runs on the invitee's
-///     device. Generates the contact's self-group CEK locally, wraps it via
-///     <c>HKDF(ECDH(contactPriv, contactPub), info=selfGroupContext)</c>
-///     (a key only the contact can re-derive), assembles a signed
-///     <see cref="ContactAcceptancePayload"/>. The plaintext CEK never
-///     leaves this method's scope.
-///   </item>
-///   <item>
-///     <see cref="AcceptInvitationResponseAsync"/> — runs on the admin's
-///     device. Verifies the contact's signature, persists the contact +
-///     contact-self-group rows + admin-wrapped system-group target for the
-///     new contact, all inside a single DB transaction.
-///   </item>
-/// </list>
+/// Admin-initiated invitation flow. Admin calls
+/// <see cref="CreateInvitationAsync"/> to generate a transport keypair +
+/// <see cref="ShareGroup"/> + <see cref="Invitation"/> row, then ships the
+/// returned <see cref="InvitationBundle"/> out-of-band. Invitee calls
+/// <see cref="RespondToInvitationAsync"/> with their own keys to ECDH-encrypt
+/// a signed response back. Admin then drains the inbox via
+/// <see cref="IngestInvitationResponsesAsync"/> and promotes a responded
+/// invitation to a real <see cref="TrustedContact"/> via
+/// <see cref="PromoteInvitationAsync"/>.
 ///
 /// <para>
 /// <b>Privacy claim:</b> the admin holds the contact's self-group rows but
-/// cannot unwrap the CEK inside the wrapped blob — re-deriving the
-/// wrapping key requires <c>contactPriv</c>, which the admin does not have.
-/// <c>Client</c>-scoped rows the contact creates later are opaque to the
-/// admin from day one.
+/// cannot unwrap the CEK — re-deriving the wrapping key requires the
+/// contact's X25519 private key. <c>Client</c>-scoped rows the contact
+/// creates later are opaque to the admin from day one.
 /// </para>
 /// </summary>
 public class ContactInvitationService(
@@ -42,66 +31,10 @@ public class ContactInvitationService(
     DeclarationSigner signer)
 {
     /// <summary>
-    /// Contact-side: build a signed acceptance payload for delivery to the
-    /// admin (out-of-band: QR, file, relay, …). The contact's self-group
-    /// rows + wrapped CEK are pre-built so the admin can persist them
-    /// without ever holding the plaintext CEK.
-    /// </summary>
-    public async ValueTask<ContactAcceptancePayload> BuildInvitationResponseAsync(
-        DualKeyPairFull contactKeys,
-        ContactUserData userData,
-        Guid? proposedContactId = null,
-        CancellationToken cancellationToken = default)
-    {
-        var contactId = proposedContactId ?? Guid.NewGuid();
-        var selfMaterial = await BuildContactSelfGroupAsync(contactKeys, contactId).ConfigureAwait(false);
-
-        var payload = new ContactAcceptancePayload
-        {
-            ContactId = contactId,
-            Username = userData.Username,
-            Email = userData.Email,
-            Comment = userData.Comment,
-            X25519PublicKey = contactKeys.X25519PublicKey,
-            Ed25519PublicKey = contactKeys.Ed25519PublicKey,
-            SelfGroupId = Guid.NewGuid(),
-            SelfGroupContext = selfMaterial.GroupContext,
-            SelfKeyVersion = selfMaterial.KeyVersion,
-            SelfWrappedContentKey = selfMaterial.WrappedCek,
-            SelfShareTargetSignature = selfMaterial.ShareTargetSignature
-        };
-
-        // Sign the canonical bytes (signature field empty), then store
-        // the signature. Verification on the admin side does the same
-        // clear → serialize → verify → restore dance.
-        var canonical = MessagePackSerializer.Serialize(payload);
-        var signedCanonical = Convert.ToBase64String(canonical);
-        var contactEd25519Priv = Convert.FromBase64String(contactKeys.Ed25519PrivateKey);
-        try
-        {
-            var signResult = await crypto.SignAsync(signedCanonical, contactEd25519Priv);
-            if (!signResult.Success || signResult.Value is null)
-            {
-                throw new InvalidOperationException(
-                    $"ContactInvitationService: SignAsync failed: {signResult.ErrorCode}");
-            }
-            payload.AcceptancePayloadSignature = Convert.FromBase64String(signResult.Value);
-        }
-        finally
-        {
-            System.Security.Cryptography.CryptographicOperations.ZeroMemory(contactEd25519Priv);
-        }
-
-        return payload;
-    }
-
-    /// <summary>
     /// Build the contact's privacy-preserving self-group rows: random CEK
     /// wrapped via <c>HKDF(ECDH(contactPriv, contactPub), info=selfGroupContext)</c>
     /// (only the contact can re-derive the wrapping key) plus the
-    /// ShareTarget credential signature. Shared between
-    /// <see cref="BuildInvitationResponseAsync"/> and
-    /// <see cref="RespondToInvitationAsync"/>.
+    /// ShareTarget credential signature.
     /// </summary>
     private async ValueTask<ContactSelfGroupMaterial> BuildContactSelfGroupAsync(
         DualKeyPairFull contactKeys, Guid contactId)
@@ -566,96 +499,213 @@ public class ContactInvitationService(
     }
 
     /// <summary>
-    /// Admin-side: verify a contact's acceptance payload, then atomically
-    /// insert (a) the new <see cref="TrustedContact"/> row,
-    /// (b) the contact's pre-built self-group <see cref="ShareGroup"/> +
-    /// <see cref="ShareTarget"/> (admin cannot unwrap), and (c) a fresh
-    /// system-group <see cref="ShareTarget"/> for the new contact wrapped
-    /// with the admin's system CEK so they can decrypt public-scope rows.
+    /// Admin-side: drain pending <see cref="InvitationResponseEnvelope"/>
+    /// envelopes from <paramref name="syncTransport"/>, decrypt each via
+    /// <c>HKDF(ECDH(adminPriv, transportPub), info=invitationGroupContext)</c>,
+    /// verify the contact signature, and update the local
+    /// <see cref="Invitation"/> row with the contact's pubkeys + self-group
+    /// material. Returns the count of rows updated.
     /// </summary>
-    /// <param name="adminKeys">Admin's full keypair (private keys are zeroed after use).</param>
-    /// <param name="payload">The signed payload received from the contact.</param>
-    /// <param name="systemRole">Role to assign the new contact in the system group (default = Editor).</param>
-    /// <returns>The newly persisted <see cref="TrustedContact"/> row.</returns>
-    public async ValueTask<TrustedContact> AcceptInvitationResponseAsync(
+    public async ValueTask<int> IngestInvitationResponsesAsync(
         DualKeyPairFull adminKeys,
-        ContactAcceptancePayload payload,
+        ISyncTransport syncTransport,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(adminKeys);
+        ArgumentNullException.ThrowIfNull(syncTransport);
+
+        var updated = 0;
+        while (true)
+        {
+            var wireBytes = await syncTransport.TryReceiveAsync(cancellationToken).ConfigureAwait(false);
+            if (wireBytes is null)
+            {
+                break;
+            }
+
+            InvitationResponseEnvelope envelope;
+            try
+            {
+                envelope = MessagePackSerializer.Deserialize<InvitationResponseEnvelope>(wireBytes);
+            }
+            catch (MessagePackSerializationException)
+            {
+                // Not an invitation envelope — skip silently. Other transport
+                // consumers may share the same inbox.
+                continue;
+            }
+
+            var invitation = await context.Invitations
+                .FirstOrDefaultAsync(i => i.Id == envelope.GroupId, cancellationToken)
+                .ConfigureAwait(false);
+            if (invitation is null)
+            {
+                // Stale envelope, no matching pending invitation — drop.
+                continue;
+            }
+
+            var groupContext = invitation.SharingId;
+            var transportTarget = await context.ShareTargets
+                .AsNoTracking()
+                .Where(t => t.ShareGroupId == envelope.GroupId
+                    && t.MemberPublicKey != adminKeys.X25519PublicKey)
+                .FirstOrDefaultAsync(cancellationToken).ConfigureAwait(false)
+                ?? throw new InvalidInvitationResponseException(
+                    $"IngestInvitationResponsesAsync: transport ShareTarget for invitation {envelope.GroupId} not found.");
+            var transportPub = transportTarget.MemberPublicKey;
+
+            var adminPriv = Convert.FromBase64String(adminKeys.X25519PrivateKey);
+            string plaintextBase64;
+            try
+            {
+                var wkResult = await crypto.DeriveWrappingKeyAsync(adminPriv, transportPub, groupContext)
+                    .ConfigureAwait(false);
+                if (!wkResult.Success)
+                {
+                    throw new InvalidInvitationResponseException(
+                        $"IngestInvitationResponsesAsync: DeriveWrappingKeyAsync failed: {wkResult.ErrorCode}");
+                }
+                var decResult = await crypto.DecryptSymmetricAsync(
+                    new SymmetricEncryptedData(
+                        Convert.ToBase64String(envelope.Ciphertext),
+                        Convert.ToBase64String(envelope.Nonce)),
+                    wkResult.Value).ConfigureAwait(false);
+                if (!decResult.Success || decResult.Value is null)
+                {
+                    throw new InvalidInvitationResponseException(
+                        $"IngestInvitationResponsesAsync: DecryptSymmetricAsync failed: {decResult.ErrorCode}");
+                }
+                plaintextBase64 = decResult.Value;
+            }
+            finally
+            {
+                System.Security.Cryptography.CryptographicOperations.ZeroMemory(adminPriv);
+            }
+
+            var payload = MessagePackSerializer.Deserialize<InvitationResponsePayload>(
+                Convert.FromBase64String(plaintextBase64));
+
+            // Verify ContactSignature against the contact's claimed Ed25519
+            // pubkey before persisting.
+            var canonical = BuildContactSignatureCanonical(
+                invitation.Id,
+                payload.ContactX25519PublicKey,
+                payload.ContactEd25519PublicKey,
+                invitation.ExpiresAt);
+            var sigOk = await crypto.VerifyAsync(
+                canonical,
+                Convert.ToBase64String(payload.ContactSignature),
+                payload.ContactEd25519PublicKey).ConfigureAwait(false);
+            if (!sigOk)
+            {
+                throw new InvalidInvitationResponseException(
+                    $"IngestInvitationResponsesAsync: ContactSignature failed Ed25519 verification for invitation {envelope.GroupId}.");
+            }
+
+            invitation.ContactX25519PublicKey = payload.ContactX25519PublicKey;
+            invitation.ContactEd25519PublicKey = payload.ContactEd25519PublicKey;
+            invitation.ContactSignature = payload.ContactSignature;
+            invitation.SelfGroupId = payload.SelfGroupId;
+            invitation.SelfGroupContext = payload.SelfGroupContext;
+            invitation.SelfKeyVersion = payload.SelfKeyVersion;
+            invitation.SelfWrappedContentKey = payload.SelfWrappedContentKey;
+            invitation.SelfShareTargetSignature = payload.SelfShareTargetSignature;
+            invitation.UpdatedAt = DateTime.UtcNow;
+
+            updated++;
+        }
+
+        if (updated > 0)
+        {
+            await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+        }
+        return updated;
+    }
+
+    /// <summary>
+    /// Admin-side: promote a responded <see cref="Invitation"/> row to a
+    /// real <see cref="TrustedContact"/>. Verifies <see cref="Invitation.ContactSignature"/>,
+    /// inserts the TrustedContact row + the contact's self-group ShareGroup
+    /// + ShareTarget (admin can't unwrap — privacy invariant), wraps the
+    /// admin's system CEK for the new contact, hard-deletes the invitation
+    /// channel rows. Atomic — either all changes commit or none.
+    /// </summary>
+    public async ValueTask<TrustedContact> PromoteInvitationAsync(
+        Guid invitationId,
+        DualKeyPairFull adminKeys,
         SyncRole systemRole = SyncRole.EDITOR,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(payload);
+        ArgumentNullException.ThrowIfNull(adminKeys);
 
-        // 1. Verify the payload's Ed25519 signature.
-        await VerifyPayloadSignatureAsync(payload);
+        var invitation = await context.Invitations
+            .FirstOrDefaultAsync(i => i.Id == invitationId, cancellationToken)
+            .ConfigureAwait(false)
+            ?? throw new InvitationNotFoundException(
+                $"PromoteInvitationAsync: invitation {invitationId} not found.");
 
-        // 2-8. Atomic insert of all four rows.
-        await using var tx = await context.Database
-            .BeginTransactionAsync(cancellationToken)
+        if (DateTime.UtcNow >= invitation.ExpiresAt)
+        {
+            throw new InvitationExpiredException(
+                $"PromoteInvitationAsync: invitation {invitationId} expired at {invitation.ExpiresAt:O}.");
+        }
+
+        if (invitation.ContactX25519PublicKey is null
+            || invitation.ContactEd25519PublicKey is null
+            || invitation.ContactSignature is null
+            || invitation.SelfGroupId is null
+            || invitation.SelfGroupContext is null
+            || invitation.SelfKeyVersion is null
+            || invitation.SelfWrappedContentKey is null
+            || invitation.SelfShareTargetSignature is null)
+        {
+            throw new InvitationNotRespondedException(
+                $"PromoteInvitationAsync: invitation {invitationId} has not been responded to yet.");
+        }
+
+        // Re-verify ContactSignature in case the row was tampered with after ingest.
+        var canonical = BuildContactSignatureCanonical(
+            invitation.Id,
+            invitation.ContactX25519PublicKey,
+            invitation.ContactEd25519PublicKey,
+            invitation.ExpiresAt);
+        var sigOk = await crypto.VerifyAsync(
+            canonical,
+            Convert.ToBase64String(invitation.ContactSignature),
+            invitation.ContactEd25519PublicKey).ConfigureAwait(false);
+        if (!sigOk)
+        {
+            throw new InvalidInvitationResponseException(
+                $"PromoteInvitationAsync: ContactSignature failed Ed25519 verification for invitation {invitationId}.");
+        }
+
+        var existingX = await context.Contacts
+            .AsNoTracking()
+            .AnyAsync(c => c.X25519PublicKey == invitation.ContactX25519PublicKey, cancellationToken)
             .ConfigureAwait(false);
-
-        // 2. Insert the contact identity row.
-        var now = DateTime.UtcNow;
-        var contactRow = new TrustedContact
+        var existingE = await context.Contacts
+            .AsNoTracking()
+            .AnyAsync(c => c.Ed25519PublicKey == invitation.ContactEd25519PublicKey, cancellationToken)
+            .ConfigureAwait(false);
+        if (existingX || existingE)
         {
-            Id = payload.ContactId,
-            Username = payload.Username,
-            Email = payload.Email,
-            Comment = payload.Comment,
-            X25519PublicKey = payload.X25519PublicKey,
-            Ed25519PublicKey = payload.Ed25519PublicKey,
-            IsAdmin = false,
-            UpdatedAt = now,
-            SharingScope = SharingScope.PUBLIC,
-            SharingId = CryptoSyncBootstrap.SystemSharingId
-        };
-        context.Contacts.Add(contactRow);
-
-        // 3. Insert the contact's self-group rows. SharingId routes via
-        // the system CEK; the wrapped CEK inside is contact-only.
-        var contactSelfGroup = new ShareGroup
-        {
-            Id = payload.SelfGroupId,
-            GroupContext = payload.SelfGroupContext,
-            KeyVersion = payload.SelfKeyVersion,
-            GroupAdminPublicKey = payload.X25519PublicKey,
-            CreatedAt = now,
-            UpdatedAt = now,
-            SharingScope = SharingScope.CLIENT,
-            SharingId = CryptoSyncBootstrap.SystemSharingId
-        };
-        context.ShareGroups.Add(contactSelfGroup);
+            throw new InvalidOperationException(
+                $"PromoteInvitationAsync: contact pubkey already in TrustedContacts.");
+        }
 
         var adminContact = await context.Contacts
             .AsNoTracking()
             .FirstOrDefaultAsync(c => c.IsAdmin, cancellationToken)
+            .ConfigureAwait(false)
             ?? throw new InvalidOperationException(
-                "ContactInvitationService: no admin TrustedContact found in local DB. " +
-                "AcceptInvitationResponseAsync must run on a fully bootstrapped admin device.");
+                "PromoteInvitationAsync: no admin TrustedContact in local DB.");
 
-        var contactSelfTarget = new ShareTarget
-        {
-            Id = Guid.NewGuid(),
-            ShareGroupId = payload.SelfGroupId,
-            KeyVersion = payload.SelfKeyVersion,
-            MemberPublicKey = payload.X25519PublicKey,
-            WrappedContentKey = payload.SelfWrappedContentKey,
-            Role = SyncRole.OWNER,
-            AdminSignature = payload.SelfShareTargetSignature,
-            GroupAdminEd25519PublicKey = payload.Ed25519PublicKey,
-            GrantedByContactId = payload.ContactId,
-            UpdatedAt = now,
-            SharingScope = SharingScope.CLIENT,
-            SharingId = CryptoSyncBootstrap.SystemSharingId
-        };
-        context.ShareTargets.Add(contactSelfTarget);
-
-        // 4. Wrap the system CEK for the new contact via the admin's
-        // private key (admin already has access to the system CEK as Owner).
         var systemGroup = await context.ShareGroups
             .AsNoTracking()
             .FirstOrDefaultAsync(g => g.GroupContext == CryptoSyncBootstrap.SystemGroupContext, cancellationToken)
+            .ConfigureAwait(false)
             ?? throw new InvalidOperationException(
-                "ContactInvitationService: system ShareGroup row not found in local DB.");
+                "PromoteInvitationAsync: system ShareGroup not found in local DB.");
 
         var adminSystemTarget = await context.ShareTargets
             .AsNoTracking()
@@ -663,64 +713,109 @@ public class ContactInvitationService(
                 t.ShareGroupId == systemGroup.Id
                 && t.MemberPublicKey == adminKeys.X25519PublicKey
                 && t.KeyVersion == systemGroup.KeyVersion, cancellationToken)
+            .ConfigureAwait(false)
             ?? throw new InvalidOperationException(
-                "ContactInvitationService: admin's own system ShareTarget not found.");
+                "PromoteInvitationAsync: admin's own system ShareTarget not found.");
 
         var adminWrappedCek = CryptoSyncBootstrap.DeserializeWrappedCek(adminSystemTarget.WrappedContentKey);
 
         var adminPrivKey = Convert.FromBase64String(adminKeys.X25519PrivateKey);
         IReadOnlyList<WrappedKey> wrappedForNewMember;
+        byte[] systemTargetSig;
         try
         {
             var addResult = await groupEncryption.AddGroupMembersAsync(
                 adminPrivKey,
                 adminKeys.X25519PublicKey,
                 adminWrappedCek,
-                [payload.X25519PublicKey],
-                systemGroup.GroupContext);
-
+                [invitation.ContactX25519PublicKey],
+                systemGroup.GroupContext).ConfigureAwait(false);
             if (!addResult.Success)
             {
                 throw new InvalidOperationException(
-                    $"ContactInvitationService: AddGroupMembersAsync failed: {addResult.ErrorCode}");
+                    $"PromoteInvitationAsync: AddGroupMembersAsync failed: {addResult.ErrorCode}");
             }
             wrappedForNewMember = addResult.Value
                 ?? throw new InvalidOperationException(
-                    "ContactInvitationService: AddGroupMembersAsync returned null result");
+                    "PromoteInvitationAsync: AddGroupMembersAsync returned null.");
+
+            var adminEd25519Priv = Convert.FromBase64String(adminKeys.Ed25519PrivateKey);
+            try
+            {
+                systemTargetSig = await signer.SignShareTargetAsync(
+                    adminEd25519Priv, invitation.ContactX25519PublicKey, systemRole,
+                    systemGroup.GroupContext, systemGroup.KeyVersion).ConfigureAwait(false);
+            }
+            finally
+            {
+                System.Security.Cryptography.CryptographicOperations.ZeroMemory(adminEd25519Priv);
+            }
         }
         finally
         {
             System.Security.Cryptography.CryptographicOperations.ZeroMemory(adminPrivKey);
         }
 
-        var newMemberWrappedCek = wrappedForNewMember.SingleOrDefault(w =>
-            w.MemberPublicKey == payload.X25519PublicKey)
+        var newWrappedCek = wrappedForNewMember.SingleOrDefault(w =>
+            w.MemberPublicKey == invitation.ContactX25519PublicKey)
             ?? throw new InvalidOperationException(
-                "ContactInvitationService: AddGroupMembersAsync did not return a wrapped key for the new contact.");
+                "PromoteInvitationAsync: wrapped key for new member missing.");
 
-        // 5. Insert the new contact's system-group ShareTarget. Wrapped with
-        // the system CEK so the contact can decrypt every existing system row.
-        // Signed by the admin (system group owner) as a credential.
-        var adminEd25519Priv = Convert.FromBase64String(adminKeys.Ed25519PrivateKey);
-        byte[] systemTargetSig;
-        try
-        {
-            systemTargetSig = await signer.SignShareTargetAsync(
-                adminEd25519Priv, payload.X25519PublicKey, systemRole,
-                systemGroup.GroupContext, systemGroup.KeyVersion);
-        }
-        finally
-        {
-            System.Security.Cryptography.CryptographicOperations.ZeroMemory(adminEd25519Priv);
-        }
+        await using var tx = await context.Database
+            .BeginTransactionAsync(cancellationToken).ConfigureAwait(false);
 
-        var contactSystemTarget = new ShareTarget
+        var now = DateTime.UtcNow;
+        var contactId = Guid.NewGuid();
+        var contactRow = new TrustedContact
+        {
+            Id = contactId,
+            Username = invitation.Username,
+            Email = invitation.Email ?? string.Empty,
+            Comment = invitation.Comment,
+            X25519PublicKey = invitation.ContactX25519PublicKey,
+            Ed25519PublicKey = invitation.ContactEd25519PublicKey,
+            IsAdmin = false,
+            UpdatedAt = now,
+            SharingScope = SharingScope.PUBLIC,
+            SharingId = CryptoSyncBootstrap.SystemSharingId
+        };
+        context.Contacts.Add(contactRow);
+
+        context.ShareGroups.Add(new ShareGroup
+        {
+            Id = invitation.SelfGroupId.Value,
+            GroupContext = invitation.SelfGroupContext,
+            KeyVersion = invitation.SelfKeyVersion.Value,
+            GroupAdminPublicKey = invitation.ContactX25519PublicKey,
+            CreatedAt = now,
+            UpdatedAt = now,
+            SharingScope = SharingScope.CLIENT,
+            SharingId = CryptoSyncBootstrap.SystemSharingId
+        });
+
+        context.ShareTargets.Add(new ShareTarget
+        {
+            Id = Guid.NewGuid(),
+            ShareGroupId = invitation.SelfGroupId.Value,
+            KeyVersion = invitation.SelfKeyVersion.Value,
+            MemberPublicKey = invitation.ContactX25519PublicKey,
+            WrappedContentKey = invitation.SelfWrappedContentKey,
+            Role = SyncRole.OWNER,
+            AdminSignature = invitation.SelfShareTargetSignature,
+            GroupAdminEd25519PublicKey = invitation.ContactEd25519PublicKey,
+            GrantedByContactId = contactId,
+            UpdatedAt = now,
+            SharingScope = SharingScope.CLIENT,
+            SharingId = CryptoSyncBootstrap.SystemSharingId
+        });
+
+        context.ShareTargets.Add(new ShareTarget
         {
             Id = Guid.NewGuid(),
             ShareGroupId = systemGroup.Id,
             KeyVersion = systemGroup.KeyVersion,
-            MemberPublicKey = payload.X25519PublicKey,
-            WrappedContentKey = CryptoSyncBootstrap.SerializeWrappedCek(newMemberWrappedCek.WrappedContentKey),
+            MemberPublicKey = invitation.ContactX25519PublicKey,
+            WrappedContentKey = CryptoSyncBootstrap.SerializeWrappedCek(newWrappedCek.WrappedContentKey),
             Role = systemRole,
             AdminSignature = systemTargetSig,
             GroupAdminEd25519PublicKey = adminContact.Ed25519PublicKey,
@@ -728,51 +823,13 @@ public class ContactInvitationService(
             UpdatedAt = now,
             SharingScope = SharingScope.PUBLIC,
             SharingId = CryptoSyncBootstrap.SystemSharingId
-        };
-        context.ShareTargets.Add(contactSystemTarget);
+        });
+
+        await DeleteInvitationChannelAsync(invitation, cancellationToken).ConfigureAwait(false);
 
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
 
         return contactRow;
     }
-
-    /// <summary>
-    /// Verify the payload's Ed25519 signature using the canonical clear-and-restore
-    /// scheme: temporarily zero <see cref="ContactAcceptancePayload.AcceptancePayloadSignature"/>,
-    /// re-serialize, verify against the saved bytes, then restore.
-    /// </summary>
-    private async Task VerifyPayloadSignatureAsync(ContactAcceptancePayload payload)
-    {
-        if (payload.AcceptancePayloadSignature.Length == 0)
-        {
-            throw new InvalidContactSignatureException(
-                "ContactAcceptancePayload.AcceptancePayloadSignature is empty.");
-        }
-
-        var savedSignature = payload.AcceptancePayloadSignature;
-        payload.AcceptancePayloadSignature = [];
-        try
-        {
-            var canonicalBytes = MessagePackSerializer.Serialize(payload);
-            var canonicalBase64 = Convert.ToBase64String(canonicalBytes);
-            var signatureBase64 = Convert.ToBase64String(savedSignature);
-            var ok = await crypto.VerifyAsync(canonicalBase64, signatureBase64, payload.Ed25519PublicKey);
-            if (!ok)
-            {
-                throw new InvalidContactSignatureException(
-                    "ContactAcceptancePayload signature failed Ed25519 verification.");
-            }
-        }
-        finally
-        {
-            payload.AcceptancePayloadSignature = savedSignature;
-        }
-    }
 }
-
-/// <summary>
-/// Thrown when <see cref="ContactInvitationService.AcceptInvitationResponseAsync"/>
-/// receives a payload whose Ed25519 signature does not verify.
-/// </summary>
-public sealed class InvalidContactSignatureException(string message) : Exception(message);

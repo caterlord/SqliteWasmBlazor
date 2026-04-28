@@ -7,12 +7,18 @@ namespace SqliteWasmBlazor.CryptoSync.Tests.Fixtures;
 
 /// <summary>
 /// Two-actor scenario fixture: an admin and one regular user, both bootstrapped
-/// to the canonical "ready to sync" state.
+/// to the canonical "ready to sync" state via the admin-initiated invitation
+/// flow (<see cref="ContactInvitationService.CreateInvitationAsync"/> →
+/// <see cref="ContactInvitationService.RespondToInvitationAsync"/> →
+/// <see cref="ContactInvitationService.IngestInvitationResponsesAsync"/> →
+/// <see cref="ContactInvitationService.PromoteInvitationAsync"/>).
 ///
 /// <para>
 /// Admin's DB is seeded via HasData (AdminSeed.g.cs) — the admin contact,
 /// system ShareGroup, and self-ShareTarget are already present when the
-/// context is created. This fixture adds the user contact + user's ShareTarget.
+/// context is created. This fixture also delivers the post-promotion rows
+/// to the user's DB so subsequent integration scenarios start from a
+/// fully-populated state on both sides.
 /// </para>
 /// </summary>
 public sealed class TwoActorBootstrap : IAsyncDisposable
@@ -45,38 +51,41 @@ public sealed class TwoActorBootstrap : IAsyncDisposable
         var adminContact = await admin.Context.Contacts.SingleAsync(c => c.IsAdmin);
         var systemGroup = await admin.Context.ShareGroups
             .SingleAsync(g => g.GroupContext == CryptoSyncBootstrap.SystemGroupContext);
-        var adminTarget = await admin.Context.ShareTargets
-            .SingleAsync(t => t.ShareGroupId == systemGroup.Id
-                && t.MemberPublicKey == adminContact.X25519PublicKey);
 
-        // Build the user's invitation-acceptance payload on the user's
-        // device (privacy-preserving self-group flow), then have the admin
-        // accept it. This atomically inserts the user TrustedContact, the
-        // user's self-group ShareGroup + ShareTarget, and the admin-wrapped
-        // system-group ShareTarget for the user.
-        var declarationSigner = new DeclarationSigner(crypto);
-        var userInvitationOnUser = new ContactInvitationService(user.Context, groupEncryption, crypto, declarationSigner);
-        var payload = await userInvitationOnUser.BuildInvitationResponseAsync(
+        // Drive the admin-initiated invitation flow end-to-end.
+        var relay = new InMemorySyncRelay();
+        var adminTransport = new InMemorySyncTransport(relay, admin.Keys.X25519PublicKey);
+        var contactTransport = new InMemorySyncTransport(relay, user.Keys.X25519PublicKey);
+
+        var bundle = await admin.Invitations.CreateInvitationAsync(
+            admin.Keys, userName, $"{userName.ToLowerInvariant()}@test.com");
+
+        await user.Invitations.RespondToInvitationAsync(
+            bundle,
             user.Keys,
             new ContactUserData
             {
                 Username = userName,
                 Email = $"{userName.ToLowerInvariant()}@test.com"
-            });
+            },
+            contactTransport);
 
-        var adminInvitation = new ContactInvitationService(admin.Context, groupEncryption, crypto, declarationSigner);
-        var userContactOnAdmin = await adminInvitation.AcceptInvitationResponseAsync(
-            admin.Keys,
-            payload,
-            systemRole: SyncRole.VIEWER);
+        var ingested = await admin.Invitations.IngestInvitationResponsesAsync(
+            admin.Keys, adminTransport);
+        if (ingested != 1)
+        {
+            throw new InvalidOperationException(
+                $"TwoActorBootstrap: expected 1 ingested invitation, got {ingested}.");
+        }
 
-        await admin.Context.Entry(userContactOnAdmin).ReloadAsync();
+        var userContactOnAdmin = await admin.Invitations.PromoteInvitationAsync(
+            bundle.GroupId, admin.Keys, systemRole: SyncRole.VIEWER);
 
         var userTargetOnAdmin = await admin.Context.ShareTargets
             .SingleAsync(t => t.ShareGroupId == systemGroup.Id
                 && t.MemberPublicKey == user.Keys.X25519PublicKey);
         var userSelfGroup = await admin.Context.ShareGroups
-            .SingleAsync(g => g.Id == payload.SelfGroupId);
+            .SingleAsync(g => g.GroupAdminPublicKey == user.Keys.X25519PublicKey);
         var userSelfTargetOnAdmin = await admin.Context.ShareTargets
             .SingleAsync(t => t.ShareGroupId == userSelfGroup.Id);
 

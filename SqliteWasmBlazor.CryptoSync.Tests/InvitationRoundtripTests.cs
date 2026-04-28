@@ -174,6 +174,93 @@ public class InvitationRoundtripTests
     }
 
     [Fact]
+    public async Task FullE2E_CreateRespondIngestPromote_BindsTrustedContactAndDeletesChannel()
+    {
+        var crypto = new BouncyCastleCryptoProvider();
+        var admin = await TestActor.CreateAsync("Admin", isAdmin: true, seedByte: 1, crypto);
+        var helen = await TestActor.CreateAsync("Helen", isAdmin: false, seedByte: 240, crypto);
+        try
+        {
+            var relay = new InMemorySyncRelay();
+            var adminTransport = new InMemorySyncTransport(relay, admin.Keys.X25519PublicKey);
+            var helenTransport = new InMemorySyncTransport(relay, helen.Keys.X25519PublicKey);
+
+            // 1. Admin creates the invitation channel.
+            var bundle = await admin.Invitations.CreateInvitationAsync(
+                admin.Keys, "Helen", "helen@test.com");
+
+            // 2. Helen responds (bundle delivered out-of-band).
+            await helen.Invitations.RespondToInvitationAsync(
+                bundle, helen.Keys,
+                new ContactUserData { Username = "Helen", Email = "helen@test.com" },
+                helenTransport);
+
+            // Wire-opacity check: pull bytes from relay before admin drains.
+            var leakBytes = await adminTransport.TryReceiveAsync()
+                ?? throw new InvalidOperationException("no envelope");
+            AssertNoPlaintextLeak(leakBytes,
+                helen.Keys.X25519PublicKey, helen.Keys.Ed25519PublicKey);
+
+            // Repost so admin can still ingest. (TryReceive consumed it.)
+            await helen.Invitations.RespondToInvitationAsync(
+                bundle, helen.Keys,
+                new ContactUserData { Username = "Helen", Email = "helen@test.com" },
+                helenTransport);
+
+            // 3. Admin ingests the response.
+            var ingested = await admin.Invitations.IngestInvitationResponsesAsync(
+                admin.Keys, adminTransport);
+            Assert.Equal(1, ingested);
+
+            var row = await admin.Context.Invitations.SingleAsync(i => i.Id == bundle.GroupId);
+            Assert.Equal(helen.Keys.X25519PublicKey, row.ContactX25519PublicKey);
+            Assert.Equal(helen.Keys.Ed25519PublicKey, row.ContactEd25519PublicKey);
+            Assert.NotNull(row.ContactSignature);
+
+            // 4. Admin promotes.
+            var helenContact = await admin.Invitations.PromoteInvitationAsync(
+                bundle.GroupId, admin.Keys);
+            Assert.False(helenContact.IsAdmin);
+            Assert.Equal(helen.Keys.X25519PublicKey, helenContact.X25519PublicKey);
+            Assert.Equal(SharingScope.PUBLIC, helenContact.SharingScope);
+
+            // System-group ShareTarget for Helen exists.
+            var systemGroup = await admin.Context.ShareGroups
+                .SingleAsync(g => g.GroupContext == CryptoSyncBootstrap.SystemGroupContext);
+            Assert.True(await admin.Context.ShareTargets
+                .AnyAsync(t => t.ShareGroupId == systemGroup.Id
+                    && t.MemberPublicKey == helen.Keys.X25519PublicKey));
+
+            // Helen's self-group ShareGroup + ShareTarget exist.
+            var helenSelfGroup = await admin.Context.ShareGroups
+                .SingleAsync(g => g.GroupAdminPublicKey == helen.Keys.X25519PublicKey);
+            Assert.True(await admin.Context.ShareTargets
+                .AnyAsync(t => t.ShareGroupId == helenSelfGroup.Id));
+
+            // Privacy invariant: admin can't unwrap Helen's self-group CEK.
+            var helenSelfTarget = await admin.Context.ShareTargets
+                .SingleAsync(t => t.ShareGroupId == helenSelfGroup.Id);
+            var wrapped = CryptoSyncBootstrap.DeserializeWrappedCek(helenSelfTarget.WrappedContentKey);
+            var adminPriv = Convert.FromBase64String(admin.Keys.X25519PrivateKey);
+            var wrongWk = await crypto.DeriveWrappingKeyAsync(
+                adminPriv, helen.Keys.X25519PublicKey, helenSelfGroup.GroupContext);
+            Assert.True(wrongWk.Success);
+            var unwrapResult = await crypto.UnwrapContentKeyAsync(wrapped, wrongWk.Value);
+            Assert.False(unwrapResult.Success);
+
+            // Invitation channel rows all gone.
+            Assert.Empty(await admin.Context.Invitations.ToListAsync());
+            Assert.Empty(await admin.Context.ShareGroups
+                .Where(g => g.GroupContext.StartsWith("invitation-")).ToListAsync());
+        }
+        finally
+        {
+            await admin.DisposeAsync();
+            await helen.DisposeAsync();
+        }
+    }
+
+    [Fact]
     public async Task Roundtrip_ImportFiresNotifier()
     {
         var crypto = new BouncyCastleCryptoProvider();

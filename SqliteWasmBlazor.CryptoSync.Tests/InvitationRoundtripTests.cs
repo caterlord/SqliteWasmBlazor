@@ -21,7 +21,7 @@ public class InvitationRoundtripTests
     {
         await using var scenario = await TwoActorBootstrap.CreateAsync();
         var relay = new InMemorySyncRelay();
-        var contactTransport = new InMemorySyncTransport(relay, scenario.User.Keys.X25519PublicKey);
+        var contactTransport = new InMemorySyncTransport(relay);
 
         var bundle = await scenario.Admin.Invitations.CreateInvitationAsync(
             scenario.Admin.Keys, "Helen", "helen@test.com");
@@ -40,7 +40,7 @@ public class InvitationRoundtripTests
     {
         await using var scenario = await TwoActorBootstrap.CreateAsync();
         var relay = new InMemorySyncRelay();
-        var contactTransport = new InMemorySyncTransport(relay, scenario.User.Keys.X25519PublicKey);
+        var contactTransport = new InMemorySyncTransport(relay);
 
         // Build a fake expired bundle by re-signing canonical with a past
         // ExpiresAt — using the real signing path so the only failure is the
@@ -74,12 +74,12 @@ public class InvitationRoundtripTests
     }
 
     [Fact]
-    public async Task RespondToInvitation_HappyPath_PostsEnvelopeAddressedToAdmin()
+    public async Task RespondToInvitation_HappyPath_BroadcastsResponseEnvelope()
     {
         await using var scenario = await TwoActorBootstrap.CreateAsync();
         var relay = new InMemorySyncRelay();
-        var contactTransport = new InMemorySyncTransport(relay, scenario.User.Keys.X25519PublicKey);
-        var adminTransport = new InMemorySyncTransport(relay, scenario.Admin.Keys.X25519PublicKey);
+        var contactTransport = new InMemorySyncTransport(relay);
+        var adminTransport = new InMemorySyncTransport(relay);
 
         var bundle = await scenario.Admin.Invitations.CreateInvitationAsync(
             scenario.Admin.Keys, "Helen", "helen@test.com");
@@ -103,8 +103,8 @@ public class InvitationRoundtripTests
     {
         await using var scenario = await TwoActorBootstrap.CreateAsync();
         var relay = new InMemorySyncRelay();
-        var contactTransport = new InMemorySyncTransport(relay, scenario.User.Keys.X25519PublicKey);
-        var adminTransport = new InMemorySyncTransport(relay, scenario.Admin.Keys.X25519PublicKey);
+        var contactTransport = new InMemorySyncTransport(relay);
+        var adminTransport = new InMemorySyncTransport(relay);
 
         var bundle = await scenario.Admin.Invitations.CreateInvitationAsync(
             scenario.Admin.Keys, "Helen", "helen@test.com");
@@ -127,8 +127,8 @@ public class InvitationRoundtripTests
     {
         await using var scenario = await TwoActorBootstrap.CreateAsync();
         var relay = new InMemorySyncRelay();
-        var contactTransport = new InMemorySyncTransport(relay, scenario.User.Keys.X25519PublicKey);
-        var adminTransport = new InMemorySyncTransport(relay, scenario.Admin.Keys.X25519PublicKey);
+        var contactTransport = new InMemorySyncTransport(relay);
+        var adminTransport = new InMemorySyncTransport(relay);
 
         var bundle = await scenario.Admin.Invitations.CreateInvitationAsync(
             scenario.Admin.Keys, "Helen", "helen@test.com");
@@ -182,8 +182,8 @@ public class InvitationRoundtripTests
         try
         {
             var relay = new InMemorySyncRelay();
-            var adminTransport = new InMemorySyncTransport(relay, admin.Keys.X25519PublicKey);
-            var helenTransport = new InMemorySyncTransport(relay, helen.Keys.X25519PublicKey);
+            var adminTransport = new InMemorySyncTransport(relay);
+            var helenTransport = new InMemorySyncTransport(relay);
 
             // 1. Admin creates the invitation channel.
             var bundle = await admin.Invitations.CreateInvitationAsync(

@@ -1,4 +1,5 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using SqliteWasmBlazor.CryptoSync.Tests.Fixtures;
@@ -8,54 +9,67 @@ namespace SqliteWasmBlazor.CryptoSync.Tests;
 
 /// <summary>
 /// Wire-shape coverage for <see cref="HttpSyncTransport"/> against the
-/// delta-relay HTTP contract documented in <c>project_relay_design</c>.
-/// Asserts request layout (POST body, GET query, signed headers) and
+/// whitelist-broadcast HTTP contract documented in
+/// <c>docs/security/relay-whitelist-design.md</c>. Asserts request layout
+/// (POST body shape, signed POST headers, GET query, signed GET headers) and
 /// receive-side cursor advancement / buffer drain. Real Ed25519 round-trips
-/// belong in an integration test against the live PHP relay; these tests
-/// stay in-process.
+/// belong in the live-PHP integration tests; these tests stay in-process.
 /// </summary>
 public class HttpSyncTransportTests
 {
     private const string AlicePub = "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE="; // base64 of 32 'A' bytes
+    private const string SenderPub = "QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkU="; // base64 of 32 'B' bytes
     private static readonly Uri RelayBase = new("http://delta-relay.test/");
 
     [Fact]
-    public async Task SendAsync_PostsExpectedBodyToDeltaEndpoint()
+    public async Task SendAsync_PostsEnvelopeBodyToDeltaEndpoint()
     {
         var handler = new StubHttpMessageHandler();
         using var client = new HttpClient(handler);
-        var transport = new HttpSyncTransport(client, RelayBase, NewSigner());
+        var transport = new HttpSyncTransport(client, RelayBase, NewSender(), NewReceiver());
 
-        await transport.SendAsync(
-            envelope: [0xDE, 0xAD, 0xBE, 0xEF],
-            recipientPublicKeys: ["bob-pub", "carol-pub"]);
+        var envelope = new byte[] { 0xDE, 0xAD, 0xBE, 0xEF };
+        await transport.SendAsync(envelope);
 
         var req = Assert.Single(handler.Requests);
         Assert.Equal(HttpMethod.Post, req.Method);
         Assert.Equal("http://delta-relay.test/api/delta", req.RequestUri.ToString());
 
         using var doc = JsonDocument.Parse(req.Body!);
-        var recipients = doc.RootElement.GetProperty("recipientPublicKeys")
-            .EnumerateArray()
-            .Select(e => e.GetString() ?? throw new InvalidOperationException("recipient was null"))
-            .ToArray();
-        Assert.Equal(["bob-pub", "carol-pub"], recipients);
-
         var envelopeB64 = doc.RootElement.GetProperty("envelope").GetString();
-        Assert.Equal(Convert.ToBase64String([0xDE, 0xAD, 0xBE, 0xEF]), envelopeB64);
+        Assert.Equal(Convert.ToBase64String(envelope), envelopeB64);
+
+        // No `recipientPublicKeys` — broadcast model dropped per-recipient
+        // metadata.
+        Assert.False(
+            doc.RootElement.TryGetProperty("recipientPublicKeys", out _),
+            "broadcast contract: POST body must not carry a recipient list");
     }
 
     [Fact]
-    public async Task SendAsync_EmptyRecipients_ThrowsArgumentExceptionWithoutHttpCall()
+    public async Task SendAsync_AttachesSenderSignedHeaders()
     {
+        var sender = NewSender();
         var handler = new StubHttpMessageHandler();
         using var client = new HttpClient(handler);
-        var transport = new HttpSyncTransport(client, RelayBase, NewSigner());
+        var transport = new HttpSyncTransport(client, RelayBase, sender, NewReceiver());
 
-        await Assert.ThrowsAsync<ArgumentException>(async () =>
-            await transport.SendAsync([0x01], Array.Empty<string>()));
+        var envelope = new byte[] { 0x01, 0x02, 0x03 };
+        await transport.SendAsync(envelope);
 
-        Assert.Empty(handler.Requests);
+        var req = Assert.Single(handler.Requests);
+        Assert.True(req.Headers.TryGetValue("X-Timestamp", out var ts));
+        Assert.True(req.Headers.TryGetValue("X-Sender-PubKey", out var pub));
+        Assert.True(req.Headers.TryGetValue("X-Sender-Sig", out var sig));
+
+        Assert.Equal(SenderPub, pub);
+        Assert.Equal(sender.SignatureToReturn, sig);
+        Assert.True(long.TryParse(ts, out _));
+
+        var envelopeHashHex = Convert.ToHexString(SHA256.HashData(envelope))
+            .ToLowerInvariant();
+        var signed = Assert.Single(sender.SignedMessages);
+        Assert.Equal($"deltapost-v1|{ts}|{envelopeHashHex}", signed);
     }
 
     [Fact]
@@ -63,16 +77,16 @@ public class HttpSyncTransportTests
     {
         var handler = new StubHttpMessageHandler
         {
-            Responder = _ => new HttpResponseMessage(HttpStatusCode.BadRequest)
+            Responder = _ => new HttpResponseMessage(HttpStatusCode.Forbidden)
             {
-                Content = new StringContent("{\"error\":\"bad\"}")
+                Content = new StringContent("{\"error\":\"sender not whitelisted as active\"}")
             }
         };
         using var client = new HttpClient(handler);
-        var transport = new HttpSyncTransport(client, RelayBase, NewSigner());
+        var transport = new HttpSyncTransport(client, RelayBase, NewSender(), NewReceiver());
 
         await Assert.ThrowsAsync<HttpRequestException>(async () =>
-            await transport.SendAsync([0x01], ["bob-pub"]));
+            await transport.SendAsync([0x01]));
     }
 
     [Fact]
@@ -83,7 +97,7 @@ public class HttpSyncTransportTests
             Responder = _ => JsonOk("""{"cursor":0,"envelopes":[]}""")
         };
         using var client = new HttpClient(handler);
-        var transport = new HttpSyncTransport(client, RelayBase, NewSigner());
+        var transport = new HttpSyncTransport(client, RelayBase, NewSender(), NewReceiver());
 
         var result = await transport.TryReceiveAsync();
 
@@ -108,7 +122,7 @@ public class HttpSyncTransportTests
                 """)
         };
         using var client = new HttpClient(handler);
-        var transport = new HttpSyncTransport(client, RelayBase, NewSigner());
+        var transport = new HttpSyncTransport(client, RelayBase, NewSender(), NewReceiver());
 
         var first = await transport.TryReceiveAsync();
         var second = await transport.TryReceiveAsync();
@@ -143,9 +157,8 @@ public class HttpSyncTransportTests
             }
         };
         using var client = new HttpClient(handler);
-        var transport = new HttpSyncTransport(client, RelayBase, NewSigner());
+        var transport = new HttpSyncTransport(client, RelayBase, NewSender(), NewReceiver());
 
-        // Drain the one envelope, then trigger a second refill which is empty.
         var got = await transport.TryReceiveAsync();
         var noMore = await transport.TryReceiveAsync();
 
@@ -160,15 +173,15 @@ public class HttpSyncTransportTests
     }
 
     [Fact]
-    public async Task TryReceiveAsync_SignsChallengeAndAttachesHeaders()
+    public async Task TryReceiveAsync_QueryUsesPubkeyParam_NotRecipient()
     {
-        var signer = NewSigner();
+        var receiver = NewReceiver();
         var handler = new StubHttpMessageHandler
         {
             Responder = _ => JsonOk("""{"cursor":0,"envelopes":[]}""")
         };
         using var client = new HttpClient(handler);
-        var transport = new HttpSyncTransport(client, RelayBase, signer);
+        var transport = new HttpSyncTransport(client, RelayBase, NewSender(), receiver);
 
         await transport.TryReceiveAsync();
 
@@ -176,16 +189,18 @@ public class HttpSyncTransportTests
         Assert.Equal(HttpMethod.Get, req.Method);
 
         var query = QueryOf(req.RequestUri);
-        Assert.Equal(AlicePub, query["recipient"]);
+        Assert.Equal(AlicePub, query["pubkey"]);
         Assert.Equal("0", query["since"]);
+        Assert.False(query.ContainsKey("recipient"),
+            "design rename: the GET query param is `pubkey`, not `recipient`");
 
         Assert.True(req.Headers.TryGetValue("X-Timestamp", out var ts));
         Assert.True(req.Headers.TryGetValue("X-Sig", out var sig));
-        Assert.Equal(signer.SignatureToReturn, sig);
+        Assert.Equal(receiver.SignatureToReturn, sig);
         Assert.True(long.TryParse(ts, out _));
 
-        var signed = Assert.Single(signer.SignedMessages);
-        Assert.Equal($"{ts}|{AlicePub}", signed);
+        var signed = Assert.Single(receiver.SignedMessages);
+        Assert.Equal($"deltaget-v1|{ts}|{AlicePub}", signed);
     }
 
     [Fact]
@@ -196,7 +211,7 @@ public class HttpSyncTransportTests
             Responder = _ => new HttpResponseMessage(HttpStatusCode.Unauthorized)
         };
         using var client = new HttpClient(handler);
-        var transport = new HttpSyncTransport(client, RelayBase, NewSigner());
+        var transport = new HttpSyncTransport(client, RelayBase, NewSender(), NewReceiver());
 
         await Assert.ThrowsAsync<HttpRequestException>(
             async () => await transport.TryReceiveAsync());
@@ -218,9 +233,9 @@ public class HttpSyncTransportTests
                 """)
         };
         using var client = new HttpClient(handler);
-        var transport = new HttpSyncTransport(client, RelayBase, NewSigner(), store);
+        var transport = new HttpSyncTransport(client, RelayBase, NewSender(), NewReceiver(), store);
 
-        await transport.TryReceiveAsync(); // drains 0xAA, advances cursor
+        await transport.TryReceiveAsync();
 
         Assert.Equal(42L, await store.LoadAsync());
     }
@@ -236,7 +251,7 @@ public class HttpSyncTransportTests
             Responder = _ => JsonOk("""{"cursor":99,"envelopes":[]}""")
         };
         using var client = new HttpClient(handler);
-        var transport = new HttpSyncTransport(client, RelayBase, NewSigner(), store);
+        var transport = new HttpSyncTransport(client, RelayBase, NewSender(), NewReceiver(), store);
 
         await transport.TryReceiveAsync();
 
@@ -244,7 +259,12 @@ public class HttpSyncTransportTests
         Assert.Equal("99", query["since"]);
     }
 
-    private static StubReceiveAuthSigner NewSigner() => new()
+    private static StubSenderAuthSigner NewSender() => new()
+    {
+        OwnEd25519PublicKeyBase64 = SenderPub,
+    };
+
+    private static StubReceiveAuthSigner NewReceiver() => new()
     {
         OwnEd25519PublicKeyBase64 = AlicePub,
     };

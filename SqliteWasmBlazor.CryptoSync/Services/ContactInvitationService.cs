@@ -341,8 +341,9 @@ public class ContactInvitationService(
     /// <c>InvitationId || ContactX25519 || ContactEd25519 || ExpiresAt.Ticks</c>
     /// payload with the contact's Ed25519 key, AES-GCM-encrypts the response
     /// under <c>HKDF(ECDH(transportPriv, adminX25519Pub), info=invitationGroupContext)</c>,
-    /// and ships the envelope through <paramref name="syncTransport"/> addressed
-    /// to <see cref="InvitationBundle.AdminX25519PublicKey"/>.
+    /// and broadcasts the envelope via <paramref name="syncTransport"/>. The
+    /// admin claims it through <see cref="IngestInvitationResponsesAsync"/>;
+    /// other broadcast readers fail to unwrap and drop silently.
     /// </summary>
     public async ValueTask RespondToInvitationAsync(
         InvitationBundle bundle,
@@ -444,7 +445,9 @@ public class ContactInvitationService(
             System.Security.Cryptography.CryptographicOperations.ZeroMemory(transportPriv);
         }
 
-        // 7. Build envelope + send through transport addressed to admin's pub.
+        // 7. Build envelope + broadcast through the transport. The admin
+        // ingests via IngestInvitationResponsesAsync; non-admins drop on
+        // unwrap-fail since the AES-GCM key is HKDF(ECDH(transport, admin)).
         var envelope = new InvitationResponseEnvelope
         {
             GroupId = bundle.GroupId,
@@ -453,10 +456,7 @@ public class ContactInvitationService(
         };
         var envelopeBytes = MessagePackSerializer.Serialize(envelope);
 
-        await syncTransport.SendAsync(
-            envelopeBytes,
-            [bundle.AdminX25519PublicKey],
-            cancellationToken).ConfigureAwait(false);
+        await syncTransport.SendAsync(envelopeBytes, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>

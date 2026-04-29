@@ -1,28 +1,30 @@
 using System.Globalization;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace SqliteWasmBlazor.CryptoSync;
 
 /// <summary>
-/// HTTP impl of <see cref="ISyncTransport"/> against the delta relay
-/// (PHP entry point under <c>/DeltaRelay/</c>; see
-/// <c>project_relay_design</c> memory). Wire shape:
+/// HTTP impl of <see cref="ISyncTransport"/> against the whitelist-broadcast
+/// delta relay (PHP entry point under <c>/DeltaRelay/</c>; see
+/// <c>docs/security/relay-whitelist-design.md</c>). Wire shape:
 ///
 /// <list type="bullet">
 ///   <item>
-///     <c>POST /api/delta</c> — body
-///     <c>{"recipientPublicKeys":["base64-Ed25519",...],"envelope":"base64"}</c>.
-///     Unauthenticated; the relay can't read the payload and the V2 envelope
-///     already provides confidentiality / integrity guarantees.
+///     <c>POST /api/delta</c> — body <c>{"envelope":"base64"}</c>, headers
+///     <c>X-Timestamp</c> + <c>X-Sender-PubKey</c> + <c>X-Sender-Sig</c>.
+///     Sig is over <c>"deltapost-v1|" + ts + "|" + sha256(envelope) hex</c>.
+///     The relay verifies the sender's pubkey hash is <c>active</c> on the
+///     whitelist before accepting.
 ///   </item>
 ///   <item>
-///     <c>GET /api/delta?recipient=PK&amp;since=CURSOR</c> with headers
-///     <c>X-Timestamp</c> + <c>X-Sig</c> over <c>"{timestamp}|{recipient}"</c>.
-///     Stateless — verifier key is the recipient pubkey from the query.
-///     Stops a passive observer who learns the pubkey from draining the
-///     inbox and learning metadata.
+///     <c>GET /api/delta?since=CURSOR&amp;pubkey=PK</c> with headers
+///     <c>X-Timestamp</c> + <c>X-Sig</c>. Sig is over
+///     <c>"deltaget-v1|" + ts + "|" + pubkey</c>. The relay allows the GET
+///     when the puller's pubkey hash is <c>active</c> OR <c>revoked</c> within
+///     <c>read_grace_seconds</c> (graceful-handoff window).
 ///   </item>
 /// </list>
 ///
@@ -37,7 +39,8 @@ namespace SqliteWasmBlazor.CryptoSync;
 public sealed class HttpSyncTransport(
     HttpClient httpClient,
     Uri relayBaseUri,
-    IReceiveAuthSigner authSigner,
+    ISenderAuthSigner senderSigner,
+    IReceiveAuthSigner receiveSigner,
     IReceiveCursorStore? cursorStore = null) : ISyncTransport
 {
     private readonly Queue<byte[]> _buffer = new();
@@ -46,29 +49,38 @@ public sealed class HttpSyncTransport(
 
     public async ValueTask SendAsync(
         byte[] envelope,
-        IReadOnlyList<string> recipientPublicKeys,
         CancellationToken cancellationToken = default)
     {
-        if (recipientPublicKeys.Count == 0)
-        {
-            throw new ArgumentException(
-                "recipientPublicKeys must not be empty",
-                nameof(recipientPublicKeys));
-        }
+        ArgumentNullException.ThrowIfNull(envelope);
 
         var endpoint = new Uri(relayBaseUri, "api/delta");
+
+        var timestamp = DateTimeOffset.UtcNow
+            .ToUnixTimeSeconds()
+            .ToString(CultureInfo.InvariantCulture);
+        var envelopeHashHex = Convert.ToHexString(SHA256.HashData(envelope))
+            .ToLowerInvariant();
+        var senderPub = senderSigner.OwnEd25519PublicKeyBase64;
+        var signature = await senderSigner
+            .SignSendChallengeAsync(
+                $"deltapost-v1|{timestamp}|{envelopeHashHex}", cancellationToken)
+            .ConfigureAwait(false);
+
         var body = new SyncTransportDtos.SendRequest
         {
-            RecipientPublicKeys = [.. recipientPublicKeys],
             Envelope = Convert.ToBase64String(envelope),
         };
 
+        using var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
+        {
+            Content = JsonContent.Create(body, SyncTransportJsonContext.Default.SendRequest),
+        };
+        request.Headers.Add("X-Timestamp", timestamp);
+        request.Headers.Add("X-Sender-PubKey", senderPub);
+        request.Headers.Add("X-Sender-Sig", signature);
+
         using var response = await httpClient
-            .PostAsJsonAsync(
-                endpoint,
-                body,
-                SyncTransportJsonContext.Default.SendRequest,
-                cancellationToken)
+            .SendAsync(request, cancellationToken)
             .ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
     }
@@ -90,17 +102,18 @@ public sealed class HttpSyncTransport(
         var timestamp = DateTimeOffset.UtcNow
             .ToUnixTimeSeconds()
             .ToString(CultureInfo.InvariantCulture);
-        var pubKey = authSigner.OwnEd25519PublicKeyBase64;
-        var signature = await authSigner
-            .SignReceiveChallengeAsync($"{timestamp}|{pubKey}", cancellationToken)
+        var pubKey = receiveSigner.OwnEd25519PublicKeyBase64;
+        var signature = await receiveSigner
+            .SignReceiveChallengeAsync(
+                $"deltaget-v1|{timestamp}|{pubKey}", cancellationToken)
             .ConfigureAwait(false);
 
         var cursor = _cachedCursor ??= await _cursorStore.LoadAsync(cancellationToken).ConfigureAwait(false);
 
         var endpoint = new Uri(
             relayBaseUri,
-            $"api/delta?recipient={Uri.EscapeDataString(pubKey)}"
-            + $"&since={cursor.ToString(CultureInfo.InvariantCulture)}");
+            $"api/delta?since={cursor.ToString(CultureInfo.InvariantCulture)}"
+            + $"&pubkey={Uri.EscapeDataString(pubKey)}");
 
         using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
         request.Headers.Add("X-Timestamp", timestamp);
@@ -146,9 +159,6 @@ internal static class SyncTransportDtos
 {
     public sealed class SendRequest
     {
-        [JsonPropertyName("recipientPublicKeys")]
-        public required string[] RecipientPublicKeys { get; init; }
-
         [JsonPropertyName("envelope")]
         public required string Envelope { get; init; }
     }

@@ -59,17 +59,38 @@ Rejection codes: `400` malformed, `401` auth/sig/timestamp failure, `403` not wh
 
 ## Integration test workflow
 
-The Stage A integration suite (xUnit, lands incrementally over Steps 2-6) expects to drive a live Herd-served PHP relay with a known synthetic admin keypair. Test setup pattern:
+The Stage A integration suite (xUnit, grows incrementally over Steps 2-6) drives a live Herd-served PHP relay with a known synthetic admin keypair.
 
-```text
-1. delete relay.db
-2. write a known relay-config.php with hardcoded deployment_salt and admin_pubkey_hash
-   (test fixture pre-generates the admin keypair, computes the hash deterministically)
-3. exercise the C# transport / WhitelistPushService against http://delta-relay.test/api/...
-4. assert wire contract end-to-end
+**One-time Herd link** (single command, reversible via `herd unlink delta-relay`):
+
+```sh
+cd DeltaRelay
+herd link delta-relay
+# Confirm: curl -s -o /dev/null -w "%{http_code}\n" http://delta-relay.test/  → 200
 ```
 
-Schema creation is idempotent (`CREATE TABLE IF NOT EXISTS`), so deleting `relay.db` between tests is safe.
+(Older `valet`-based setups: `valet link delta-relay` from the same directory.)
+
+**Run the suite**:
+
+```sh
+dotnet test SqliteWasmBlazor.CryptoSync.Tests/SqliteWasmBlazor.CryptoSync.Tests.csproj \
+    -p:SkipVitest=true --filter "Category=LiveRelay"
+```
+
+The category trait keeps these tests out of the default `dotnet test` run, so CI without Herd doesn't break.
+
+**Per-test setup pattern** (handled by `HttpSyncTransportLiveRelayTests.InitializeAsync`):
+
+```text
+1. write relay-config.php with a fresh synthetic deployment_salt + admin_pubkey_hash
+2. delete relay.db (and -wal / -shm if present)
+3. POST /api/whitelist with the synthetic admin key, seeding one active sender entry
+4. exercise the C# transport against http://delta-relay.test/api/...
+5. assert wire contract end-to-end
+```
+
+Schema creation is idempotent (`CREATE TABLE IF NOT EXISTS`), so deleting `relay.db` between tests is safe. The seeded `relay-config.php` is left in place after the run for post-mortem; the next run overwrites it.
 
 ## Retention / GC (Stage A Step 6)
 

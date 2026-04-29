@@ -5,74 +5,47 @@ namespace SqliteWasmBlazor.CryptoSync.Tests;
 
 /// <summary>
 /// Behaviour coverage for <see cref="InMemorySyncTransport"/> /
-/// <see cref="InMemorySyncRelay"/>. The pair stand in for a real dumb
-/// delta relay in xUnit scenarios — same byte-opaque, recipient-addressed
-/// contract.
+/// <see cref="InMemorySyncRelay"/>. The pair stand in for a real
+/// whitelist-broadcast relay in xUnit scenarios — single FIFO queue,
+/// every receiver drains from the same stream, payload-level addressing is
+/// the receiver's crypto layer's job.
 /// </summary>
 public class InMemorySyncTransportTests
 {
-    private const string Alice = "alice-pub";
-    private const string Bob = "bob-pub";
-    private const string Carol = "carol-pub";
-
     [Fact]
-    public async Task SendAsync_SingleRecipient_Delivers()
+    public async Task SendAsync_DeliversToEveryReceiver()
     {
         var relay = new InMemorySyncRelay();
-        var aliceTx = new InMemorySyncTransport(relay, Alice);
-        var bobTx = new InMemorySyncTransport(relay, Bob);
+        var aliceTx = new InMemorySyncTransport(relay);
+        var bobTx = new InMemorySyncTransport(relay);
+        var carolTx = new InMemorySyncTransport(relay);
 
-        await aliceTx.SendAsync([0xAA, 0xBB], [Bob]);
+        await aliceTx.SendAsync([0x01]);
 
-        var received = await bobTx.TryReceiveAsync();
-        Assert.NotNull(received);
-        Assert.Equal([0xAA, 0xBB], received!);
-        Assert.Null(await aliceTx.TryReceiveAsync());
+        // Broadcast: any receiver drains the queue. With one envelope total,
+        // exactly one TryReceive returns bytes; the rest see an empty queue.
+        var first = await bobTx.TryReceiveAsync();
+        var second = await carolTx.TryReceiveAsync();
+
+        Assert.Equal([0x01], first!);
+        Assert.Null(second);
     }
 
     [Fact]
-    public async Task SendAsync_MultipleRecipients_EveryoneGetsACopy()
+    public async Task SendAsync_FifoAcrossReceivers()
     {
         var relay = new InMemorySyncRelay();
-        var aliceTx = new InMemorySyncTransport(relay, Alice);
-        var bobTx = new InMemorySyncTransport(relay, Bob);
-        var carolTx = new InMemorySyncTransport(relay, Carol);
+        var aliceTx = new InMemorySyncTransport(relay);
+        var bobTx = new InMemorySyncTransport(relay);
 
-        await aliceTx.SendAsync([0x01], [Bob, Carol]);
-
-        Assert.Equal([0x01], (await bobTx.TryReceiveAsync())!);
-        Assert.Equal([0x01], (await carolTx.TryReceiveAsync())!);
-    }
-
-    [Fact]
-    public async Task SendAsync_FifoPerRecipient()
-    {
-        var relay = new InMemorySyncRelay();
-        var aliceTx = new InMemorySyncTransport(relay, Alice);
-        var bobTx = new InMemorySyncTransport(relay, Bob);
-
-        await aliceTx.SendAsync([0x01], [Bob]);
-        await aliceTx.SendAsync([0x02], [Bob]);
-        await aliceTx.SendAsync([0x03], [Bob]);
+        await aliceTx.SendAsync([0x01]);
+        await aliceTx.SendAsync([0x02]);
+        await aliceTx.SendAsync([0x03]);
 
         Assert.Equal([0x01], (await bobTx.TryReceiveAsync())!);
         Assert.Equal([0x02], (await bobTx.TryReceiveAsync())!);
         Assert.Equal([0x03], (await bobTx.TryReceiveAsync())!);
         Assert.Null(await bobTx.TryReceiveAsync());
-    }
-
-    [Fact]
-    public async Task SendAsync_UnrelatedRecipient_GetsNothing()
-    {
-        var relay = new InMemorySyncRelay();
-        var aliceTx = new InMemorySyncTransport(relay, Alice);
-        var carolTx = new InMemorySyncTransport(relay, Carol);
-
-        await aliceTx.SendAsync([0xFF], [Bob]);
-
-        Assert.Null(await carolTx.TryReceiveAsync());
-        Assert.Equal(0, relay.PendingCount(Carol));
-        Assert.Equal(1, relay.PendingCount(Bob));
     }
 
     [Fact]
@@ -82,46 +55,42 @@ public class InMemorySyncTransportTests
         {
             Tamper = bytes => [.. bytes.Select(b => (byte)(b ^ 0xFF))]
         };
-        var aliceTx = new InMemorySyncTransport(relay, Alice);
-        var bobTx = new InMemorySyncTransport(relay, Bob);
-        var carolTx = new InMemorySyncTransport(relay, Carol);
+        var aliceTx = new InMemorySyncTransport(relay);
+        var bobTx = new InMemorySyncTransport(relay);
 
-        await aliceTx.SendAsync([0x00, 0x01, 0x02], [Bob, Carol]);
+        await aliceTx.SendAsync([0x00, 0x01, 0x02]);
 
         Assert.Equal([0xFF, 0xFE, 0xFD], (await bobTx.TryReceiveAsync())!);
-        Assert.Equal([0xFF, 0xFE, 0xFD], (await carolTx.TryReceiveAsync())!);
     }
 
     [Fact]
-    public async Task SendAsync_ClonesPerRecipient_NoCrossContamination()
+    public async Task SendAsync_ClonesEnvelope_NoCrossContamination()
     {
         var relay = new InMemorySyncRelay();
-        var aliceTx = new InMemorySyncTransport(relay, Alice);
-        var bobTx = new InMemorySyncTransport(relay, Bob);
-        var carolTx = new InMemorySyncTransport(relay, Carol);
+        var aliceTx = new InMemorySyncTransport(relay);
+        var bobTx = new InMemorySyncTransport(relay);
 
-        await aliceTx.SendAsync([0x10, 0x20, 0x30], [Bob, Carol]);
+        var source = new byte[] { 0x10, 0x20, 0x30 };
+        await aliceTx.SendAsync(source);
+        source[0] = 0xFF;
 
         var bobBytes = (await bobTx.TryReceiveAsync())!;
-        bobBytes[0] = 0xFF;
-
-        var carolBytes = (await carolTx.TryReceiveAsync())!;
-        Assert.Equal([0x10, 0x20, 0x30], carolBytes);
+        Assert.Equal([0x10, 0x20, 0x30], bobBytes);
     }
 
     [Fact]
-    public async Task PendingCount_TracksInbox()
+    public async Task PendingCount_TracksQueue()
     {
         var relay = new InMemorySyncRelay();
-        var aliceTx = new InMemorySyncTransport(relay, Alice);
-        var bobTx = new InMemorySyncTransport(relay, Bob);
+        var aliceTx = new InMemorySyncTransport(relay);
+        var bobTx = new InMemorySyncTransport(relay);
 
-        Assert.Equal(0, relay.PendingCount(Bob));
-        await aliceTx.SendAsync([0x01], [Bob]);
-        await aliceTx.SendAsync([0x02], [Bob]);
-        Assert.Equal(2, relay.PendingCount(Bob));
+        Assert.Equal(0, relay.PendingCount);
+        await aliceTx.SendAsync([0x01]);
+        await aliceTx.SendAsync([0x02]);
+        Assert.Equal(2, relay.PendingCount);
 
         await bobTx.TryReceiveAsync();
-        Assert.Equal(1, relay.PendingCount(Bob));
+        Assert.Equal(1, relay.PendingCount);
     }
 }

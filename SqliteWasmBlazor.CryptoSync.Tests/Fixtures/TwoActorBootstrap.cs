@@ -54,8 +54,8 @@ public sealed class TwoActorBootstrap : IAsyncDisposable
 
         // Drive the admin-initiated invitation flow end-to-end.
         var relay = new InMemorySyncRelay();
-        var adminTransport = new InMemorySyncTransport(relay, admin.Keys.X25519PublicKey);
-        var contactTransport = new InMemorySyncTransport(relay, user.Keys.X25519PublicKey);
+        var adminTransport = new InMemorySyncTransport(relay);
+        var contactTransport = new InMemorySyncTransport(relay);
 
         var bundle = await admin.Invitations.CreateInvitationAsync(
             admin.Keys, userName, $"{userName.ToLowerInvariant()}@test.com");

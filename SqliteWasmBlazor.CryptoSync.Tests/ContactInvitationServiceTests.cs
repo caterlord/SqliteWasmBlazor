@@ -309,8 +309,8 @@ public class ContactInvitationServiceTests : IAsyncLifetime
         try
         {
             var relay = new InMemorySyncRelay();
-            var adminTransport = new InMemorySyncTransport(relay, _scenario.Admin.Keys.X25519PublicKey);
-            var contactTransport = new InMemorySyncTransport(relay, newbie.Keys.X25519PublicKey);
+            var adminTransport = new InMemorySyncTransport(relay);
+            var contactTransport = new InMemorySyncTransport(relay);
 
             var bundle = await _scenario.Admin.Invitations.CreateInvitationAsync(_scenario.Admin.Keys, "Dave");
             await newbie.Invitations.RespondToInvitationAsync(
@@ -338,15 +338,15 @@ public class ContactInvitationServiceTests : IAsyncLifetime
             _scenario.Admin.Keys, "Eve");
 
         var relay = new InMemorySyncRelay();
-        var adminTransport = new InMemorySyncTransport(relay, _scenario.Admin.Keys.X25519PublicKey);
-        var contactTransport = new InMemorySyncTransport(relay, _scenario.User.Keys.X25519PublicKey);
+        var adminTransport = new InMemorySyncTransport(relay);
+        var contactTransport = new InMemorySyncTransport(relay);
 
         // Make the bundle reusable from the user actor (different keys).
         var userCrypto = _scenario.Crypto;
         var freshNewbie = await TestActor.CreateAsync("Eve", isAdmin: false, seedByte: 230, userCrypto);
         try
         {
-            var freshContactTransport = new InMemorySyncTransport(relay, freshNewbie.Keys.X25519PublicKey);
+            var freshContactTransport = new InMemorySyncTransport(relay);
             await freshNewbie.Invitations.RespondToInvitationAsync(
                 bundle, freshNewbie.Keys,
                 new ContactUserData { Username = "Eve", Email = "eve@test.com" },
@@ -379,7 +379,7 @@ public class ContactInvitationServiceTests : IAsyncLifetime
     public async Task Ingest_NoEnvelopes_ReturnsZero()
     {
         var relay = new InMemorySyncRelay();
-        var adminTransport = new InMemorySyncTransport(relay, _scenario.Admin.Keys.X25519PublicKey);
+        var adminTransport = new InMemorySyncTransport(relay);
 
         var ingested = await _scenario.Admin.Invitations.IngestInvitationResponsesAsync(
             _scenario.Admin.Keys, adminTransport);
@@ -394,8 +394,8 @@ public class ContactInvitationServiceTests : IAsyncLifetime
         try
         {
             var relay = new InMemorySyncRelay();
-            var adminTransport = new InMemorySyncTransport(relay, _scenario.Admin.Keys.X25519PublicKey);
-            var contactTransport = new InMemorySyncTransport(relay, newbie.Keys.X25519PublicKey);
+            var adminTransport = new InMemorySyncTransport(relay);
+            var contactTransport = new InMemorySyncTransport(relay);
 
             var bundle = await _scenario.Admin.Invitations.CreateInvitationAsync(
                 _scenario.Admin.Keys, "Frank");

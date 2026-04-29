@@ -6,23 +6,22 @@ namespace SqliteWasmBlazor.CryptoSync;
 
 /// <summary>
 /// Glue between <see cref="SyncOrchestrator"/> (export/import via the worker)
-/// and <see cref="ISyncTransport"/> (recipient-addressed relay delivery).
+/// and <see cref="ISyncTransport"/> (whitelist-broadcast relay delivery).
 /// One instance per <see cref="CryptoSyncContextBase"/> + relay pair. Holds
 /// the per-DB cursor (last exported timestamp) so subsequent pushes ship only
 /// rows the sender hasn't shipped before.
 ///
 /// <para>
-/// <b>Recipient enumeration policy (Phase A1):</b> push sends the envelope
-/// addressed to every <see cref="TrustedContact.X25519PublicKey"/> in the
-/// local DB except the sender's own. Crypto naturally filters at the
-/// receiver: rows whose scope CEK the recipient lacks decrypt-fail and are
-/// dropped. Per-scope envelope splitting (one envelope per CEK) is a
-/// follow-up; today the model matches the existing snapshot tests.
+/// <b>Broadcast model.</b> Push hands the envelope to the transport with no
+/// addressee — the relay accepts from any whitelisted (status <c>active</c>)
+/// sender and serves a single global stream. The receiver's crypto layer
+/// filters: rows whose scope CEK the receiver lacks decrypt-fail and are
+/// dropped silently.
 /// </para>
 ///
 /// <para>
 /// <b>Identity seam:</b> caller passes <see cref="DualKeyPairFull"/> per call
-/// for now. Phase B replaces this with a PRF-derived signing capability so
+/// for now. Stage B replaces this with a PRF-derived signing capability so
 /// raw priv bytes don't live on the SyncEngine surface.
 /// </para>
 /// </summary>
@@ -70,9 +69,9 @@ public class SyncEngine(
     }
 
     /// <summary>
-    /// Export local changes since <see cref="LastExportedAt"/>, address the
-    /// envelope to every TrustedContact except self, and ship via the
-    /// transport. No-op if there are no changes or no other contacts.
+    /// Export local changes since <see cref="LastExportedAt"/> and broadcast
+    /// the envelope via the transport. No-op if there are no changes; the
+    /// cursor advances either way.
     /// </summary>
     public async ValueTask<bool> PushChangesAsync(
         DualKeyPairFull ownKeys,
@@ -108,17 +107,7 @@ public class SyncEngine(
             return false;
         }
 
-        var recipients = await EnumerateRecipientsAsync(
-            ownKeys.X25519PublicKey, cancellationToken).ConfigureAwait(false);
-        if (recipients.Count == 0)
-        {
-            // Nobody else listening yet — still advance the cursor so we
-            // don't keep re-encoding the same rows on the next push.
-            await SaveCursorAsync(now, cancellationToken).ConfigureAwait(false);
-            return false;
-        }
-
-        await transport.SendAsync(envelopeBytes, recipients, cancellationToken).ConfigureAwait(false);
+        await transport.SendAsync(envelopeBytes, cancellationToken).ConfigureAwait(false);
         await SaveCursorAsync(now, cancellationToken).ConfigureAwait(false);
         return true;
     }
@@ -229,17 +218,4 @@ public class SyncEngine(
         };
     }
 
-    /// <summary>
-    /// Enumerate the addressee list for a push: every TrustedContact's
-    /// X25519 pubkey except the sender's own.
-    /// </summary>
-    private async Task<List<string>> EnumerateRecipientsAsync(
-        string ownX25519PublicKey, CancellationToken cancellationToken)
-    {
-        return await context.Contacts
-            .AsNoTracking()
-            .Where(c => c.X25519PublicKey != ownX25519PublicKey)
-            .Select(c => c.X25519PublicKey)
-            .ToListAsync(cancellationToken).ConfigureAwait(false);
-    }
 }

@@ -10,8 +10,8 @@ namespace SqliteWasmBlazor.CryptoSync.Tests;
 /// Tests for <see cref="SyncEngine"/> — the wiring between
 /// <see cref="SyncOrchestrator"/> and <see cref="ISyncTransport"/>. Crypto
 /// round-trip is faked via <see cref="FakeDatabaseService"/>; these tests
-/// verify recipient enumeration, cursor advance, empty-envelope skip, and
-/// inbox drain. The actual encrypted pipeline is exercised in browser-side
+/// verify cursor advance, empty-envelope skip, broadcast send, and inbox
+/// drain. The actual encrypted pipeline is exercised in browser-side
 /// CryptoSyncRoundTripTest.
 /// </summary>
 public class SyncEngineTests : IAsyncLifetime
@@ -32,7 +32,7 @@ public class SyncEngineTests : IAsyncLifetime
     public async Task PushChanges_NoChanges_DoesNotSendEnvelope()
     {
         var relay = new InMemorySyncRelay();
-        var transport = new InMemorySyncTransport(relay, _scenario.Admin.Keys.X25519PublicKey);
+        var transport = new InMemorySyncTransport(relay);
         var fakeDb = new FakeDatabaseService
         {
             CannedExportBytes = MessagePackSerializer.Serialize(new DeltaEnvelope
@@ -48,14 +48,15 @@ public class SyncEngineTests : IAsyncLifetime
         var sent = await engine.PushChangesAsync(_scenario.Admin.Keys);
 
         Assert.False(sent);
+        Assert.Equal(0, relay.PendingCount);
     }
 
     [Fact]
-    public async Task PushChanges_WithRows_AddressesAllOtherContacts()
+    public async Task PushChanges_WithRows_BroadcastsEnvelope()
     {
         var relay = new InMemorySyncRelay();
-        var adminTransport = new InMemorySyncTransport(relay, _scenario.Admin.Keys.X25519PublicKey);
-        var userTransport = new InMemorySyncTransport(relay, _scenario.User.Keys.X25519PublicKey);
+        var adminTransport = new InMemorySyncTransport(relay);
+        var userTransport = new InMemorySyncTransport(relay);
 
         var nonEmpty = MessagePackSerializer.Serialize(new DeltaEnvelope
         {
@@ -79,17 +80,19 @@ public class SyncEngineTests : IAsyncLifetime
         var sent = await engine.PushChangesAsync(_scenario.Admin.Keys);
 
         Assert.True(sent);
-        // The user has the envelope in their inbox; admin does not.
+        // Broadcast: any reader can drain the queue. The user picks up the
+        // envelope; the receiver's crypto layer is what filters payload
+        // addressing in real life.
         var received = await userTransport.TryReceiveAsync();
         Assert.NotNull(received);
-        Assert.Null(await adminTransport.TryReceiveAsync());
+        Assert.Equal(0, relay.PendingCount);
     }
 
     [Fact]
     public async Task PushChanges_AdvancesCursor()
     {
         var relay = new InMemorySyncRelay();
-        var transport = new InMemorySyncTransport(relay, _scenario.Admin.Keys.X25519PublicKey);
+        var transport = new InMemorySyncTransport(relay);
         var nonEmpty = MessagePackSerializer.Serialize(new DeltaEnvelope
         {
             SenderEd25519PublicKey = _scenario.Admin.Keys.Ed25519PublicKey,
@@ -120,7 +123,7 @@ public class SyncEngineTests : IAsyncLifetime
     public async Task PushChanges_CursorPersistsAcrossEngineInstances()
     {
         var relay = new InMemorySyncRelay();
-        var transport = new InMemorySyncTransport(relay, _scenario.Admin.Keys.X25519PublicKey);
+        var transport = new InMemorySyncTransport(relay);
         var nonEmpty = MessagePackSerializer.Serialize(new DeltaEnvelope
         {
             SenderEd25519PublicKey = _scenario.Admin.Keys.Ed25519PublicKey,
@@ -154,12 +157,12 @@ public class SyncEngineTests : IAsyncLifetime
     public async Task PullChanges_DrainsAllEnvelopes_AndAccumulatesRows()
     {
         var relay = new InMemorySyncRelay();
-        var adminTransport = new InMemorySyncTransport(relay, _scenario.Admin.Keys.X25519PublicKey);
-        var userTransport = new InMemorySyncTransport(relay, _scenario.User.Keys.X25519PublicKey);
+        var adminTransport = new InMemorySyncTransport(relay);
+        var userTransport = new InMemorySyncTransport(relay);
 
-        // Admin posts two envelopes addressed to user.
-        await adminTransport.SendAsync([0x01], [_scenario.User.Keys.X25519PublicKey]);
-        await adminTransport.SendAsync([0x02], [_scenario.User.Keys.X25519PublicKey]);
+        // Admin posts two envelopes; user drains them via broadcast.
+        await adminTransport.SendAsync([0x01]);
+        await adminTransport.SendAsync([0x02]);
 
         var fakeDb = new FakeDatabaseService
         {
@@ -181,7 +184,7 @@ public class SyncEngineTests : IAsyncLifetime
     public async Task PullChanges_EmptyInbox_ReturnsZero()
     {
         var relay = new InMemorySyncRelay();
-        var transport = new InMemorySyncTransport(relay, _scenario.User.Keys.X25519PublicKey);
+        var transport = new InMemorySyncTransport(relay);
         var fakeDb = new FakeDatabaseService();
         var engine = new SyncEngine(
             _scenario.User.Context, fakeDb, transport,
@@ -196,11 +199,12 @@ public class SyncEngineTests : IAsyncLifetime
     public async Task SyncOnce_PushesThenPulls()
     {
         var relay = new InMemorySyncRelay();
-        var adminTransport = new InMemorySyncTransport(relay, _scenario.Admin.Keys.X25519PublicKey);
-        var userTransport = new InMemorySyncTransport(relay, _scenario.User.Keys.X25519PublicKey);
+        var adminTransport = new InMemorySyncTransport(relay);
+        var userTransport = new InMemorySyncTransport(relay);
 
-        // Pre-seed an envelope addressed to admin so the pull side has work.
-        await userTransport.SendAsync([0xFF], [_scenario.Admin.Keys.X25519PublicKey]);
+        // Pre-seed an envelope from the user; admin's pull will see it via
+        // the broadcast queue alongside its own broadcast.
+        await userTransport.SendAsync([0xFF]);
 
         var nonEmpty = MessagePackSerializer.Serialize(new DeltaEnvelope
         {
@@ -226,23 +230,25 @@ public class SyncEngineTests : IAsyncLifetime
 
         var applied = await engine.SyncOnceAsync(_scenario.Admin.Keys);
 
-        Assert.Equal(7, applied);
-        // Admin's push went to user.
-        Assert.NotNull(await userTransport.TryReceiveAsync());
-        // Admin's pull drained the pre-seeded envelope.
-        Assert.Null(await adminTransport.TryReceiveAsync());
+        // Push went through (envelope queued), pull drained both the
+        // pre-seeded envelope and admin's own (broadcast doesn't filter at
+        // the transport — receiver-side crypto would in real life).
+        Assert.Equal(14, applied); // 7 per drained envelope, two envelopes
+        Assert.Equal(0, relay.PendingCount);
     }
 
     [Fact]
-    public async Task PushChanges_OneActor_NoOtherContacts_SkipsSendButAdvancesCursor()
+    public async Task PushChanges_OneActor_StillBroadcastsAndAdvancesCursor()
     {
-        // Stand up a fresh admin-only actor — no other contacts.
+        // Stand up a fresh admin-only actor — broadcast model has no notion
+        // of "no other contacts", so the push goes through and the cursor
+        // advances regardless.
         var crypto = new BouncyCastleCryptoProvider();
         var solo = await TestActor.CreateAsync("Solo", isAdmin: true, seedByte: 1, crypto);
         try
         {
             var relay = new InMemorySyncRelay();
-            var transport = new InMemorySyncTransport(relay, solo.Keys.X25519PublicKey);
+            var transport = new InMemorySyncTransport(relay);
             var nonEmpty = MessagePackSerializer.Serialize(new DeltaEnvelope
             {
                 SenderEd25519PublicKey = solo.Keys.Ed25519PublicKey,
@@ -269,8 +275,9 @@ public class SyncEngineTests : IAsyncLifetime
 
             var sent = await engine.PushChangesAsync(solo.Keys);
 
-            Assert.False(sent); // No recipients
-            Assert.NotEqual(default, await engine.GetLastExportedAtAsync()); // Cursor advances
+            Assert.True(sent);
+            Assert.Equal(1, relay.PendingCount);
+            Assert.NotEqual(default, await engine.GetLastExportedAtAsync());
         }
         finally
         {

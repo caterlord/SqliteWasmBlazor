@@ -1,4 +1,6 @@
+using System.Globalization;
 using System.Net;
+using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
 using Org.BouncyCastle.Crypto.Parameters;
@@ -184,6 +186,187 @@ public sealed class HttpSyncTransportLiveRelayTests : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Forbidden, ex.StatusCode);
     }
 
+    [Fact]
+    public async Task ThreeActors_AdminUser1User2_AllPostAndPullAllEnvelopes()
+    {
+        // Stage A's canonical "everyone broadcasts" coverage. Baseline (v1) has
+        // user1 (== _senderPub) on the whitelist; v2 adds the system admin
+        // pubkey + a fresh user2 so all three can POST. Per actor: each pulls
+        // the whole queue from cursor 0 (each transport has its own
+        // InMemoryReceiveCursorStore).
+        var user2Seed = RandomNumberGenerator.GetBytes(Ed25519SeedLength);
+        var user2Pub = DerivePub(user2Seed);
+
+        await PushAsync(
+            version: 2,
+            ops:
+            [
+                WhitelistOp.Add(HashHex(_deploymentSalt, _adminPub)),
+                WhitelistOp.Add(HashHex(_deploymentSalt, user2Pub)),
+            ]);
+
+        using var http = new HttpClient();
+        var adminTransport = NewTransportFor(http, _adminSeed, _adminPub);
+        var user1Transport = NewSenderTransport(http);
+        var user2Transport = NewTransportFor(http, user2Seed, user2Pub);
+
+        var adminEnv = new byte[] { 0xAA, 0x01 };
+        var user1Env = new byte[] { 0xBB, 0x02 };
+        var user2Env = new byte[] { 0xCC, 0x03 };
+        await adminTransport.SendAsync(adminEnv);
+        await user1Transport.SendAsync(user1Env);
+        await user2Transport.SendAsync(user2Env);
+
+        foreach (var transport in new[] { adminTransport, user1Transport, user2Transport })
+        {
+            var pulled = new List<byte[]>();
+            for (var i = 0; i < 3; i++)
+            {
+                var bytes = await transport.TryReceiveAsync();
+                Assert.NotNull(bytes);
+                pulled.Add(bytes!);
+            }
+            Assert.Contains(adminEnv, pulled);
+            Assert.Contains(user1Env, pulled);
+            Assert.Contains(user2Env, pulled);
+            Assert.Null(await transport.TryReceiveAsync());
+        }
+    }
+
+    [Fact]
+    public async Task WhitelistPush_NonAdminSigner_Returns401()
+    {
+        // A "rogue admin" — valid Ed25519 keypair but NOT matching the
+        // deployment's hardwired admin_pubkey_hash. Their signed v2 push must
+        // hit 401 ("admin pubkey hash does not match deployment") before any
+        // signature verification, surfacing as plain HttpRequestException
+        // (not WhitelistVersionConflictException — that's the 409 path).
+        var rogueAdminSeed = RandomNumberGenerator.GetBytes(Ed25519SeedLength);
+        var rogueAdminPub = DerivePub(rogueAdminSeed);
+
+        using var http = new HttpClient();
+        var service = new WhitelistPushService(http, RelayBase, _declarationSigner);
+
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(async () =>
+            await service.PushAsync(
+                [WhitelistOp.Add(HashHex(_deploymentSalt, rogueAdminPub))],
+                adminEd25519PublicKeyBase64: Convert.ToBase64String(rogueAdminPub),
+                adminEd25519PrivateKey: rogueAdminSeed,
+                version: 2));
+        Assert.Equal(HttpStatusCode.Unauthorized, ex.StatusCode);
+    }
+
+    [Fact]
+    public async Task RevokedSender_GraceWindowExpired_GetReturns403()
+    {
+        // Tighten the grace window, then revoke with a backdated revoked_at
+        // beyond it. The relay's check is `now - revoked_at >= grace`, so
+        // revoked_at = now - 200 with grace=60 lands in the post-grace zone
+        // without sleeping — no test-clock machinery needed.
+        var adminHashHex = HashHex(_deploymentSalt, _adminPub);
+        WriteRelayConfig(_deploymentSalt, adminHashHex, readGraceSeconds: 60);
+
+        var revokedAtPastGrace = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 200;
+        await PushAsync(
+            version: 2,
+            ops:
+            [
+                WhitelistOp.Revoke(
+                    HashHex(_deploymentSalt, _senderPub),
+                    revokedAt: revokedAtPastGrace),
+            ]);
+
+        using var http = new HttpClient();
+        var transport = NewSenderTransport(http);
+
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(async () =>
+            await transport.TryReceiveAsync());
+        Assert.Equal(HttpStatusCode.Forbidden, ex.StatusCode);
+    }
+
+    [Fact]
+    public async Task RevokedSender_WithinGraceWindow_GetStillSucceeds()
+    {
+        // Friendly handoff: a member who's been revoked seconds ago can still
+        // drain the inbox while the grace window holds — "you've been
+        // revoked, here's everything that arrived before you were kicked".
+        // Use revoked_at = now (just-revoked) + grace = 60 → comfortably inside.
+        var adminHashHex = HashHex(_deploymentSalt, _adminPub);
+        WriteRelayConfig(_deploymentSalt, adminHashHex, readGraceSeconds: 60);
+
+        // POST one envelope while still active so the post-revoke GET has
+        // something to drain.
+        using var http = new HttpClient();
+        var transport = NewSenderTransport(http);
+        await transport.SendAsync([0x42]);
+
+        await PushAsync(
+            version: 2,
+            ops:
+            [
+                WhitelistOp.Revoke(
+                    HashHex(_deploymentSalt, _senderPub),
+                    revokedAt: DateTimeOffset.UtcNow.ToUnixTimeSeconds()),
+            ]);
+
+        var pulled = await transport.TryReceiveAsync();
+        Assert.NotNull(pulled);
+        Assert.Equal(new byte[] { 0x42 }, pulled!);
+    }
+
+    [Fact]
+    public async Task PostEnvelope_ExceedsBodyCap_Returns413()
+    {
+        // C-2 audit fix verified end-to-end: relay enforces max_body_bytes
+        // before any signature work and returns 413. Keep the cap small so
+        // the offending body stays small too — no megabyte uploads in tests.
+        var adminHashHex = HashHex(_deploymentSalt, _adminPub);
+        WriteRelayConfig(_deploymentSalt, adminHashHex, maxBodyBytes: 4096);
+
+        using var http = new HttpClient();
+        var transport = NewSenderTransport(http);
+
+        var bigEnvelope = RandomNumberGenerator.GetBytes(8000);
+
+        var ex = await Assert.ThrowsAsync<HttpRequestException>(async () =>
+            await transport.SendAsync(bigEnvelope));
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, ex.StatusCode);
+    }
+
+    [Fact]
+    public async Task PostEnvelope_StaleTimestamp_Returns401()
+    {
+        // RECEIVE_WINDOW_SECONDS = 300 in the relay, so 600s in the past is
+        // safely outside. Hand-craft the POST instead of going through
+        // HttpSyncTransport — the transport always uses `now`, which is the
+        // contract; this test pokes at the relay's window directly.
+        using var http = new HttpClient();
+
+        var staleTs = (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 600)
+            .ToString(CultureInfo.InvariantCulture);
+        var envelope = new byte[] { 0x77 };
+        var envelopeHashHex = Convert.ToHexString(SHA256.HashData(envelope))
+            .ToLowerInvariant();
+        var signingInput = $"deltapost-v1|{staleTs}|{envelopeHashHex}";
+        var sig = Convert.ToBase64String(
+            SignEd25519(_senderSeed, Encoding.UTF8.GetBytes(signingInput)));
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post, new Uri(RelayBase, "api/delta"))
+        {
+            Content = JsonContent.Create(new
+            {
+                envelope = Convert.ToBase64String(envelope),
+            }),
+        };
+        request.Headers.Add("X-Timestamp", staleTs);
+        request.Headers.Add("X-Sender-PubKey", Convert.ToBase64String(_senderPub));
+        request.Headers.Add("X-Sender-Sig", sig);
+
+        using var response = await http.SendAsync(request);
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
@@ -249,7 +432,11 @@ public sealed class HttpSyncTransportLiveRelayTests : IAsyncLifetime
         }
     }
 
-    private void WriteRelayConfig(byte[] salt, string adminHashHex)
+    private void WriteRelayConfig(
+        byte[] salt,
+        string adminHashHex,
+        int readGraceSeconds = 604800,
+        int maxBodyBytes = 1048576)
     {
         var saltB64 = Convert.ToBase64String(salt);
         var contents = $$"""
@@ -258,8 +445,8 @@ public sealed class HttpSyncTransportLiveRelayTests : IAsyncLifetime
             return [
                 'deployment_salt'    => '{{saltB64}}',
                 'admin_pubkey_hash'  => '{{adminHashHex}}',
-                'read_grace_seconds' => 604800,
-                'max_body_bytes'     => 1048576,
+                'read_grace_seconds' => {{readGraceSeconds}},
+                'max_body_bytes'     => {{maxBodyBytes}},
                 'rate_limit_window'  => 60,
                 'rate_limit_count'   => 60,
                 'retention_seconds'  => 2592000,

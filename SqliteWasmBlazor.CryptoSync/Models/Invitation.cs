@@ -67,6 +67,17 @@ public sealed class Invitation : SyncableEntity
     public DateTime CreatedAt { get; set; }
 
     public DateTime ExpiresAt { get; set; }
+
+    /// <summary>
+    /// Admin-side persistence of the transport keypair's Ed25519 public key
+    /// (Base64). Admin pushes <c>sha256(salt || this)</c> onto the relay
+    /// whitelist at CreateInvitation time so the invitee can POST during the
+    /// bootstrap window; at PromoteInvitation time admin revokes that hash
+    /// and adds the contact's real Ed25519 hash, in a single push. Null on
+    /// invitations created before the whitelist hooks landed.
+    /// </summary>
+    [MaxLength(64)]
+    public string? TransportEd25519PublicKey { get; set; }
 }
 
 /// <summary>

@@ -266,7 +266,8 @@ public class ContactInvitationService(
             ExpiresAt = expiresAt,
             UpdatedAt = now,
             SharingScope = SharingScope.SHARED,
-            SharingId = groupContext
+            SharingId = groupContext,
+            TransportEd25519PublicKey = transportEd25519Pub,
         });
 
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
@@ -711,10 +712,12 @@ public class ContactInvitationService(
     public async ValueTask<TrustedContact> PromoteInvitationAsync(
         Guid invitationId,
         DualKeyPairFull adminKeys,
+        string deploymentSaltBase64,
         SyncRole systemRole = SyncRole.EDITOR,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(adminKeys);
+        ArgumentException.ThrowIfNullOrWhiteSpace(deploymentSaltBase64);
 
         var invitation = await context.Invitations
             .FirstOrDefaultAsync(i => i.Id == invitationId, cancellationToken)
@@ -907,6 +910,28 @@ public class ContactInvitationService(
 
         await context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
         await tx.CommitAsync(cancellationToken).ConfigureAwait(false);
+
+        // Whitelist transition: revoke the transport keypair (POSTs as it
+        // are blocked immediately, GETs allowed within READ_GRACE_SECONDS so
+        // the invitee can finish ingesting any in-flight envelopes), and add
+        // the contact's real Ed25519 hash so subsequent sync POSTs from the
+        // contact's actual identity hit a whitelisted entry. Single push,
+        // version+1, ops in order.
+        if (invitation.TransportEd25519PublicKey is not null)
+        {
+            var transportHash = WhitelistPushService.HashPubkey(
+                deploymentSaltBase64, invitation.TransportEd25519PublicKey);
+            var contactHash = WhitelistPushService.HashPubkey(
+                deploymentSaltBase64, invitation.ContactEd25519PublicKey);
+            var revokedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            await PushWhitelistOpsAsync(
+                adminKeys,
+                [
+                    WhitelistOp.Revoke(transportHash, revokedAt),
+                    WhitelistOp.Add(contactHash),
+                ],
+                cancellationToken).ConfigureAwait(false);
+        }
 
         return contactRow;
     }

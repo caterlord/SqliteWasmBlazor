@@ -292,6 +292,37 @@ public class ContactInvitationServiceTests : IAsyncLifetime
             .Where(g => g.GroupContext.StartsWith("invitation-")).ToListAsync());
     }
 
+    [Fact]
+    public async Task Promote_PushesRevokeTransportPlusAddContactInOneVersion()
+    {
+        // After full bootstrap (TwoActorBootstrap already exercised the
+        // happy-path Create+Respond+Ingest+Promote), the recording service
+        // captured TWO pushes: v1 = Add(transport hash) from CreateInvitation,
+        // v2 = Revoke(transport)+Add(contact) from PromoteInvitation.
+        var pushes = _scenario.Admin.WhitelistPush.Pushes;
+        Assert.Equal(2, pushes.Count);
+
+        var promotePush = pushes[1];
+        Assert.Equal(2L, promotePush.Version);
+        Assert.Equal(2, promotePush.Operations.Count);
+
+        var revoke = Assert.IsType<WhitelistOp.RevokeOp>(promotePush.Operations[0]);
+        var add = Assert.IsType<WhitelistOp.AddOp>(promotePush.Operations[1]);
+
+        // Revoke targets the transport's Ed25519 hash (same one Create added).
+        Assert.Equal(pushes[0].Operations[0].PubkeyHash, revoke.PubkeyHash);
+        Assert.True(revoke.RevokedAt > 0);
+
+        // Add targets the user's real Ed25519 hash.
+        var expectedContactHash = WhitelistPushService.HashPubkey(
+            InvitationTestSalt.Default, _scenario.User.Keys.Ed25519PublicKey);
+        Assert.Equal(expectedContactHash, add.PubkeyHash);
+
+        var state = await _scenario.Admin.Context.SyncStates
+            .SingleAsync(s => s.Id == SyncState.EngineCursorId);
+        Assert.Equal(2L, state.LastWhitelistVersion);
+    }
+
     // ----------------------------------------------------------------
     // PromoteInvitationAsync — negative paths
     // ----------------------------------------------------------------
@@ -301,7 +332,7 @@ public class ContactInvitationServiceTests : IAsyncLifetime
     {
         await Assert.ThrowsAsync<InvitationNotFoundException>(
             () => _scenario.Admin.Invitations.PromoteInvitationAsync(
-                Guid.NewGuid(), _scenario.Admin.Keys).AsTask());
+                Guid.NewGuid(), _scenario.Admin.Keys, InvitationTestSalt.Default).AsTask());
     }
 
     [Fact]
@@ -313,7 +344,7 @@ public class ContactInvitationServiceTests : IAsyncLifetime
 
         await Assert.ThrowsAsync<InvitationNotRespondedException>(
             () => _scenario.Admin.Invitations.PromoteInvitationAsync(
-                bundle.GroupId, _scenario.Admin.Keys).AsTask());
+                bundle.GroupId, _scenario.Admin.Keys, InvitationTestSalt.Default).AsTask());
     }
 
     [Fact]
@@ -331,7 +362,7 @@ public class ContactInvitationServiceTests : IAsyncLifetime
 
         await Assert.ThrowsAsync<InvitationExpiredException>(
             () => _scenario.Admin.Invitations.PromoteInvitationAsync(
-                bundle.GroupId, _scenario.Admin.Keys).AsTask());
+                bundle.GroupId, _scenario.Admin.Keys, InvitationTestSalt.Default).AsTask());
     }
 
     [Fact]
@@ -351,11 +382,11 @@ public class ContactInvitationServiceTests : IAsyncLifetime
                 contactTransport);
             await _scenario.Admin.Invitations.IngestInvitationResponsesAsync(_scenario.Admin.Keys, adminTransport);
 
-            await _scenario.Admin.Invitations.PromoteInvitationAsync(bundle.GroupId, _scenario.Admin.Keys);
+            await _scenario.Admin.Invitations.PromoteInvitationAsync(bundle.GroupId, _scenario.Admin.Keys, InvitationTestSalt.Default);
 
             await Assert.ThrowsAsync<InvitationNotFoundException>(
                 () => _scenario.Admin.Invitations.PromoteInvitationAsync(
-                    bundle.GroupId, _scenario.Admin.Keys).AsTask());
+                    bundle.GroupId, _scenario.Admin.Keys, InvitationTestSalt.Default).AsTask());
         }
         finally
         {
@@ -395,7 +426,7 @@ public class ContactInvitationServiceTests : IAsyncLifetime
 
             await Assert.ThrowsAsync<InvalidInvitationResponseException>(
                 () => _scenario.Admin.Invitations.PromoteInvitationAsync(
-                    bundle.GroupId, _scenario.Admin.Keys).AsTask());
+                    bundle.GroupId, _scenario.Admin.Keys, InvitationTestSalt.Default).AsTask());
         }
         finally
         {

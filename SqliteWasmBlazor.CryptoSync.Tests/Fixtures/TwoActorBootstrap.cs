@@ -79,7 +79,7 @@ public sealed class TwoActorBootstrap : IAsyncDisposable
         }
 
         var userContactOnAdmin = await admin.Invitations.PromoteInvitationAsync(
-            bundle.GroupId, admin.Keys, systemRole: SyncRole.VIEWER);
+            bundle.GroupId, admin.Keys, InvitationTestSalt.Default, systemRole: SyncRole.VIEWER);
 
         var userTargetOnAdmin = await admin.Context.ShareTargets
             .SingleAsync(t => t.ShareGroupId == systemGroup.Id

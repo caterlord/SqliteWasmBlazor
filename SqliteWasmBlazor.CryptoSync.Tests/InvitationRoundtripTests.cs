@@ -219,7 +219,7 @@ public class InvitationRoundtripTests
 
             // 4. Admin promotes.
             var helenContact = await admin.Invitations.PromoteInvitationAsync(
-                bundle.GroupId, admin.Keys);
+                bundle.GroupId, admin.Keys, InvitationTestSalt.Default);
             Assert.False(helenContact.IsAdmin);
             Assert.Equal(helen.Keys.X25519PublicKey, helenContact.X25519PublicKey);
             Assert.Equal(SharingScope.PUBLIC, helenContact.SharingScope);

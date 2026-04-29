@@ -1,6 +1,6 @@
 # SqliteWasmBlazor Roadmap
 
-_Single source of truth for "where are we." Last updated 2026-04-29 against branch `crypto-sync` HEAD pending Step 6 redesign. Stage A of the whitelist-broadcast rewrite is in flight — Step 6 ("retention" → "admin-only purge with pinned seed") is being landed as a redesign of the prior cron-based GC commit. Stage B (production identity wiring) follows once Stage A is green._
+_Single source of truth for "where are we." Last updated 2026-04-29 against branch `crypto-sync` HEAD `0d3f746`. Stage A (whitelist-broadcast rewrite) is fully complete — every pre-UI / pre-WebAuthn wire piece is wired and 229/229 xUnit green. **Stage 2 (UI absorption) is now the active workstream**; once UI panels land, the WebAuthn-bound demo / TestApp / admin-seeding work follows. Stage B (production PRF/WebAuthn signer wiring) is folded into that sequence — it's no longer a standalone item._
 
 This document supersedes the multiple parallel numbering systems (Stage / Phase A / Phase B / Audit Phase 1-3) that were used while individual workstreams were in flight. Going forward, work is grouped only as **Active**, **Postponed**, **Done**, **Deferred**.
 
@@ -14,35 +14,49 @@ If you're picking this up cold, read in this order:
 
 ## Active
 
-### Stage A Step 6 redesign — admin-only purge + pinned seed
+### Stage 2 — UI absorption (`SqliteWasmBlazor.CryptoSync.UI`)
 
-- **Plan:** `~/.claude/plans/whitelist-broadcast-rewrite.md` § Step 6 (in-place revision; the original cron-driven retention model is being replaced).
-- **Status:** code in flight; commit `160abac` ("GC CLI + retention test") and `ffcf5a2` ("docs: Stage A Step 6 done") are being **superseded** in a forward-only commit (no rebase) that drops the cron CLI and the time-based retention model.
-- **Estimated effort:** ~half a day.
+- **Plan:** standalone plan file to be written at kickoff (`~/.claude/plans/cryptosync-ui-absorption.md` — TBD).
+- **Trigger:** fired by Stage A completion. Stage A's wire stack is locked, so the panels can be authored against stable contracts.
+- **Estimated effort:** 1-2 weeks (depends on how much rescaffolding is wanted vs. straight ports).
 
-The original Step 6 introduced `cryptosync-relay-gc.php` (cron-driven, time-based retention) and a `retention_seconds` config knob. Two design issues surfaced in review:
+The goal is a carefully designed re-skinnable Razor library `SqliteWasmBlazor.CryptoSync.UI` that absorbs the existing `BlazorPRF.UI` + `BlazorPRF.Push/Components` panels, rebound onto the in-repo CryptoSync services. **Every panel uses code-behind** (a `*.razor.cs` partial alongside the `.razor` markup) so future re-design / re-skinning into a new MudBlazor / Tailwind / Fluent variant is purely markup work — the behavior layer stays untouched.
 
-1. **Autonomous server-side decisions break the honest-but-curious model.** The relay deciding "this row is too old, delete it" is a server-side policy decision, even if time-based. The user prefers all delete authority to flow from a client-signed action.
-2. **Client-driven compaction reintroduces censorship-by-omission.** A first-pass design considered "any whitelisted client can post a compacted rollup that triggers a server-side purge of patches older than the rollup's `up_to_cursor`." That gives any malicious whitelisted client the ability to pull all pending patches, post a *truncated* rollup, and erase patches that other honest clients hadn't yet received. Censorship masquerading as compaction. Untenable.
+**Source panels to absorb:**
 
-The replacement model is **admin-only purge** with a pinned seed:
+| Source | Target | Purpose |
+|---|---|---|
+| `BlazorPRF.UI/Components/PrfAuthenticate.razor` | `AuthenticationPanel` | WebAuthn assertion + PRF-bound session login. |
+| `BlazorPRF.UI/Components/PrfRegistration.razor` | (folded into AuthenticationPanel or a separate `RegistrationPanel`) | First-time WebAuthn credential creation. |
+| `BlazorPRF.UI/Components/PublicKeyDisplay.razor` | reusable `PublicKeyDisplay` shared component | Renders pubkey hashes for handoff. |
+| `BlazorPRF.UI/Components/SessionExpiredPopover.razor` | reusable `SessionExpiredPopover` | Session-expiry UX. |
+| `BlazorPRF.Push/Components/ContactsPanel.razor` | `ContactsPanel` | Contact list / state, bound to `ContactService`. |
+| `BlazorPRF.Push/Components/UserProfilePanel.razor` | `UserProfilePanel` | Local identity display + admin-vs-member presentation. |
+| `BlazorPRF.Push/Components/InviteLinkCreationPanel.razor` | `InvitationPanel` (creation half) | Admin-side invitation issuance, bound to `ContactInvitationService`. |
+| `BlazorPRF.Push/Components/InviteLinkAcceptancePanel.razor` | `InvitationPanel` (acceptance half) | Member-side acceptance + ECDH wrap. |
+| `BlazorPRF.Push/Components/CheckResponsesPanel.razor` | folded into `InvitationPanel` (admin tab) | Admin reviews pending invitation responses. |
+| `BlazorPRF.Push/Components/PushManager.razor` + `.razor.js` | `PushPanel` | Webpush subscription + send UI, bound to `IPushNotifier`. |
+| `BlazorPRF.Push/Components/SendMessageDialog.razor` | folded into `PushPanel` (compose dialog) | Composing a push message body. |
+| `BlazorPRF.Push/Components/DatabaseErrorAlert.razor` | reusable `DatabaseErrorAlert` | Boot-status surface for DB / CryptoSync init failures. |
 
-- New `deltas.pinned` column. The admin's pin POST (header `X-Admin-Pin-Sig` over `deltapin-v1|ts|envelope_hash`) is the *sole* delete authority on the relay: in one transaction, every prior row is purged and the new envelope is stored with `pinned=1`. The pin POST verifies sender hash equals deployment `admin_pubkey_hash` before any sig work, so a non-admin attempt → 403 before crypto.
-- New `gc_threshold_rows` config (replaces `retention_seconds`). The relay never deletes on its own; instead, when `COUNT(*) FROM deltas WHERE pinned = 0` exceeds the threshold, every `GET /api/delta` response includes `"gc_requested": true`. Purely informational — the admin client reads it and may respond with a fresh pin POST. Non-admin clients observe the flag for diagnostics but cannot act on it.
-- `cryptosync-relay-gc.php` deleted. No cron / systemd / launchd plumbing required.
-- New C# `IAdminPinService` registered in DI alongside `IWhitelistPushService`. `HttpSyncTransport` exposes `LastReceiveSignalledGcRequested` so admin tooling can react to the hint.
+**Design constraints:**
 
-**Tests:** the prior GC retention test + empty-DB GC test are deleted. Replaced with `SeedReseed_GcSignalDrivesAdminCompaction_OperationalRoundTrip` (admin seeds → patches accumulate past threshold → relay flags `gc_requested` → admin reseeds → fresh receiver bootstraps off new seed) and `Pin_NonAdminSender_Returns403` (censorship attack denied at the wire layer). Live-relay suite stays at 13 tests; total xUnit count holds at 229 = 215 unit + 13 live + 1 new DI assertion for `IAdminPinService` registration.
+- **Code-behind everywhere.** No logic in `@code { }` blocks. Each `*.razor` is markup-only; each `*.razor.cs` is a `partial class` deriving from `ComponentBase` (or appropriate base) carrying state, lifecycle, and event handlers. This keeps re-skinning into a new design system a markup-only refactor.
+- **Service binding via DI, not parameter drilling.** Panels resolve `IWhitelistPushService`, `IAdminPinService`, `ContactService`, etc. through `[Inject]`. Cascading values for theme / locale only.
+- **Shared `SqliteWasmBlazor.CryptoSync` already locked.** Panels target the contracts shipped in Stage A — no panel may force a service-shape change without going back to Stage A.
+- **Library = pure component library.** No app-layer concerns (routing, layout, auth-redirect glue). Hosting apps wire those in.
+- **MudBlazor stays the default skin.** Panels ship MudBlazor markup as the reference implementation per project preference (no hand-rolled CSS where MudBlazor primitives suffice). The code-behind discipline means a re-skin to Fluent / Tailwind doesn't touch behavior.
 
-### Stage B — Production identity wiring
+### Post-Stage-2 sequence (logical order, plans written at kickoff)
 
-- **Plan:** folded into `~/.claude/plans/whitelist-broadcast-rewrite.md` (§ Out of scope — Stage B). Standalone plan file to be written when Stage B work begins.
-- **Trigger:** Stage A Step 6 redesign green.
-- **Estimated effort:** 1-2 days.
+Each step below is a separate workstream with its own plan + memory pointer. They sequence on top of the absorbed UI library and progressively bind WebAuthn into the runtime stack.
 
-Stage A proves the C#↔PHP wire contract end-to-end with test seeds. Stage B swaps the stub `ISenderAuthSigner` / `IReceiveAuthSigner` for PRF-backed implementations sourced from WebAuthn. Browser host (`SqliteWasmBlazor.Demo`) registers the production signers in DI; a Playwright smoke test confirms the same scenarios as the Stage A xUnit suite, but with real WebAuthn identities. No protocol-level work; purely DI + JS interop.
+1. **Demo with WebAuthn for encryption.** A reference page in `SqliteWasmBlazor.Demo` modeled after `SqliteWasmBlazor.TestApp/Pages/PrfVfsTest.razor` — wires `AuthenticationPanel` to drive WebAuthn-PRF-derived encryption keys, exercising the absorbed panel against a real browser identity. Folds in the previous standalone "Stage B — Production identity wiring" item: this demo IS the production wiring of `ISenderAuthSigner` / `IReceiveAuthSigner` against PRF-backed signers.
+2. **TestApp with WebAuthn for all tests.** Promote `SqliteWasmBlazor.TestApp` to use WebAuthn end-to-end across its existing test pages. Replaces synthetic test seeds with real assertions in the browser-side test runner.
+3. **WebAuthn-based admin seeding.** Bind admin bootstrap (the first whitelist push + initial pinned seed POST) to a WebAuthn-PRF identity. Today the admin's Ed25519 keypair lives in test fixtures; this step binds it to a passkey. Once landed, a deployment is genuinely admin-keyless on disk.
+4. **Further steps TBD** as the WebAuthn wiring matures (Playwright e2e, recovery flows, multi-device admin handoff, etc.).
 
-If Stage B uncovers a wire-protocol issue, it's a Stage A regression — fix in Stage A, re-run seeded suite, re-attempt Stage B.
+If any of these surface a wire-protocol issue, it's a Stage A regression — fix in Stage A, re-run the seeded xUnit suite, re-attempt the WebAuthn step.
 
 ---
 
@@ -79,7 +93,7 @@ Replaced the per-recipient pubkey-bound delivery model (Stage 3b code) with an a
 3. ✅ (`c1d32c6`) — `WhitelistPushService` + `DeclarationSigner.SignWhitelistPushAsync`/`VerifyWhitelistPushAsync` + `WhitelistMember`/`WhitelistStatus`/`WhitelistPushResult`/`WhitelistVersionConflictException`. Canonical-string lex-sort byte-identical to PHP's `buildWhitelistSigningString`. 7 fast unit tests + 3 new live-relay scenarios (2-member push, replay → typed conflict, non-whitelisted-sender → 403). Live-relay fixture refactored to delegate to the production service. 206 xUnit.
 4. ✅ (4a `64e8d3b` / 4b `7b0ee53` / 4c `e363cf1` / 4d `2a61d73`) — Op-based whitelist contract: PHP `handleWhitelistPush` switched from full-replace to incremental Add/Revoke ops; canonical → `whitelist-ops-v1|version|op1|op2|...`; admin device only tracks `LastWhitelistVersion` (one int) instead of mirroring members. CreateInvitation hook: transport keypair derives dual (X25519 + Ed25519); admin pushes `Add(transport_ed25519_hash)` after persisting invitation. PromoteInvitation hook: `Invitation.TransportEd25519PublicKey` persists the transport hash; promote pushes `[Revoke(transport), Add(contact)]` in one v+1 push. System-admin revocation: `ContactService.RevokeContactAsync` rotates every group the contact's a regular member of (skipping their own self-group), soft-deletes the row, pushes `Revoke(contact_hash)`. `WhitelistAdminFlow.PushAsync` factored as the shared version-tracking + retry-on-409 helper. 213 xUnit (209 unit + 4 live).
 5. ✅ (5a `4f1ae1b` / 5b `8197141`) — DI wiring + scenario-completeness sweep (test seeds throughout). 5a: `AddCryptoSync<TContext>` registers `DeclarationSigner` + `IWhitelistPushService` + `IReceiveCursorStore` + `ISyncTransport` against `CryptoSyncOptions.RelayBaseUri` (bindable from appsettings or configure callback); new `EfReceiveCursorStoreFactory<TContext>` wraps `EfReceiveCursorStore` with `IDbContextFactory`; `ISenderAuthSigner` / `IReceiveAuthSigner` stay caller-registered seams (Stage A: stubs; Stage B: PRF-backed). 5b: six new live-relay scenarios — three-actor broadcast, non-admin push → 401, grace-window expired → 403, within-grace GET still drains, body cap (8000 bytes vs 4096) → 413 (C-2 verified end-to-end), stale timestamp → 401. 226 xUnit (215 unit + 11 live).
-6. ✅ (`160abac`) — **SUPERSEDED.** Original Step 6 introduced `cryptosync-relay-gc.php` (cron-driven, `retention_seconds` config). Replaced in flight by the admin-only-purge redesign — see Active. The supersession is forward-only (no rebase); commit history retains both for context.
+6. ✅ (`160abac` superseded by `bf177e6` + `0d3f746`) — Final shape: admin-only purge + pinned seed. Original Step 6 introduced `cryptosync-relay-gc.php` (cron-driven, time-based retention) but that was forward-only superseded after two design issues surfaced: (a) autonomous server-side delete decisions clash with the relay's honest-but-curious model; (b) any client-driven compaction reintroduces censorship-by-omission (a malicious whitelisted client could pull all pending patches and post a truncated rollup, erasing patches honest clients hadn't yet received). Replacement: new `deltas.pinned` column, admin-only `X-Admin-Pin-Sig` header on `POST /api/delta` is the sole delete authority, on success in one transaction every prior row is purged + new row stored with `pinned=1`. New `gc_threshold_rows` config (replaces `retention_seconds`); GET responses include informational `gc_requested: true` when unpinned count crosses threshold but the relay never deletes on its own. New C# `IAdminPinService` registered alongside `IWhitelistPushService`; `HttpSyncTransport.LastReceiveSignalledGcRequested` exposes the hint to admin tooling. Two new live-relay scenarios (full operational lifecycle round-trip + non-admin pin → 403) and one new DI assertion. 229 xUnit (215 unit + 13 live + 1 DI). Cost accepted: admin-offline → relay grows past threshold; mitigations (webpush admin-nudge, quorum) captured in Deferred.
 
 **Tiny PHP fixes** from the relay audit (C-2 body cap, C-3 fan-out cap, W-1 `__DIR__` leak, W-3 PDO message leak) landed inside the rewrite, not separately.
 
@@ -121,7 +135,6 @@ Replaced the per-recipient pubkey-bound delivery model (Stage 3b code) with an a
 
 Captured follow-ups with no plan file written. Tracked here so they don't fall off; revisit when relevant.
 
-- **Stage 2 — UI absorption** (was Phase C). `BlazorPRF.UI` panels (`AuthenticationPanel`, `ContactsPanel`, `UserProfilePanel`, `InvitationPanel`, `PushPanel`) absorbed as `SqliteWasmBlazor.CryptoSync.UI`. Deferred per user preference for xUnit-testable slices over UI work.
 - **Audit P14** — permission-denied-row-leaves-no-shadow PBT. Deferred because `applyShadowRowGroup` is tightly coupled to `worker-state.openDatabases` and the full sqlite-wasm + shadow-table schema. Either a node-side wasm harness or a refactor to inject the DB dependency. Browser-side smoke tests cover this path end-to-end today.
 - **Webpush admin nudge for `gc_requested`.** Preferred mitigation for the admin-offline gap, deferred until the upcoming webpush integration (Stage 3c `IPushNotifier` exists; production wiring is Stage B+). Clients that observe `gc_requested: true` persistently (e.g. across N polls or X minutes — domain-tunable) emit an admin-targeted push notification asking the admin to come reseed. Admin-only purge authority stays unchanged at the wire layer; clients only *nudge*. No new relay endpoints, no new signing strings, no new wire config — purely a domain-level reaction in the C# / TS clients on top of the `LastReceiveSignalledGcRequested` flag already exposed by `HttpSyncTransport`. This is the lightest-weight path and folds into infrastructure already on the roadmap.
 - **Quorum / multi-party compaction.** Heavier alternative to the webpush nudge for the same admin-offline gap. M-of-N whitelisted peers co-sign a compacted rollup; relay verifies M distinct attestations before accepting the purge. Closes the gap *and* preserves the client-only architecture without requiring admin presence at all, but needs three new things this codebase doesn't have: peer-discovery, off-relay attestation exchange, and operational quorum tuning (~1-2 weeks of work). Weighted variant ("admin sig counts as M-1, peer sigs count as 1") gives admin-online behavior identical to today plus admin-offline graceful degradation; same plumbing cost. Likely overkill if the webpush nudge above proves sufficient in practice.

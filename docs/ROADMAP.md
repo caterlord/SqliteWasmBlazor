@@ -1,6 +1,6 @@
 # SqliteWasmBlazor Roadmap
 
-_Single source of truth for "where are we." Last updated 2026-04-29 against branch `crypto-sync` HEAD `1416ac5`._
+_Single source of truth for "where are we." Last updated 2026-04-29 against branch `crypto-sync` HEAD `95d0ea2`._
 
 This document supersedes the multiple parallel numbering systems (Stage / Phase A / Phase B / Audit Phase 1-3) that were used while individual workstreams were in flight. Going forward, work is grouped only as **Active**, **Postponed**, **Done**, **Deferred**.
 
@@ -28,8 +28,8 @@ Replaces the per-recipient pubkey-bound delivery model (Stage 3b code, currently
 **Stage A scope:** prove the entire C#↔PHP wire contract end-to-end against dev PHP using **test seeds** (synthetic Ed25519 keypairs, hand-written admin keys, hardcoded deployment salt). No PRF, no WebAuthn, no browser host. Stage B (production identity wiring) is a separate workstream — see Postponed.
 
 **Steps:**
-1. PHP relay rewrite (new schema + 3 endpoints + `cryptosync-relay-init` CLI + `relay-config.example.php`).
-2. `ISyncTransport` interface change + `HttpSyncTransport` rewrite + first live-relay integration test (drop recipient list, add sender Ed25519 sig).
+1. ✅ **DONE** (`95d0ea2`) — PHP relay rewrite: new schema (whitelist + whitelist_meta + deltas), 3 endpoints (POST whitelist/admin-signed, POST delta/sender-signed, GET delta/pubkey-signed), `cryptosync-relay-init` CLI, `relay-config.example.php`, deny rules in Valet driver + `.htaccess`, W-1 + W-3 + C-2 + C-3 closed in this commit. Verification deferred to Step 2's first integration test by design.
+2. ⏭ **NEXT** — `ISyncTransport` interface change + `HttpSyncTransport` rewrite + first live-relay integration test (drop recipient list, add sender Ed25519 sig).
 3. New `WhitelistPushService` (admin-signed pubkey-hash list push) + integration scenario.
 4. Hooks into `LeaveService`, `ContactInvitationService.{Create,Promote}InvitationAsync`, system-admin revocation flow (TBD where it lives — open question in plan).
 5. DI wiring + scenario-completeness sweep with test seeds (three-actor sync, replay defense, grace-window, body cap, timestamp window).

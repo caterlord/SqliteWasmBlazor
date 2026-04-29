@@ -16,29 +16,44 @@ If you're picking this up cold, read in this order:
 
 The only piece currently in flight.
 
-### Whitelist-broadcast relay rewrite
+### Whitelist-broadcast relay rewrite — Stage A (joined sync contract)
 
 - **Plan:** `~/.claude/plans/whitelist-broadcast-rewrite.md`
 - **Design:** `docs/security/relay-whitelist-design.md`
 - **Audit driver:** `docs/security/relay-audit.md` (4 Critical / 3 Warning / 3 Info findings)
-- **Estimated effort:** 4-5 days, 5 sequenced steps each independently shippable
+- **Estimated effort:** ~4.5 days, 6 sequenced steps each independently shippable
 
 Replaces the per-recipient pubkey-bound delivery model (Stage 3b code, currently running) with an admin-pushed pubkey-hash whitelist + broadcast envelope stream + sender-authenticated POST. Closes audit findings C-1 through C-4 by construction; makes user revocation effective at the network layer; eliminates per-recipient metadata in `relay.db`.
 
+**Stage A scope:** prove the entire C#↔PHP wire contract end-to-end against dev PHP using **test seeds** (synthetic Ed25519 keypairs, hand-written admin keys, hardcoded deployment salt). No PRF, no WebAuthn, no browser host. Stage B (production identity wiring) is a separate workstream — see Postponed.
+
 **Steps:**
 1. PHP relay rewrite (new schema + 3 endpoints + `cryptosync-relay-init` CLI + `relay-config.example.php`).
-2. `ISyncTransport` interface change + `HttpSyncTransport` rewrite (drop recipient list, add sender Ed25519 sig).
-3. New `WhitelistPushService` (admin-signed pubkey-hash list push).
+2. `ISyncTransport` interface change + `HttpSyncTransport` rewrite + first live-relay integration test (drop recipient list, add sender Ed25519 sig).
+3. New `WhitelistPushService` (admin-signed pubkey-hash list push) + integration scenario.
 4. Hooks into `LeaveService`, `ContactInvitationService.{Create,Promote}InvitationAsync`, system-admin revocation flow (TBD where it lives — open question in plan).
-5. DI wiring + live-relay xUnit integration test (folds in old Phase A4/A5/B production `IReceiveAuthSigner`).
+5. DI wiring + scenario-completeness sweep with test seeds (three-actor sync, replay defense, grace-window, body cap, timestamp window).
+6. GC CLI (`cryptosync-relay-gc.php`) + time-based retention test.
 
-**Tiny PHP fixes** from the relay audit (C-2 body cap, C-3 fan-out cap, W-1 `__DIR__` leak) **do not land separately** — they appear naturally inside the rewrite.
+**Stage A is green when all of Steps 1-6 land and the integration suite passes against Herd-served PHP.**
+
+**Tiny PHP fixes** from the relay audit (C-2 body cap, C-3 fan-out cap, W-1 `__DIR__` leak, W-3 PDO message leak) **do not land separately** — they appear naturally inside the rewrite.
 
 ---
 
 ## Postponed
 
 Design-locked work parked with a known revisit trigger.
+
+### Whitelist-broadcast Stage B — Production identity wiring
+
+- **Plan:** folded into `~/.claude/plans/whitelist-broadcast-rewrite.md` (§ Out of scope — Stage B). Standalone plan file written when Stage A is green.
+- **Revisit trigger:** Stage A complete (all 6 steps merged, integration suite green against Herd-served PHP).
+- **Estimated effort:** 1-2 days
+
+Once Stage A proves the C#↔PHP wire contract end-to-end with test seeds, Stage B swaps the stub `ISenderAuthSigner` / `IReceiveAuthSigner` for PRF-backed implementations sourced from WebAuthn. Browser host (`SqliteWasmBlazor.Demo`) registers the production signers in DI; a Playwright smoke test confirms the same scenarios as the Stage A xUnit suite, but with real WebAuthn identities. No protocol-level work; purely DI + JS interop.
+
+If Stage B uncovers a wire-protocol issue, it's a Stage A regression — fix in Stage A, re-run seeded suite, re-attempt Stage B.
 
 ### Stage 5 — Dual-DB (public + private per device)
 

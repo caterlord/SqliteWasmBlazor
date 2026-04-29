@@ -4,6 +4,18 @@ use Valet\Drivers\BasicValetDriver;
 
 class LocalValetDriver extends BasicValetDriver
 {
+    /**
+     * Filenames that must never be served over HTTP — config / CLI scripts /
+     * raw DB. Stored as a leading-slash form to match URI prefix tests.
+     */
+    private const DENY_PREFIXES = [
+        '/relay.db',
+        '/relay-config.php',
+        '/relay-config.example.php',
+        '/cryptosync-relay-init.php',
+        '/cryptosync-relay-gc.php',
+    ];
+
     public function serves(string $sitePath, string $siteName, string $uri): bool
     {
         return true;
@@ -11,8 +23,7 @@ class LocalValetDriver extends BasicValetDriver
 
     public function isStaticFile(string $sitePath, string $siteName, string $uri)
     {
-        // Deny direct access to the SQLite envelope store
-        if (str_starts_with($uri, '/relay.db')) {
+        if (self::isDenied($uri)) {
             return false;
         }
 
@@ -25,10 +36,11 @@ class LocalValetDriver extends BasicValetDriver
 
     public function frontControllerPath(string $sitePath, string $siteName, string $uri): ?string
     {
-        // Deny direct access to the SQLite envelope store
-        if (str_starts_with($uri, '/relay.db')) {
+        if (self::isDenied($uri)) {
             http_response_code(403);
-            die(json_encode(['error' => 'Forbidden']));
+            header('Content-Type: application/json');
+            echo json_encode(['error' => 'Forbidden']);
+            exit;
         }
 
         // Route /api/* to delta-relay.php
@@ -42,5 +54,15 @@ class LocalValetDriver extends BasicValetDriver
         }
 
         return null;
+    }
+
+    private static function isDenied(string $uri): bool
+    {
+        foreach (self::DENY_PREFIXES as $prefix) {
+            if (str_starts_with($uri, $prefix)) {
+                return true;
+            }
+        }
+        return false;
     }
 }

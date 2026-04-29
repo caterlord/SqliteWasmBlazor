@@ -1,8 +1,10 @@
 <?php
-echo "<h1>Delta Relay</h1>";
-echo "<p>API endpoint at <code>/api/delta</code></p>";
-echo "<pre>";
-echo "Directory: " . __DIR__ . "\n";
-echo "PHP Version: " . phpversion() . "\n";
-echo "</pre>";
-?>
+/**
+ * Public landing for the delta relay deployment.
+ *
+ * Intentionally minimal — no environment introspection, no version
+ * disclosure. The API lives at /api/delta and /api/whitelist; see
+ * docs/security/relay-whitelist-design.md for the wire contract.
+ */
+header('Content-Type: text/plain; charset=utf-8');
+echo "Delta Relay\n";

@@ -73,6 +73,7 @@ public sealed class CryptoSyncServiceCollectionExtensionsTests : IDisposable
 
         Assert.NotNull(host.GetRequiredService<DeclarationSigner>());
         Assert.NotNull(host.GetRequiredService<IWhitelistPushService>());
+        Assert.NotNull(host.GetRequiredService<IAdminPinService>());
         Assert.NotNull(host.GetRequiredService<IReceiveCursorStore>());
         Assert.NotNull(host.GetRequiredService<ISyncTransport>());
     }
@@ -93,6 +94,15 @@ public sealed class CryptoSyncServiceCollectionExtensionsTests : IDisposable
 
         var pusher = host.GetRequiredService<IWhitelistPushService>();
         Assert.IsType<WhitelistPushService>(pusher);
+    }
+
+    [Fact]
+    public void AddCryptoSync_PinServiceIsAdminPinService()
+    {
+        using var host = BuildHost(o => o.RelayBaseUri = "http://relay.test/");
+
+        var pinner = host.GetRequiredService<IAdminPinService>();
+        Assert.IsType<AdminPinService>(pinner);
     }
 
     [Fact]

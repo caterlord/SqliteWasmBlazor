@@ -119,6 +119,56 @@ public class DeclarationSigner(ICryptoProvider crypto)
     }
 
     // ================================================================
+    // Delta pin (System Admin signs, relay verifies)
+    // ================================================================
+
+    /// <summary>
+    /// System Admin signs an authorization to pin (and reseed against) a
+    /// delta envelope. The pin sig is carried alongside the regular sender
+    /// sig on <c>POST /api/delta</c> via the <c>X-Admin-Pin-Sig</c> header.
+    /// On the relay, presence of the header opts the POST into reseed
+    /// semantics: every prior row in <c>deltas</c> is purged atomically and
+    /// the new envelope is stored with <c>pinned=1</c> (survives time-based
+    /// GC). Replay-defense rides the existing timestamp window — no version
+    /// concept exists for pins.
+    /// </summary>
+    /// <remarks>
+    /// Canonical: <c>"deltapin-v1|" + timestamp + "|" + sha256(envelope) hex</c>.
+    /// Byte-identical to PHP's <c>$pinSigningInput</c> in
+    /// <c>handleDeltaPost</c>.
+    /// </remarks>
+    public async ValueTask<byte[]> SignDeltaPinAsync(
+        ReadOnlyMemory<byte> adminEd25519PrivateKey,
+        long timestamp,
+        string envelopeSha256Hex)
+    {
+        var canonical = BuildDeltaPinCanonical(timestamp, envelopeSha256Hex);
+        var result = await crypto.SignAsync(canonical, adminEd25519PrivateKey);
+        if (!result.Success || result.Value is null)
+        {
+            throw new InvalidOperationException($"DeclarationSigner: SignDeltaPinAsync failed: {result.ErrorCode}");
+        }
+        return Convert.FromBase64String(result.Value);
+    }
+
+    /// <summary>
+    /// Verify an admin's delta-pin signature. Mirrors the PHP relay's
+    /// pin-sig path — useful for parity tests.
+    /// </summary>
+    public async ValueTask<bool> VerifyDeltaPinAsync(
+        string adminEd25519PublicKeyBase64,
+        long timestamp,
+        string envelopeSha256Hex,
+        byte[] adminSignature)
+    {
+        var canonical = BuildDeltaPinCanonical(timestamp, envelopeSha256Hex);
+        return await crypto.VerifyAsync(canonical, Convert.ToBase64String(adminSignature), adminEd25519PublicKeyBase64);
+    }
+
+    internal static string BuildDeltaPinCanonical(long timestamp, string envelopeSha256Hex)
+        => $"deltapin-v1|{timestamp}|{envelopeSha256Hex}";
+
+    // ================================================================
     // Leave declaration (member signs)
     // ================================================================
 

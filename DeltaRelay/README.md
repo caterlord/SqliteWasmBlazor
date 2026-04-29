@@ -13,7 +13,6 @@ For protocol detail see `docs/security/relay-whitelist-design.md`. For the activ
 | `relay-config.example.php` | **denied** | Template for operator config. |
 | `relay-config.php` | **denied** | Live deployment config. Created by `cryptosync-relay-init`. |
 | `cryptosync-relay-init.php` | **denied** | One-time bootstrap CLI. |
-| `cryptosync-relay-gc.php` | **denied** | Time-based delta retention CLI. |
 | `relay.db` | **denied** | SQLite store. Auto-created on first request. |
 | `LocalValetDriver.php` | n/a | Laravel Valet routing for local dev. |
 | `.htaccess` | n/a | Apache routing + deny rules. Must mirror the Valet driver. |
@@ -51,11 +50,38 @@ This is destructive — the new admin pubkey replaces the old, and clients re-pa
 
 | Endpoint | Auth | Body / Query |
 |---|---|---|
-| `POST /api/whitelist` | admin Ed25519 sig over canonical sorted member string | `{version, members[], admin_pubkey, admin_signature}` |
-| `POST /api/delta` | sender Ed25519 sig in `X-Sender-Sig` header (whitelisted as `active`) | `{envelope: base64}` |
+| `POST /api/whitelist` | admin Ed25519 sig over canonical sorted member string | `{version, operations[], admin_pubkey, admin_signature}` |
+| `POST /api/delta` | sender Ed25519 sig in `X-Sender-Sig` header (whitelisted as `active`); optional `X-Admin-Pin-Sig` for admin-pinned reseed | `{envelope: base64}` |
 | `GET /api/delta?since=N&pubkey=PK` | puller Ed25519 sig in `X-Sig` (whitelisted as `active` or within `read_grace_seconds` of `revoked`) | _(query only)_ |
 
-Rejection codes: `400` malformed, `401` auth/sig/timestamp failure, `403` not whitelisted / past grace window, `409` whitelist version replay, `413` body over `max_body_bytes`, `500` server error (details in `error_log`, never echoed).
+Rejection codes: `400` malformed, `401` auth/sig/timestamp failure, `403` not whitelisted / past grace window / pin authority denied (sender ≠ deployment admin), `409` whitelist version replay, `413` body over `max_body_bytes`, `500` server error (details in `error_log`, never echoed).
+
+### Admin-pinned reseed
+
+A regular `POST /api/delta` may include the optional header `X-Admin-Pin-Sig` carrying a base64 Ed25519 signature over `deltapin-v1|<X-Timestamp>|sha256(envelope) hex`. The relay accepts the pin only when:
+
+- the sender (`X-Sender-PubKey`) hash equals the deployment `admin_pubkey_hash` — i.e. the sender IS the deployment admin, and
+- the pin signature verifies against the same key that signed `X-Sender-Sig`.
+
+On success, in one transaction the relay deletes **every** prior row in `deltas` (pinned + unpinned alike) and stores the new envelope with `pinned=1`. This is reseed semantics: the new envelope is the canonical baseline, every delta before it is orphaned by definition (no receiver replays anything before the seed). `AUTOINCREMENT` is preserved across the purge so existing receivers' `since=N` keeps working — the next GET picks up the new pin at a fresh higher cursor. The 200 response body grows two extra fields:
+
+```json
+{"cursor": 42, "pinned": true, "prior_rows_purged": 17}
+```
+
+There is **no separate unpin or unseed endpoint, and no autonomous time-based GC.** The admin pin POST is the *sole* delete authority on this relay — every purge is initiated by the deployment admin's signature. Letting any whitelisted client trigger a purge would expose the system to **censorship-by-omission**: a malicious whitelisted client could pull all pending patches, post a truncated rollup, and the relay would erase patches that other clients hadn't yet received. Admin-only purge gates that whole class of attack at the wire layer. To drop the seed without replacing it, drop the relay deployment.
+
+The same property means: **if the admin is offline, the relay grows unboundedly until the admin returns and reseeds.** That's an accepted trade-off — the admin already controls the keys and is the trust anchor for everything else. Multi-party / quorum compaction (where M-of-N whitelisted peers can co-sign a rollup) is a future enhancement; see ROADMAP.
+
+### Fragmentation hint (`gc_requested`)
+
+When the unpinned-row count in `deltas` exceeds `gc_threshold_rows` (config), `GET /api/delta` responses include an extra field:
+
+```json
+{"cursor": 102, "envelopes": [...], "gc_requested": true}
+```
+
+This is **purely informational** — the relay never deletes on its own. The admin client reads the flag and may respond with a fresh pin POST. Non-admin clients observe the flag for diagnostics but cannot act on it (their pin POST would 403). Lower the threshold to nudge the admin sooner; raise it to leave them alone longer.
 
 ## Integration test workflow
 
@@ -92,31 +118,19 @@ The category trait keeps these tests out of the default `dotnet test` run, so CI
 
 Schema creation is idempotent (`CREATE TABLE IF NOT EXISTS`), so deleting `relay.db` between tests is safe. The seeded `relay-config.php` is left in place after the run for post-mortem; the next run overwrites it.
 
-## Retention / GC
+## Storage growth and admin compaction
 
-`cryptosync-relay-gc.php` is a cron-driven CLI that deletes rows from `deltas` where `created_at < (now - retention_seconds)`. `retention_seconds` is read from `relay-config.php` (default 2592000 = 30 days). Suggested cron:
+The relay never autonomously prunes anything — neither cron nor a built-in scheduler. Storage growth is bounded entirely by the deployment admin's reseed cadence (the admin pin POST documented above). Operational lifecycle:
 
-```cron
-0 3 * * * cd /path/to/DeltaRelay && php cryptosync-relay-gc.php >> gc.log 2>&1
-```
+1. Admin publishes initial seed (pin POST). `deltas` holds one pinned row.
+2. Whitelisted senders post patches normally; relay accumulates `[seed, p1, p2, …, pN]`.
+3. When `N > gc_threshold_rows`, every `GET /api/delta` includes `"gc_requested": true` until the next reseed.
+4. The admin client (the only identity that can pin) sees the flag, derives a compacted seed locally from the current state, and publishes it via a fresh pin POST.
+5. The relay atomically purges seed + N patches in one transaction and stores the new seed with `pinned=1`. `gc_requested` clears on subsequent GETs.
 
-The CLI emits one JSON line on stdout per run:
+If the admin is offline, the relay grows past the threshold and stays there. Senders keep posting (no relay-side throttling beyond `max_body_bytes`); receivers keep pulling and observing `gc_requested: true`. This is the accepted trade-off for keeping purge authority gated to admin signatures alone — the censorship-by-omission attack is closed at the cost of admin-availability sensitivity. See ROADMAP for deferred work on quorum/multi-party compaction that loosens this.
 
-```json
-{"deleted": 17, "oldest_remaining": 1714000000}
-```
-
-`oldest_remaining` is the `MIN(created_at)` of the surviving rows (or `null` if the queue is now empty). Exit code is `0` on success, `1` on failure (error to stderr, nothing on stdout).
-
-GC is **lossy**: a receiver offline longer than `retention_seconds` silently misses intervening envelopes. Lossless GC requires snapshot endpoints, which are deferred (see ROADMAP).
-
-Whitelist entries (`whitelist` rows + `whitelist_meta.current_version`) are **never** GC'd — they transition `active → revoked → expired` and stay forever to keep the whitelist version monotonic across re-additions.
-
-The script refuses to run over HTTP (`php_sapi_name() !== 'cli'` → 404). The Valet driver and `.htaccess` also deny direct access; verify with:
-
-```sh
-curl -I https://your-host/cryptosync-relay-gc.php   # expect 403 or 404
-```
+Whitelist entries (`whitelist` rows + `whitelist_meta.current_version`) are **never** purged — they persist forever to keep `current_version` monotonic across re-additions.
 
 ## Server hardening (deployment-time, not in code)
 

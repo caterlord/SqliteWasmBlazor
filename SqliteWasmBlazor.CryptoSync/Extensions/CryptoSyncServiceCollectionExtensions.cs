@@ -19,8 +19,9 @@ public static class CryptoSyncServiceCollectionExtensions
     /// <summary>
     /// Registers the CryptoSync transport stack —
     /// <see cref="DeclarationSigner"/>, <see cref="IWhitelistPushService"/>,
-    /// <see cref="IReceiveCursorStore"/>, and <see cref="ISyncTransport"/> —
-    /// against the relay URL bound to <see cref="CryptoSyncOptions"/>.
+    /// <see cref="IAdminPinService"/>, <see cref="IReceiveCursorStore"/>, and
+    /// <see cref="ISyncTransport"/> — against the relay URL bound to
+    /// <see cref="CryptoSyncOptions"/>.
     ///
     /// <para>
     /// <b>Caller responsibilities (Stage A test fixtures, Stage B production host).</b>
@@ -79,6 +80,11 @@ public static class CryptoSyncServiceCollectionExtensions
                 sp.GetRequiredService<IDbContextFactory<TContext>>()));
 
         services.AddScoped<IWhitelistPushService>(sp => new WhitelistPushService(
+            sp.GetRequiredService<HttpClient>(),
+            ResolveRelayBaseUri(sp),
+            sp.GetRequiredService<DeclarationSigner>()));
+
+        services.AddScoped<IAdminPinService>(sp => new AdminPinService(
             sp.GetRequiredService<HttpClient>(),
             ResolveRelayBaseUri(sp),
             sp.GetRequiredService<DeclarationSigner>()));

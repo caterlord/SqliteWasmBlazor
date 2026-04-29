@@ -29,14 +29,32 @@
  *                 No-op if the hash is unknown.
  *
  *   POST /api/delta
- *     headers: X-Timestamp:    <unix seconds>
- *              X-Sender-PubKey:<base64 Ed25519 pub>
- *              X-Sender-Sig:   <base64 Ed25519 sig over
- *                              "deltapost-v1|" + ts + "|" + sha256(envelope)>
+ *     headers: X-Timestamp:      <unix seconds>
+ *              X-Sender-PubKey:  <base64 Ed25519 pub>
+ *              X-Sender-Sig:     <base64 Ed25519 sig over
+ *                                "deltapost-v1|" + ts + "|" + sha256(envelope)>
+ *              X-Admin-Pin-Sig:  <optional — base64 Ed25519 sig over
+ *                                "deltapin-v1|" + ts + "|" + sha256(envelope)>
  *     body:    {"envelope": "<base64>"}
  *     Verification: timestamp within +/-300s, body under max_body_bytes,
  *     sender hash on whitelist with status 'active', signature verifies.
  *     Stores ONE row in deltas — broadcast model, no per-recipient fan-out.
+ *     If X-Admin-Pin-Sig is present, additionally requires sender hash to
+ *     equal deployment admin_pubkey_hash and the pin signature to verify;
+ *     on success, in one transaction, ALL prior rows in `deltas` are
+ *     purged (pinned + unpinned alike) and the new row is stored with
+ *     pinned=1. Reseed semantics: the new pinned envelope is the canonical
+ *     state, every delta before it is orphaned by definition (no receiver
+ *     replays prior to the seed) so it's swept atomically. AUTOINCREMENT
+ *     keeps cursor numbering monotonic across the purge so existing
+ *     receivers' `since=N` keeps working — they next see the new pin at
+ *     a fresh higher cursor. The admin pin POST is the SOLE delete
+ *     authority on this relay — there is no autonomous time-based GC
+ *     and no separate unpin op. Letting any whitelisted client trigger a
+ *     purge would expose the relay to censorship-by-omission attacks
+ *     (a malicious client posts a truncated rollup to erase patches
+ *     other clients haven't pulled yet), so purge authority is gated on
+ *     the deployment admin signature alone.
  *
  *   GET /api/delta?since=<int>&pubkey=<base64 Ed25519 pub>
  *     headers: X-Timestamp:<unix seconds>
@@ -45,7 +63,13 @@
  *     Verification: timestamp within +/-300s, signature verifies, pubkey
  *     hash on whitelist as 'active' OR ('revoked' AND now-revoked_at <
  *     read_grace_seconds).
- *     Returns: {"cursor":N,"envelopes":[{"cursor":N,"envelope":"base64"}...]}
+ *     Returns: {
+ *       "cursor": N,
+ *       "envelopes": [{"cursor": N, "envelope": "base64"}, ...],
+ *       "gc_requested": true   // optional; set when COUNT(unpinned) >
+ *                              // gc_threshold_rows. Informational hint
+ *                              // for the deployment admin only.
+ *     }
  *
  * Storage: ./relay.db (SQLite). Tables: whitelist, whitelist_meta, deltas.
  * Per-recipient routing has been eliminated — every whitelisted client
@@ -70,7 +94,8 @@ header(
 );
 header(
     'Access-Control-Allow-Headers: '
-    . 'Content-Type, X-Sig, X-Timestamp, X-Sender-PubKey, X-Sender-Sig'
+    . 'Content-Type, X-Sig, X-Timestamp, X-Sender-PubKey, X-Sender-Sig, '
+    . 'X-Admin-Pin-Sig'
 );
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
@@ -110,7 +135,7 @@ function loadConfig(): array
     }
     $required = [
         'deployment_salt', 'admin_pubkey_hash', 'read_grace_seconds',
-        'max_body_bytes', 'retention_seconds',
+        'max_body_bytes', 'gc_threshold_rows',
     ];
     foreach ($required as $k) {
         if (!isset($loaded[$k])) {
@@ -154,11 +179,15 @@ function db(): PDO
         'CREATE TABLE IF NOT EXISTS deltas (
             cursor     INTEGER PRIMARY KEY AUTOINCREMENT,
             envelope   BLOB NOT NULL,
-            created_at INTEGER NOT NULL
+            created_at INTEGER NOT NULL,
+            pinned     INTEGER NOT NULL DEFAULT 0
         )'
     );
     $pdo->exec(
         'CREATE INDEX IF NOT EXISTS idx_deltas_cursor ON deltas(cursor)'
+    );
+    $pdo->exec(
+        'CREATE INDEX IF NOT EXISTS idx_deltas_pinned ON deltas(pinned)'
     );
     return $pdo;
 }
@@ -426,18 +455,72 @@ function handleDeltaPost(): void
         jsonOut(401, ['error' => 'sender signature verification failed']);
     }
 
+    // Optional pin authorization. The header opts the POST into "pinned
+    // delta" semantics: this row survives time-based GC, and any prior
+    // pinned rows are flipped to pinned=0 in the same transaction
+    // (latest-seed-wins replacement; no separate unpin op exists).
+    // Pin authority is gated to the deployment admin_pubkey_hash — admin
+    // alone may pin, by re-signing with deltapin-v1.
+    $pinSigB64 = $_SERVER['HTTP_X_ADMIN_PIN_SIG'] ?? '';
+    $pinned = false;
+    if ($pinSigB64 !== '') {
+        if (!hash_equals($config['admin_pubkey_hash'], $senderHashHex)) {
+            jsonOut(403, ['error' => 'pin authority denied — sender is not deployment admin']);
+        }
+        $pinSigBytes = base64_decode($pinSigB64, true);
+        if ($pinSigBytes === false || strlen($pinSigBytes) !== 64) {
+            jsonOut(401, ['error' => 'invalid X-Admin-Pin-Sig encoding']);
+        }
+        $pinSigningInput = 'deltapin-v1|' . $tsHeader . '|' . $envelopeHashHex;
+        if (!sodium_crypto_sign_verify_detached(
+                $pinSigBytes, $pinSigningInput, $senderPubBytes)) {
+            jsonOut(401, ['error' => 'pin signature verification failed']);
+        }
+        $pinned = true;
+    }
+
     try {
-        $stmt = db()->prepare(
-            'INSERT INTO deltas (envelope, created_at) VALUES (:env, :ts)'
+        $pdo = db();
+        $pdo->beginTransaction();
+
+        $priorRowsPurged = 0;
+        if ($pinned) {
+            // Reseed: every prior row in `deltas` is orphaned the moment
+            // this new pin lands. Sweep atomically so receivers polling
+            // after this commit get the new pin first and never replay
+            // anything older. AUTOINCREMENT preserves cursor monotonicity
+            // — sqlite_sequence holds the high-water mark across purges.
+            $purge = $pdo->prepare('DELETE FROM deltas');
+            $purge->execute();
+            $priorRowsPurged = $purge->rowCount();
+        }
+
+        $stmt = $pdo->prepare(
+            'INSERT INTO deltas (envelope, created_at, pinned)
+             VALUES (:env, :ts, :p)'
         );
-        $stmt->execute([':env' => $envelope, ':ts' => time()]);
-        $cursor = (int)db()->lastInsertId();
+        $stmt->execute([
+            ':env' => $envelope,
+            ':ts' => time(),
+            ':p' => $pinned ? 1 : 0,
+        ]);
+        $cursor = (int)$pdo->lastInsertId();
+
+        $pdo->commit();
     } catch (Throwable $e) {
+        if (db()->inTransaction()) {
+            db()->rollBack();
+        }
         serverError($e);
         return;
     }
 
-    jsonOut(200, ['cursor' => $cursor]);
+    $response = ['cursor' => $cursor];
+    if ($pinned) {
+        $response['pinned'] = true;
+        $response['prior_rows_purged'] = $priorRowsPurged;
+    }
+    jsonOut(200, $response);
 }
 
 // ---------------------------------------------------------------------------
@@ -524,5 +607,17 @@ function handleDeltaGet(): void
             $maxCursor = $cursor;
         }
     }
-    jsonOut(200, ['cursor' => $maxCursor, 'envelopes' => $envelopes]);
+
+    // Informational fragmentation hint. The deployment admin reads this
+    // and may respond by publishing a new pinned seed (the only purge
+    // path); non-admin clients ignore it. Threshold lives in config; the
+    // relay never autonomously deletes rows.
+    $unpinnedCount = (int)db()->query(
+        'SELECT COUNT(*) FROM deltas WHERE pinned = 0'
+    )->fetchColumn();
+    $response = ['cursor' => $maxCursor, 'envelopes' => $envelopes];
+    if ($unpinnedCount > (int)$config['gc_threshold_rows']) {
+        $response['gc_requested'] = true;
+    }
+    jsonOut(200, $response);
 }

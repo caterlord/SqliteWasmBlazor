@@ -1,10 +1,8 @@
-using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Crypto.Signers;
@@ -371,125 +369,168 @@ public sealed class HttpSyncTransportLiveRelayTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task Gc_DeletesOnlyExpiredDeltas_WhitelistRowsUntouched()
+    public async Task SeedReseed_GcSignalDrivesAdminCompaction_OperationalRoundTrip()
     {
-        // Tighten retention to 60s so a 200s-old envelope is comfortably past
-        // the threshold without test-clock machinery. Then revoke the sender
-        // at v2 so we have a non-active whitelist row to assert is preserved
-        // by the GC pass — entries are forever; only deltas GC.
+        // Operational lifecycle for the admin-only-purge model:
+        //
+        //   1. Admin publishes the initial seed S1 (pin POST). Relay's
+        //      `deltas` holds one row, pinned=1.
+        //   2. Patches accumulate via normal sender POSTs.
+        //   3. Once unpinned count crosses gc_threshold_rows, every GET
+        //      response includes "gc_requested": true. Non-admin clients
+        //      observe the flag for diagnostics; they cannot act on it.
+        //      Crucially they CANNOT trigger a purge — that would let any
+        //      whitelisted client censor patches by posting a truncated
+        //      rollup. Pin authority gates the only delete path.
+        //   4. The deployment admin sees the flag, derives a compacted
+        //      seed S2 locally, publishes via the same pin POST. The
+        //      relay atomically purges S1 + every accumulated patch in a
+        //      single transaction and stores S2 with pinned=1.
+        //   5. Post-reseed, the unpinned count is 0; gc_requested goes
+        //      back to false on subsequent GETs.
+        //   6. A fresh receiver bootstrapping after the reseed sees only
+        //      S2 — S1 and the accumulated patches are unrecoverable
+        //      from the relay (lossy by design; receivers offline >
+        //      reseed-cycle re-bootstrap from the new seed).
+        //
+        // Threshold tuned low (3) so the test crosses it deterministically
+        // without flooding the relay. Total wall time ≈ a couple of
+        // seconds — no real-time waits required.
         var adminHashHex = HashHex(_deploymentSalt, _adminPub);
-        WriteRelayConfig(_deploymentSalt, adminHashHex, retentionSeconds: 60);
+        const int gcThreshold = 3;
+        WriteRelayConfig(_deploymentSalt, adminHashHex, gcThresholdRows: gcThreshold);
 
-        // POST 5 envelopes via the normal flow.
-        using var http = new HttpClient();
-        var transport = NewSenderTransport(http);
-        var envelopes = new byte[5][]
-        {
-            [0xE1, 0x01], [0xE2, 0x02], [0xE3, 0x03], [0xE4, 0x04], [0xE5, 0x05],
-        };
-        foreach (var env in envelopes)
-        {
-            await transport.SendAsync(env);
-        }
-
-        // Revoke the sender at v2 so a non-active whitelist row exists for the
-        // negative assertion below. Backdate revoked_at past the grace window
-        // so the post-GC GET is a clean check of "GC didn't touch the row";
-        // the GET path's grace check is covered by other tests.
-        var revokedAtPastGrace = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 1_000_000;
+        // Add admin to the whitelist (baseline v1 has only the sender).
         await PushAsync(
             version: 2,
-            ops:
-            [
-                WhitelistOp.Revoke(
-                    HashHex(_deploymentSalt, _senderPub),
-                    revokedAt: revokedAtPastGrace),
-            ]);
+            ops: [WhitelistOp.Add(HashHex(_deploymentSalt, _adminPub))]);
 
-        // Backdate cursors 1..3 to (now - 200) so they fall outside the 60s
-        // retention window. Cursors 4 and 5 keep their fresh created_at.
-        var stalenessSeconds = 200L;
-        var pastCreatedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - stalenessSeconds;
-        BackdateDeltas([1, 2, 3], pastCreatedAt);
+        using var http = new HttpClient();
+        var senderTransport = NewSenderTransport(http);
+        var pinService = new AdminPinService(http, RelayBase, _declarationSigner);
+        var adminSenderSigner = new BcEd25519SenderSigner(_adminSeed, _adminPub);
 
-        var (exitCode, stdout, stderr) = RunGcCli();
-        Assert.Equal(0, exitCode);
-        AssertNoGcError(stderr);
+        // ---- 1. Admin seeds S1 -------------------------------------------
+        var seedS1 = new byte[] { 0x5E, 0xED, 0x01 };
+        var pinS1 = await pinService.PinAsync(
+            seedS1,
+            adminEd25519PublicKeyBase64: Convert.ToBase64String(_adminPub),
+            adminEd25519PrivateKey: _adminSeed,
+            senderSigner: adminSenderSigner);
+        Assert.Equal(0, pinS1.PriorRowsPurged); // empty deployment
 
-        using var summary = JsonDocument.Parse(stdout);
-        Assert.Equal(3, summary.RootElement.GetProperty("deleted").GetInt32());
-        var oldestRemaining = summary.RootElement.GetProperty("oldest_remaining");
-        Assert.Equal(JsonValueKind.Number, oldestRemaining.ValueKind);
-        // The remaining envelopes were created within the test run; allow a
-        // generous floor (now - 60s) so a slow CI box doesn't flake.
-        var lowerBound = DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 60;
-        Assert.InRange(oldestRemaining.GetInt64(), lowerBound, DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 5);
+        // First GET right after seeding: only the pinned row exists,
+        // unpinned count is 0, gc_requested must be false.
+        var firstReceived = await senderTransport.TryReceiveAsync();
+        Assert.NotNull(firstReceived);
+        Assert.Equal(seedS1, firstReceived!);
+        Assert.Null(await senderTransport.TryReceiveAsync());
+        Assert.False(senderTransport.LastReceiveSignalledGcRequested,
+            "Right after seeding, only the pinned row exists; gc_requested must be false.");
 
-        // Whitelist rows survive: sender row still revoked at v2, admin nowhere
-        // (we never added it in this test), current_version still 2.
+        // ---- 2. Patches accumulate ---------------------------------------
+        // Push 4 patches (one above threshold=3) so the relay's GET path
+        // crosses the gc_requested boundary.
+        var patches = new byte[][]
+        {
+            [0xA1, 0x01], [0xA2, 0x02], [0xA3, 0x03], [0xA4, 0x04],
+        };
+        foreach (var p in patches)
+        {
+            await senderTransport.SendAsync(p);
+        }
+
+        // ---- 3. GET response now signals gc_requested --------------------
+        // Use a fresh transport (admin identity, cursor=0) so the puller
+        // pulls everything in one go and observes the flag explicitly.
+        using var observerHttp = new HttpClient();
+        var observerTransport = NewTransportFor(observerHttp, _adminSeed, _adminPub);
+        var pulled = new List<byte[]>();
+        while (await observerTransport.TryReceiveAsync() is { } bytes)
+        {
+            pulled.Add(bytes);
+        }
+        Assert.Equal(5, pulled.Count); // S1 + 4 patches
+        Assert.Equal(seedS1, pulled[0]);
+        Assert.True(observerTransport.LastReceiveSignalledGcRequested,
+            $"After {patches.Length} unpinned rows past threshold={gcThreshold}, "
+            + "GET must set gc_requested=true.");
+
+        // ---- 4. Admin responds: reseed with S2 ---------------------------
+        var seedS2 = new byte[] { 0x5E, 0xED, 0x02 };
+        var pinS2 = await pinService.PinAsync(
+            seedS2,
+            adminEd25519PublicKeyBase64: Convert.ToBase64String(_adminPub),
+            adminEd25519PrivateKey: _adminSeed,
+            senderSigner: adminSenderSigner);
+        // S1 + 4 patches all purged atomically; AUTOINCREMENT preserves
+        // monotonic cursor numbering across the sweep.
+        Assert.Equal(5, pinS2.PriorRowsPurged);
+        Assert.True(pinS2.Cursor > pinS1.Cursor,
+            $"S2 cursor {pinS2.Cursor} must exceed S1 cursor {pinS1.Cursor}; AUTOINCREMENT must survive reseed purge.");
+
+        // ---- 5. Post-reseed: gc_requested cleared on next GET -----------
+        using var postReseedObserverHttp = new HttpClient();
+        var postReseedObserver = NewTransportFor(postReseedObserverHttp, _adminSeed, _adminPub);
+        var postReseedPulled = await postReseedObserver.TryReceiveAsync();
+        Assert.NotNull(postReseedPulled);
+        Assert.Equal(seedS2, postReseedPulled!);
+        Assert.Null(await postReseedObserver.TryReceiveAsync());
+        Assert.False(postReseedObserver.LastReceiveSignalledGcRequested,
+            "After reseed, only the new pinned row exists; gc_requested must be false.");
+
+        // ---- 6. Fresh client bootstraps off S2 alone --------------------
+        // Critical: S1 + accumulated patches are unrecoverable. Lossy by
+        // design — receivers offline through a reseed re-bootstrap from
+        // the new seed and lose any intermediate state.
+        using var bootstrapHttp = new HttpClient();
+        var bootstrap = NewSenderTransport(bootstrapHttp);
+        var bootstrapped = await bootstrap.TryReceiveAsync();
+        Assert.NotNull(bootstrapped);
+        Assert.Equal(seedS2, bootstrapped!);
+        Assert.Null(await bootstrap.TryReceiveAsync());
+
+        // Whitelist invariants: untouched across the lifecycle.
         var (whitelistRows, currentVersion) = ReadWhitelistState();
         Assert.Equal(2L, currentVersion);
-        Assert.Single(whitelistRows);
-        var senderRow = whitelistRows[0];
-        Assert.Equal(HashHex(_deploymentSalt, _senderPub), senderRow.PubkeyHash);
-        Assert.Equal("revoked", senderRow.Status);
-        Assert.Equal(revokedAtPastGrace, senderRow.RevokedAt);
-
-        // Surviving deltas keep their original AUTOINCREMENT cursors. Re-issue
-        // the revoke so the sender lands inside a fresh tight grace window
-        // (60s) and the GET is allowed to drain the queue. Push v3.
-        WriteRelayConfig(_deploymentSalt, adminHashHex, readGraceSeconds: 60, retentionSeconds: 60);
-        await PushAsync(
-            version: 3,
-            ops:
-            [
-                WhitelistOp.Revoke(
-                    HashHex(_deploymentSalt, _senderPub),
-                    revokedAt: DateTimeOffset.UtcNow.ToUnixTimeSeconds()),
-            ]);
-
-        var pulled = new List<byte[]>();
-        for (var i = 0; i < 2; i++)
-        {
-            var bytes = await transport.TryReceiveAsync();
-            Assert.NotNull(bytes);
-            pulled.Add(bytes!);
-        }
-        Assert.Null(await transport.TryReceiveAsync());
-        Assert.Contains(envelopes[3], pulled);
-        Assert.Contains(envelopes[4], pulled);
-        Assert.DoesNotContain(envelopes[0], pulled);
-        Assert.DoesNotContain(envelopes[1], pulled);
-        Assert.DoesNotContain(envelopes[2], pulled);
+        Assert.Equal(2, whitelistRows.Count);
+        Assert.Contains(whitelistRows, r =>
+            r.PubkeyHash == HashHex(_deploymentSalt, _senderPub) && r.Status == "active");
+        Assert.Contains(whitelistRows, r =>
+            r.PubkeyHash == HashHex(_deploymentSalt, _adminPub) && r.Status == "active");
     }
 
     [Fact]
-    public void Gc_EmptyDatabase_ReportsZeroDeleted()
+    public async Task Pin_NonAdminSender_Returns403()
     {
-        // Cold-deployment shape: GC runs on a relay that has a config but no
-        // deltas yet (e.g. between init and first POST). The CLI must not
-        // create a relay.db, must exit 0, and must report deleted=0.
-        var dbPath = Path.Combine(_deltaRelayDir, "relay.db");
-        var existedBefore = File.Exists(dbPath);
-        if (existedBefore)
-        {
-            ResetRelayDb();
-        }
+        // A regular whitelisted sender (not the deployment admin) attaches
+        // a valid X-Admin-Pin-Sig (over their own keypair). The relay must
+        // reject before even verifying the pin sig — pin authority is
+        // gated to the deployment admin_pubkey_hash.
+        using var http = new HttpClient();
 
-        try
+        var envelope = new byte[] { 0x4F, 0x4F };
+        var timestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var timestampStr = timestamp.ToString(CultureInfo.InvariantCulture);
+        var envelopeHashHex = Convert
+            .ToHexString(SHA256.HashData(envelope)).ToLowerInvariant();
+        var senderSig = Convert.ToBase64String(SignEd25519(
+            _senderSeed, Encoding.UTF8.GetBytes($"deltapost-v1|{timestampStr}|{envelopeHashHex}")));
+        var pinSig = Convert.ToBase64String(SignEd25519(
+            _senderSeed, Encoding.UTF8.GetBytes($"deltapin-v1|{timestampStr}|{envelopeHashHex}")));
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post, new Uri(RelayBase, "api/delta"))
         {
-            var (exitCode, stdout, stderr) = RunGcCli();
-            Assert.Equal(0, exitCode);
-            AssertNoGcError(stderr);
-            using var summary = JsonDocument.Parse(stdout);
-            Assert.Equal(0, summary.RootElement.GetProperty("deleted").GetInt32());
-            Assert.Equal(JsonValueKind.Null, summary.RootElement.GetProperty("oldest_remaining").ValueKind);
-            Assert.False(File.Exists(dbPath), "GC must not create relay.db when none exists.");
-        }
-        finally
-        {
-            ResetRelayDb();
-        }
+            Content = JsonContent.Create(new { envelope = Convert.ToBase64String(envelope) }),
+        };
+        request.Headers.Add("X-Timestamp", timestampStr);
+        request.Headers.Add("X-Sender-PubKey", Convert.ToBase64String(_senderPub));
+        request.Headers.Add("X-Sender-Sig", senderSig);
+        request.Headers.Add("X-Admin-Pin-Sig", pinSig);
+
+        using var response = await http.SendAsync(request);
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
     // ------------------------------------------------------------------
@@ -562,7 +603,7 @@ public sealed class HttpSyncTransportLiveRelayTests : IAsyncLifetime
         string adminHashHex,
         int readGraceSeconds = 604800,
         int maxBodyBytes = 1048576,
-        int retentionSeconds = 2592000)
+        int gcThresholdRows = 1000)
     {
         var saltB64 = Convert.ToBase64String(salt);
         var contents = $$"""
@@ -575,7 +616,7 @@ public sealed class HttpSyncTransportLiveRelayTests : IAsyncLifetime
                 'max_body_bytes'     => {{maxBodyBytes}},
                 'rate_limit_window'  => 60,
                 'rate_limit_count'   => 60,
-                'retention_seconds'  => {{retentionSeconds}},
+                'gc_threshold_rows'  => {{gcThresholdRows}},
             ];
             """;
         var path = Path.Combine(_deltaRelayDir, "relay-config.php");
@@ -587,32 +628,6 @@ public sealed class HttpSyncTransportLiveRelayTests : IAsyncLifetime
         TryDelete(Path.Combine(_deltaRelayDir, "relay.db"));
         TryDelete(Path.Combine(_deltaRelayDir, "relay.db-wal"));
         TryDelete(Path.Combine(_deltaRelayDir, "relay.db-shm"));
-    }
-
-    private void BackdateDeltas(IReadOnlyList<long> cursors, long createdAt)
-    {
-        var path = Path.Combine(_deltaRelayDir, "relay.db");
-        using var conn = new SqliteConnection($"Data Source={path}");
-        conn.Open();
-        using var cmd = conn.CreateCommand();
-        cmd.CommandText = "UPDATE deltas SET created_at = $t WHERE cursor = $c";
-        var tParam = cmd.CreateParameter();
-        tParam.ParameterName = "$t";
-        tParam.Value = createdAt;
-        cmd.Parameters.Add(tParam);
-        var cParam = cmd.CreateParameter();
-        cParam.ParameterName = "$c";
-        cmd.Parameters.Add(cParam);
-        foreach (var cursor in cursors)
-        {
-            cParam.Value = cursor;
-            var rows = cmd.ExecuteNonQuery();
-            if (rows != 1)
-            {
-                throw new InvalidOperationException(
-                    $"Backdate UPDATE matched {rows} rows for cursor={cursor}; expected exactly 1.");
-            }
-        }
     }
 
     private record WhitelistRow(string PubkeyHash, string Status, long? RevokedAt);
@@ -646,35 +661,6 @@ public sealed class HttpSyncTransportLiveRelayTests : IAsyncLifetime
         }
 
         return (rows, version);
-    }
-
-    private static void AssertNoGcError(string stderr)
-    {
-        // Some PHP installations emit benign noise to stderr (e.g.
-        // "Cannot load Xdebug - it was already loaded"). The GC CLI's own
-        // failure path always prefixes "GC failed:" — assert on absence of
-        // that, not on a clean stderr.
-        Assert.DoesNotContain("GC failed", stderr);
-    }
-
-    private (int ExitCode, string Stdout, string Stderr) RunGcCli()
-    {
-        var psi = new ProcessStartInfo
-        {
-            FileName = "php",
-            ArgumentList = { "cryptosync-relay-gc.php" },
-            WorkingDirectory = _deltaRelayDir,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-        using var proc = Process.Start(psi)
-            ?? throw new InvalidOperationException("Failed to start php cryptosync-relay-gc.php");
-        var stdout = proc.StandardOutput.ReadToEnd();
-        var stderr = proc.StandardError.ReadToEnd();
-        proc.WaitForExit(TimeSpan.FromSeconds(15));
-        return (proc.ExitCode, stdout, stderr);
     }
 
     private static void TryDelete(string path)

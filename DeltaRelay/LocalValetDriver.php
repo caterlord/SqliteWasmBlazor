@@ -13,7 +13,6 @@ class LocalValetDriver extends BasicValetDriver
         '/relay-config.php',
         '/relay-config.example.php',
         '/cryptosync-relay-init.php',
-        '/cryptosync-relay-gc.php',
     ];
 
     public function serves(string $sitePath, string $siteName, string $uri): bool

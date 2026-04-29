@@ -47,6 +47,17 @@ public sealed class HttpSyncTransport(
     private readonly IReceiveCursorStore _cursorStore = cursorStore ?? new InMemoryReceiveCursorStore();
     private long? _cachedCursor;
 
+    /// <summary>
+    /// Set to <c>true</c> by the most recent <see cref="TryReceiveAsync"/>
+    /// refill when the relay reports <c>"gc_requested": true</c> on the GET
+    /// response — meaning the unpinned-row count has crossed the
+    /// deployment's <c>gc_threshold_rows</c>. Purely informational: only
+    /// the deployment admin can act on it (by publishing a fresh pinned
+    /// seed via <see cref="IAdminPinService"/>). Non-admin transports
+    /// observe the flag for diagnostics but ignore it operationally.
+    /// </summary>
+    public bool LastReceiveSignalledGcRequested { get; private set; }
+
     public async ValueTask SendAsync(
         byte[] envelope,
         CancellationToken cancellationToken = default)
@@ -132,6 +143,8 @@ public sealed class HttpSyncTransport(
             ?? throw new InvalidOperationException(
                 "HttpSyncTransport: empty response body from delta relay");
 
+        LastReceiveSignalledGcRequested = dto.GcRequested;
+
         var newCursor = cursor;
         foreach (var item in dto.Envelopes)
         {
@@ -170,6 +183,9 @@ internal static class SyncTransportDtos
 
         [JsonPropertyName("envelopes")]
         public ReceiveEnvelope[] Envelopes { get; init; } = [];
+
+        [JsonPropertyName("gc_requested")]
+        public bool GcRequested { get; init; }
     }
 
     public sealed class ReceiveEnvelope

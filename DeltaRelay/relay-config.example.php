@@ -44,10 +44,15 @@ return [
     'rate_limit_window'  => 60,    // seconds
     'rate_limit_count'   => 60,    // requests per window per source IP
 
-    // Time-based GC threshold for delta retention. cryptosync-relay-gc.php
-    // (cron-driven) deletes deltas older than this. 30 days default.
+    // Soft fragmentation threshold: when the count of unpinned rows in
+    // `deltas` exceeds this, GET /api/delta responses include
+    // "gc_requested": true. The flag is purely informational — only the
+    // deployment admin can act on it (via a fresh pin POST that purges
+    // priors and stores a new compacted seed). Non-admin clients ignore
+    // the hint. The relay never autonomously deletes rows.
     //
-    // GC is lossy: a receiver offline longer than this misses intervening
-    // envelopes. Lossless GC requires snapshot endpoints (deferred).
-    'retention_seconds'  => 2592000,
+    // Tune by storage budget vs. admin attention cadence: lower = admin
+    // is nudged sooner, higher = admin is left alone longer. 1000 rows is
+    // a reasonable default for V2 envelopes (~8-128 KB each).
+    'gc_threshold_rows'  => 1000,
 ];

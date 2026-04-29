@@ -1,0 +1,90 @@
+@inherits ContactsModelComponent
+
+<MudCard>
+    <MudCardHeader>
+        <CardHeaderAvatar>
+            <MudIcon Icon="@Icons.Material.Filled.Contacts" Color="Color.Primary" />
+        </CardHeaderAvatar>
+        <CardHeaderContent>
+            <MudText Typo="Typo.h6">Trusted Contacts</MudText>
+            <MudText Typo="Typo.body2" Class="mud-text-secondary">Local view of the contact roster</MudText>
+        </CardHeaderContent>
+    </MudCardHeader>
+
+    <MudCardContent>
+        @if (Model.LoadContacts.Executing)
+        {
+            <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-4">
+                <MudProgressCircular Indeterminate="true" Size="Size.Small" />
+                <MudText>Loading contacts...</MudText>
+            </MudStack>
+        }
+        else if (Model.ErrorMessage is not null)
+        {
+            <MudAlert Severity="Severity.Warning" Class="mb-4" Variant="Variant.Outlined">
+                @Model.ErrorMessage
+            </MudAlert>
+        }
+        else if (Model.Contacts is null or { Count: 0 })
+        {
+            <MudAlert Severity="Severity.Info" Class="mb-4" Variant="Variant.Outlined">
+                No trusted contacts yet. Issue an invitation or accept one to populate the roster.
+            </MudAlert>
+        }
+        else
+        {
+            <MudTable Items="@Model.Contacts" Hover="true" Striped="true" Dense="true" Class="mb-4">
+                <HeaderContent>
+                    <MudTh>Name</MudTh>
+                    <MudTh>Email</MudTh>
+                    <MudTh>Role</MudTh>
+                    <MudTh Style="width: 110px;">Actions</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="Name">@context.Username</MudTd>
+                    <MudTd DataLabel="Email">@context.Email</MudTd>
+                    <MudTd DataLabel="Role">
+                        @if (context.IsAdmin)
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Primary" Icon="@Icons.Material.Filled.AdminPanelSettings">Admin</MudChip>
+                        }
+                        else
+                        {
+                            <MudChip T="string" Size="Size.Small" Color="Color.Default">Member</MudChip>
+                        }
+                    </MudTd>
+                    <MudTd DataLabel="Actions">
+                        <MudTooltip Text="Copy X25519 public key">
+                            <MudIconButtonRxOf T="TrustedContact"
+                                               Command="@Model.RequestCopyKeyCommand"
+                                               Parameter="@context"
+                                               Icon="@Icons.Material.Filled.ContentCopy"
+                                               Size="Size.Small" />
+                        </MudTooltip>
+                        @if (!context.IsAdmin)
+                        {
+                            <MudTooltip Text="Soft-delete this contact (local only — admin revocation requires admin tooling)">
+                                <MudIconButtonAsyncRxOf T="Guid"
+                                                        Command="@Model.DeleteContact"
+                                                        Parameter="@context.Id"
+                                                        Icon="@Icons.Material.Filled.Delete"
+                                                        Size="Size.Small"
+                                                        Color="Color.Error" />
+                            </MudTooltip>
+                        }
+                    </MudTd>
+                </RowTemplate>
+            </MudTable>
+        }
+    </MudCardContent>
+
+    <MudCardActions>
+        <MudSpacer />
+        <MudButtonAsyncRx Command="@Model.LoadContacts"
+                          Variant="Variant.Outlined"
+                          Color="Color.Default"
+                          StartIcon="@Icons.Material.Filled.Refresh">
+            Refresh
+        </MudButtonAsyncRx>
+    </MudCardActions>
+</MudCard>

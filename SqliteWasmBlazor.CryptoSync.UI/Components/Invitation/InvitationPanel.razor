@@ -1,0 +1,90 @@
+@inherits InvitationModelComponent
+
+<MudCard>
+    <MudCardHeader>
+        <CardHeaderAvatar>
+            <MudIcon Icon="@Icons.Material.Filled.Link" Color="Color.Primary" />
+        </CardHeaderAvatar>
+        <CardHeaderContent>
+            <MudText Typo="Typo.h6">Invitations (Admin)</MudText>
+            <MudText Typo="Typo.body2" Class="mud-text-secondary">Issue invitations and ingest responses</MudText>
+        </CardHeaderContent>
+    </MudCardHeader>
+
+    <MudCardContent>
+        @if (AdminContext is null)
+        {
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="mb-4">
+                The admin invitation context is not wired on this host. The post-Stage-2 demo step
+                provides the WebAuthn-PRF backed implementation; until then this panel is read-only.
+            </MudAlert>
+        }
+        else
+        {
+            @if (Model.ErrorMessage is not null)
+            {
+                <MudAlert Severity="Severity.Error" Class="mb-4" Variant="Variant.Outlined">
+                    @Model.ErrorMessage
+                </MudAlert>
+            }
+
+            <MudText Typo="Typo.subtitle2" Class="mb-2">Create Invitation</MudText>
+
+            <MudTextField @bind-Value="Model.FormUsername"
+                          Label="Username"
+                          Variant="Variant.Outlined"
+                          Required="true"
+                          Class="mb-3"
+                          Disabled="@Model.CreateInvitation.Executing" />
+
+            <MudTextField @bind-Value="Model.FormEmail"
+                          Label="Email (optional)"
+                          Variant="Variant.Outlined"
+                          Class="mb-3"
+                          Disabled="@Model.CreateInvitation.Executing" />
+
+            <MudTextField @bind-Value="Model.FormComment"
+                          Label="Comment (optional)"
+                          Variant="Variant.Outlined"
+                          Lines="2"
+                          Class="mb-3"
+                          Disabled="@Model.CreateInvitation.Executing" />
+
+            <MudButtonAsyncRxOf T="IAdminInvitationContext"
+                                Command="@Model.CreateInvitation"
+                                Parameter="@AdminContext"
+                                Variant="Variant.Filled"
+                                Color="Color.Primary"
+                                StartIcon="@Icons.Material.Filled.AddLink">
+                Issue Invitation
+            </MudButtonAsyncRxOf>
+
+            @if (Model.CreatedBundleSummary is not null)
+            {
+                <MudAlert Severity="Severity.Success" Variant="Variant.Outlined" Class="mt-3">
+                    @Model.CreatedBundleSummary
+                </MudAlert>
+            }
+
+            <MudDivider Class="my-4" />
+
+            <MudText Typo="Typo.subtitle2" Class="mb-2">Pending Responses</MudText>
+
+            <MudButtonAsyncRxOf T="IAdminInvitationContext"
+                                Command="@Model.IngestResponses"
+                                Parameter="@AdminContext"
+                                Variant="Variant.Outlined"
+                                Color="Color.Default"
+                                StartIcon="@Icons.Material.Filled.Inbox">
+                Check Responses
+            </MudButtonAsyncRxOf>
+
+            @if (Model.IngestedCount > 0)
+            {
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="mt-3">
+                    Ingested @Model.IngestedCount response(s).
+                </MudAlert>
+            }
+        }
+    </MudCardContent>
+</MudCard>

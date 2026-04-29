@@ -16,9 +16,26 @@ If you're picking this up cold, read in this order:
 
 ### Stage 2 — UI absorption (`SqliteWasmBlazor.CryptoSync.UI`)
 
-- **Plan:** standalone plan file to be written at kickoff (`~/.claude/plans/cryptosync-ui-absorption.md` — TBD).
+- **Plan:** `~/.claude/plans/cryptosync-ui-absorption.md` (written 2026-04-29).
 - **Trigger:** fired by Stage A completion. Stage A's wire stack is locked, so the panels can be authored against stable contracts.
 - **Estimated effort:** 1-2 weeks (depends on how much rescaffolding is wanted vs. straight ports).
+- **RxBlazorV2 is mandatory** for the new library — every panel ships as three files (`*.razor` markup-only, `*.razor.cs` host-glue partial, `*Model.cs` `ObservableModel`). Re-skinning is a markup-only refactor by construction.
+- **Hosts consuming `CryptoSync.UI` must themselves be RxBlazor-based** — a non-RxBlazor host on top of reactive panels would mix two notification paradigms. Library extension points are therefore expressed as either (a) host-supplied service seams (`IPrfAuthenticator`, `IAdminInvitationContext`, `IDatabaseResetService`, `ISessionAuthenticator`) or (b) observable model properties hosts watch via internal/external observers — never `[Parameter] EventCallback` bubbles.
+
+**Slot status (build order from the plan):**
+
+| # | Slot | Status |
+|---|---|---|
+| 1 | Project scaffold + `_Imports.razor` + empty `AddCryptoSyncUI()` | ✅ DONE — `SqliteWasmBlazor.CryptoSync.UI` builds against `RxBlazorV2.MudBlazor` 1.2.2 + `SqliteWasmBlazor` + `.CryptoSync`; registered in `SqliteWasmBlazor.slnx`. |
+| 2 | `DatabaseErrorAlert` (Shared) | ✅ DONE — boot-status switch over `IDbInitFailure`; reset is a model command bound to a host-supplied `IDatabaseResetService` seam (`NullDatabaseResetService.Instance` for hosts without recovery). Component bridges the non-reactive `IDbInitializationStatus.Changed` event into `Model.Failure`. |
+| 3 | `PublicKeyDisplay` (Shared) | ✅ DONE — folded into `AuthenticationPanel` (RXBG061 forbids same-assembly composition of `*ModelComponent` panels). All key + metadata + dialog state lives on `AuthenticationModel`; clipboard is a component-trigger over `Model.PendingCopy`. Promotable to a downstream-consumer panel if a second use-case appears. |
+| 4 | `SessionExpiredPopover` (Shared) | ✅ DONE — `Visible` is a model property (host writes `true` to show); `ReAuthenticate`/`Dismiss` commands delegate to a host-supplied `ISessionAuthenticator` seam and clear `Visible` on completion. |
+| 5 | `UserProfilePanel` | ✅ DONE — read-only render of `DeviceSettings` (DeviceName, ClientGuid, IsAdmin, AdminContactId, OwnContactId, CredentialId hint) via `UserProfileModel`/`DeviceIdentityService`. |
+| 6 | `AuthenticationPanel` + `RegistrationPanel` | ✅ DONE — both bound to a host-supplied `IPrfAuthenticator` seam (declared in `Services/IPrfAuthenticator.cs`). `AuthenticationModel` also owns the embedded public-key display + metadata-edit dialog state (per slot 3). RxBlazor hosts react via observers on `Model.CredentialId` / `Model.PublicKey` / `Model.Metadata` — no EventCallback bridges. Production PRF impl lands in the post-Stage-2 demo step. |
+| 7 | `ContactsPanel` | ✅ DONE — read + per-row local soft-delete + copy-pubkey via `ContactService`. Copy is a `RequestCopyKey` command + `PendingCopy` component-trigger (model owns the intent, component does JS+snackbar). End-to-end admin revoke (rotation + whitelist push) requires `DualKeyPairFull` admin keys + deployment salt and is deferred to admin tooling (post-Stage-2). |
+| 8 | `InvitationPanel` (composite — Create / Accept / Responses) | ✅ DONE — `InvitationModel` wires `ContactInvitationService.CreateInvitationAsync` / `IngestInvitationResponsesAsync` against a host-supplied `IAdminInvitationContext` seam. Without the seam (default), the panel renders a "wires post-Stage-2" placeholder. Full Accept / Responses sub-views land alongside the WebAuthn-PRF demo step. |
+| 9 | `PushPanel` + `SendMessageDialog` (stub if `IPushNotifier` not yet wired) | ✅ DONE — minimal status panel surfaces whether a real `IPushNotifier` is wired vs the `NullPushNotifier` default. Compose-and-send UI is domain-specific and lives in downstream consumers (messenger, etc.), not in the base library. |
+| 10 | `AddCryptoSyncUI()` polish + xUnit project bootstrap | ⏭ Models registered via the RxBlazorV2-generated `ObservableModels.Initialize(services)` (per RxBlazor convention). xUnit `SqliteWasmBlazor.CryptoSync.UI.Tests` project still pending — separate workstream. |
 
 The goal is a carefully designed re-skinnable Razor library `SqliteWasmBlazor.CryptoSync.UI` that absorbs the existing `BlazorPRF.UI` + `BlazorPRF.Push/Components` panels, rebound onto the in-repo CryptoSync services. **Every panel uses code-behind** (a `*.razor.cs` partial alongside the `.razor` markup) so future re-design / re-skinning into a new MudBlazor / Tailwind / Fluent variant is purely markup work — the behavior layer stays untouched.
 

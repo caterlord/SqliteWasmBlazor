@@ -6,8 +6,8 @@
             <MudIcon Icon="@Icons.Material.Filled.Link" Color="Color.Primary" />
         </CardHeaderAvatar>
         <CardHeaderContent>
-            <MudText Typo="Typo.h6">Invitations (Admin)</MudText>
-            <MudText Typo="Typo.body2" Class="mud-text-secondary">Issue invitations and ingest responses</MudText>
+            <MudText Typo="Typo.h6">@Model.Localizer["Header_Title"]</MudText>
+            <MudText Typo="Typo.body2" Class="mud-text-secondary">@Model.Localizer["Header_Subtitle"]</MudText>
         </CardHeaderContent>
     </MudCardHeader>
 
@@ -15,29 +15,28 @@
         @if (AdminContext is null)
         {
             <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="mb-4">
-                The admin invitation context is not wired on this host. The post-Stage-2 demo step
-                provides the WebAuthn-PRF backed implementation; until then this panel is read-only.
+                @Model.Localizer["Alert_AdminContextMissing"]
             </MudAlert>
         }
         else
         {
-            <MudText Typo="Typo.subtitle2" Class="mb-2">Create Invitation</MudText>
+            <MudText Typo="Typo.subtitle2" Class="mb-2">@Model.Localizer["Section_Create"]</MudText>
 
             <MudTextField @bind-Value="@Model.FormUsername"
-                          Label="Username"
+                          Label="@(Model.Localizer["Field_UsernameLabel"])"
                           Variant="Variant.Outlined"
                           Required="true"
                           Class="mb-3"
                           Disabled="@Model.CreateInvitation.Executing" />
 
             <MudTextField @bind-Value="@Model.FormEmail"
-                          Label="Email (optional)"
+                          Label="@(Model.Localizer["Field_EmailLabel"])"
                           Variant="Variant.Outlined"
                           Class="mb-3"
                           Disabled="@Model.CreateInvitation.Executing" />
 
             <MudTextField @bind-Value="@Model.FormComment"
-                          Label="Comment (optional)"
+                          Label="@(Model.Localizer["Field_CommentLabel"])"
                           Variant="Variant.Outlined"
                           Lines="2"
                           Class="mb-3"
@@ -49,12 +48,12 @@
                                 Variant="Variant.Filled"
                                 Color="Color.Primary"
                                 StartIcon="@Icons.Material.Filled.AddLink">
-                Issue Invitation
+                @Model.Localizer["Btn_Create"]
             </MudButtonAsyncRxOf>
 
             <MudDivider Class="my-4" />
 
-            <MudText Typo="Typo.subtitle2" Class="mb-2">Pending Responses</MudText>
+            <MudText Typo="Typo.subtitle2" Class="mb-2">@Model.Localizer["Section_Responses"]</MudText>
 
             <MudButtonAsyncRxOf T="IAdminInvitationContext"
                                 Command="@Model.IngestResponses"
@@ -62,7 +61,7 @@
                                 Variant="Variant.Outlined"
                                 Color="Color.Default"
                                 StartIcon="@Icons.Material.Filled.Inbox">
-                Check Responses
+                @Model.Localizer["Btn_Check"]
             </MudButtonAsyncRxOf>
         }
     </MudCardContent>

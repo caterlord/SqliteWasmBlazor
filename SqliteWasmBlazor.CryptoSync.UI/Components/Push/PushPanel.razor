@@ -4,8 +4,8 @@
             <MudIcon Icon="@Icons.Material.Filled.NotificationsActive" Color="Color.Primary" />
         </CardHeaderAvatar>
         <CardHeaderContent>
-            <MudText Typo="Typo.h6">Push Notifications</MudText>
-            <MudText Typo="Typo.body2" Class="mud-text-secondary">Status of the host's push notifier</MudText>
+            <MudText Typo="Typo.h6">@Localizer["Header_Title"]</MudText>
+            <MudText Typo="Typo.body2" Class="mud-text-secondary">@Localizer["Header_Subtitle"]</MudText>
         </CardHeaderContent>
     </MudCardHeader>
 
@@ -13,21 +13,16 @@
         @if (PushNotifier is NullPushNotifier)
         {
             <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">
-                Push notifications are not configured. The host registered the
-                <code>NullPushNotifier</code> default — register a real
-                <code>IPushNotifier</code> implementation
-                (web-push / VAPID, native bridge, etc.) to wake recipient devices.
+                @Localizer["Alert_NotConfigured"]
             </MudAlert>
         }
         else
         {
             <MudAlert Severity="Severity.Success" Variant="Variant.Outlined">
-                Push notifier wired: <code>@PushNotifier.GetType().FullName</code>.
+                @Localizer["Alert_Configured", PushNotifier.GetType().FullName ?? PushNotifier.GetType().Name]
             </MudAlert>
             <MudText Typo="Typo.body2" Class="mt-3 mud-text-secondary">
-                Compose-and-send UI is domain-specific (payload shape, recipient
-                picker, threading) and belongs in a downstream consumer panel.
-                This base panel only surfaces wiring health.
+                @Localizer["Description_DomainSpecific"]
             </MudText>
         }
     </MudCardContent>

@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Localization;
 using RxBlazorV2.Interface;
 using RxBlazorV2.Model;
 using RxBlazorV2.MudBlazor.Components;
@@ -19,7 +20,8 @@ public partial class DatabaseErrorAlertModel : ObservableModel
 {
     public partial DatabaseErrorAlertModel(
         IDatabaseResetService resetService,
-        StatusModel statusModel);
+        StatusModel statusModel,
+        IStringLocalizer<DatabaseErrorAlertModel> localizer);
 
     public partial IDbInitFailure? Failure { get; set; }
 
@@ -41,5 +43,5 @@ public partial class DatabaseErrorAlertModel : ObservableModel
     }
 
     private string FormatResetError(Exception ex) =>
-        $"Database reset failed: {ex.Message}";
+        Localizer["Error_Reset", ex.Message];
 }

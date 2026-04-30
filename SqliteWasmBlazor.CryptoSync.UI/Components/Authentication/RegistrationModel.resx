@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e108</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e108</value></resheader>
+  <data name="Header_Title" xml:space="preserve"><value>Register Passkey</value></data>
+  <data name="Header_Subtitle" xml:space="preserve"><value>Create a new passkey with PRF support</value></data>
+  <data name="Status_CheckingPrf" xml:space="preserve"><value>Checking PRF support...</value></data>
+  <data name="Alert_PrfNotSupported" xml:space="preserve"><value>The WebAuthn PRF extension is not supported on this device or browser. CryptoSync requires PRF.</value></data>
+  <data name="Field_DisplayNameLabel" xml:space="preserve"><value>Display Name (optional)</value></data>
+  <data name="Field_DisplayNameHelper" xml:space="preserve"><value>A friendly name for this passkey</value></data>
+  <data name="Btn_Register" xml:space="preserve"><value>Register Passkey</value></data>
+  <data name="Status_Registered" xml:space="preserve"><value>Passkey registered.</value></data>
+  <data name="Error_Register" xml:space="preserve"><value>Registration failed: {0}</value></data>
+</root>

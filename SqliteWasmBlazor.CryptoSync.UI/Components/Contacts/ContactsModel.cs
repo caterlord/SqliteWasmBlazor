@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Localization;
 using RxBlazorV2.Interface;
 using RxBlazorV2.Model;
 using RxBlazorV2.MudBlazor.Components;
@@ -25,7 +26,8 @@ public partial class ContactsModel : ObservableModel
 {
     public partial ContactsModel(
         ContactService contactService,
-        StatusModel statusModel);
+        StatusModel statusModel,
+        IStringLocalizer<ContactsModel> localizer);
 
     public partial IReadOnlyList<TrustedContact>? Contacts { get; set; }
 
@@ -69,8 +71,8 @@ public partial class ContactsModel : ObservableModel
         PendingCopy = new CopyKeyRequest(contact.X25519PublicKey, contact.Username);
 
     private string FormatLoadError(Exception ex) =>
-        $"Failed to load contacts: {ex.Message}";
+        Localizer["Error_Load", ex.Message];
 
     private string FormatDeleteError(Exception ex) =>
-        $"Failed to delete contact: {ex.Message}";
+        Localizer["Error_Delete", ex.Message];
 }

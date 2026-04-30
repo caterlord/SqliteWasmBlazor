@@ -6,8 +6,8 @@
             <MudIcon Icon="@Icons.Material.Filled.Person" Color="Color.Primary" />
         </CardHeaderAvatar>
         <CardHeaderContent>
-            <MudText Typo="Typo.h6">This Device</MudText>
-            <MudText Typo="Typo.body2" Class="mud-text-secondary">Local identity and provisioning status</MudText>
+            <MudText Typo="Typo.h6">@Model.Localizer["Header_Title"]</MudText>
+            <MudText Typo="Typo.body2" Class="mud-text-secondary">@Model.Localizer["Header_Subtitle"]</MudText>
         </CardHeaderContent>
     </MudCardHeader>
 
@@ -16,13 +16,13 @@
         {
             <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-4">
                 <MudProgressCircular Indeterminate="true" Size="Size.Small" />
-                <MudText>Loading profile...</MudText>
+                <MudText>@Model.Localizer["Status_Loading"]</MudText>
             </MudStack>
         }
         else if (!Model.IsProvisioned)
         {
             <MudAlert Severity="Severity.Warning" Class="mb-4" Variant="Variant.Outlined">
-                This device has not been provisioned. Run admin bootstrap or accept an invitation before opening sync.
+                @Model.Localizer["Alert_NotProvisioned"]
             </MudAlert>
         }
         else
@@ -33,13 +33,13 @@
                     @if (Model.IsAdmin)
                     {
                         <MudChip T="string" Size="Size.Small" Color="Color.Primary" Icon="@Icons.Material.Filled.AdminPanelSettings">
-                            Admin
+                            @Model.Localizer["Chip_Admin"]
                         </MudChip>
                     }
                     else
                     {
                         <MudChip T="string" Size="Size.Small" Color="Color.Default" Icon="@Icons.Material.Filled.Person">
-                            Member
+                            @Model.Localizer["Chip_Member"]
                         </MudChip>
                     }
                 </MudStack>
@@ -47,14 +47,14 @@
                 <MudDivider />
 
                 <MudStack Spacing="1">
-                    <MudText Typo="Typo.caption" Class="mud-text-secondary">Client GUID</MudText>
+                    <MudText Typo="Typo.caption" Class="mud-text-secondary">@Model.Localizer["Field_ClientGuid"]</MudText>
                     <MudText Typo="Typo.body2" Style="font-family: monospace; word-break: break-all;">@Model.ClientGuid</MudText>
                 </MudStack>
 
                 @if (!string.IsNullOrEmpty(Model.CredentialId))
                 {
                     <MudStack Spacing="1">
-                        <MudText Typo="Typo.caption" Class="mud-text-secondary">WebAuthn Credential ID</MudText>
+                        <MudText Typo="Typo.caption" Class="mud-text-secondary">@Model.Localizer["Field_CredentialId"]</MudText>
                         <MudText Typo="Typo.body2" Style="font-family: monospace; word-break: break-all;">@Model.CredentialId</MudText>
                     </MudStack>
                 }
@@ -62,7 +62,7 @@
                 @if (!Model.IsAdmin && Model.AdminContactId is { } adminId)
                 {
                     <MudStack Spacing="1">
-                        <MudText Typo="Typo.caption" Class="mud-text-secondary">Admin Contact</MudText>
+                        <MudText Typo="Typo.caption" Class="mud-text-secondary">@Model.Localizer["Field_AdminContact"]</MudText>
                         <MudText Typo="Typo.body2" Style="font-family: monospace;">@adminId</MudText>
                     </MudStack>
                 }
@@ -70,7 +70,7 @@
                 @if (Model.OwnContactId is { } ownId)
                 {
                     <MudStack Spacing="1">
-                        <MudText Typo="Typo.caption" Class="mud-text-secondary">Own Contact</MudText>
+                        <MudText Typo="Typo.caption" Class="mud-text-secondary">@Model.Localizer["Field_OwnContact"]</MudText>
                         <MudText Typo="Typo.body2" Style="font-family: monospace;">@ownId</MudText>
                     </MudStack>
                 }
@@ -84,7 +84,7 @@
                           Variant="Variant.Outlined"
                           Color="Color.Default"
                           StartIcon="@Icons.Material.Filled.Refresh">
-            Refresh
+            @Model.Localizer["Btn_Refresh"]
         </MudButtonAsyncRx>
     </MudCardActions>
 </MudCard>

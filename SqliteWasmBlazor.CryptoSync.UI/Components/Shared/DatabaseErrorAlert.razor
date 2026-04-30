@@ -3,7 +3,7 @@
 @if (Model.Failure is { } failure)
 {
     <MudAlert Severity="Severity.Error" Class="mb-6" Variant="Variant.Filled">
-        <MudText Typo="Typo.h6" Class="mb-2">Database Error</MudText>
+        <MudText Typo="Typo.h6" Class="mb-2">@Model.Localizer["Header_Title"]</MudText>
 
         @switch (failure)
         {
@@ -13,7 +13,7 @@
                            Color="Color.Primary"
                            OnClick="ReloadPage"
                            StartIcon="@Icons.Material.Filled.Refresh">
-                    Reload
+                    @Model.Localizer["Btn_Reload"]
                 </MudButton>
                 break;
 
@@ -22,7 +22,7 @@
                 @if (schema.Mismatches.Count > 0)
                 {
                     <MudText Typo="Typo.body2" Class="mb-3">
-                        Mismatches detected:
+                        @Model.Localizer["Alert_MismatchesPrefix"]
                         <ul>
                             @foreach (var m in schema.Mismatches)
                             {
@@ -30,11 +30,11 @@
                                     <code>@m.Table</code>:
                                     @if (m.MissingColumn is not null)
                                     {
-                                        <text> missing column <code>@m.MissingColumn</code></text>
+                                        <text> @Model.Localizer["Alert_MissingColumn"] <code>@m.MissingColumn</code></text>
                                     }
                                     else if (m.ExtraColumn is not null)
                                     {
-                                        <text> unexpected column <code>@m.ExtraColumn</code></text>
+                                        <text> @Model.Localizer["Alert_ExtraColumn"] <code>@m.ExtraColumn</code></text>
                                     }
                                 </li>
                             }
@@ -47,7 +47,7 @@
                                       Variant="Variant.Filled"
                                       Color="Color.Warning"
                                       StartIcon="@Icons.Material.Filled.RestartAlt">
-                        Reset Database
+                        @Model.Localizer["Btn_Reset"]
                     </MudButtonAsyncRx>
                 }
                 break;
@@ -60,7 +60,7 @@
                                       Variant="Variant.Filled"
                                       Color="Color.Warning"
                                       StartIcon="@Icons.Material.Filled.RestartAlt">
-                        Reset Database
+                        @Model.Localizer["Btn_Reset"]
                     </MudButtonAsyncRx>
                 }
                 break;

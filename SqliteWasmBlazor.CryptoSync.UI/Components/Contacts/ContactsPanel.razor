@@ -6,8 +6,8 @@
             <MudIcon Icon="@Icons.Material.Filled.Contacts" Color="Color.Primary" />
         </CardHeaderAvatar>
         <CardHeaderContent>
-            <MudText Typo="Typo.h6">Trusted Contacts</MudText>
-            <MudText Typo="Typo.body2" Class="mud-text-secondary">Local view of the contact roster</MudText>
+            <MudText Typo="Typo.h6">@Model.Localizer["Header_Title"]</MudText>
+            <MudText Typo="Typo.body2" Class="mud-text-secondary">@Model.Localizer["Header_Subtitle"]</MudText>
         </CardHeaderContent>
     </MudCardHeader>
 
@@ -16,39 +16,39 @@
         {
             <MudStack Row="true" AlignItems="AlignItems.Center" Class="mb-4">
                 <MudProgressCircular Indeterminate="true" Size="Size.Small" />
-                <MudText>Loading contacts...</MudText>
+                <MudText>@Model.Localizer["Status_Loading"]</MudText>
             </MudStack>
         }
         else if (Model.Contacts is null or { Count: 0 })
         {
             <MudAlert Severity="Severity.Info" Class="mb-4" Variant="Variant.Outlined">
-                No trusted contacts yet. Issue an invitation or accept one to populate the roster.
+                @Model.Localizer["Status_NoContacts"]
             </MudAlert>
         }
         else
         {
             <MudTable Items="@Model.Contacts" Hover="true" Striped="true" Dense="true" Class="mb-4">
                 <HeaderContent>
-                    <MudTh>Name</MudTh>
-                    <MudTh>Email</MudTh>
-                    <MudTh>Role</MudTh>
-                    <MudTh Style="width: 110px;">Actions</MudTh>
+                    <MudTh>@Model.Localizer["Table_Name"]</MudTh>
+                    <MudTh>@Model.Localizer["Table_Email"]</MudTh>
+                    <MudTh>@Model.Localizer["Table_Role"]</MudTh>
+                    <MudTh Style="width: 110px;">@Model.Localizer["Table_Actions"]</MudTh>
                 </HeaderContent>
                 <RowTemplate>
-                    <MudTd DataLabel="Name">@context.Username</MudTd>
-                    <MudTd DataLabel="Email">@context.Email</MudTd>
-                    <MudTd DataLabel="Role">
+                    <MudTd DataLabel="@(Model.Localizer["Table_Name"])">@context.Username</MudTd>
+                    <MudTd DataLabel="@(Model.Localizer["Table_Email"])">@context.Email</MudTd>
+                    <MudTd DataLabel="@(Model.Localizer["Table_Role"])">
                         @if (context.IsAdmin)
                         {
-                            <MudChip T="string" Size="Size.Small" Color="Color.Primary" Icon="@Icons.Material.Filled.AdminPanelSettings">Admin</MudChip>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Primary" Icon="@Icons.Material.Filled.AdminPanelSettings">@Model.Localizer["Chip_Admin"]</MudChip>
                         }
                         else
                         {
-                            <MudChip T="string" Size="Size.Small" Color="Color.Default">Member</MudChip>
+                            <MudChip T="string" Size="Size.Small" Color="Color.Default">@Model.Localizer["Chip_Member"]</MudChip>
                         }
                     </MudTd>
-                    <MudTd DataLabel="Actions">
-                        <MudTooltip Text="Copy X25519 public key">
+                    <MudTd DataLabel="@(Model.Localizer["Table_Actions"])">
+                        <MudTooltip Text="@(Model.Localizer["Tooltip_CopyKey"])">
                             <MudIconButtonRxOf T="TrustedContact"
                                                Command="@Model.RequestCopyKeyCommand"
                                                Parameter="@context"
@@ -57,7 +57,7 @@
                         </MudTooltip>
                         @if (!context.IsAdmin)
                         {
-                            <MudTooltip Text="Soft-delete this contact (local only — admin revocation requires admin tooling)">
+                            <MudTooltip Text="@(Model.Localizer["Tooltip_SoftDelete"])">
                                 <MudIconButtonAsyncRxOf T="Guid"
                                                         Command="@Model.DeleteContact"
                                                         Parameter="@context.Id"
@@ -78,7 +78,7 @@
                           Variant="Variant.Outlined"
                           Color="Color.Default"
                           StartIcon="@Icons.Material.Filled.Refresh">
-            Refresh
+            @Model.Localizer["Btn_Refresh"]
         </MudButtonAsyncRx>
     </MudCardActions>
 </MudCard>

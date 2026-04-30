@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Localization;
 using RxBlazorV2.Interface;
 using RxBlazorV2.Model;
 using RxBlazorV2.MudBlazor.Components;
@@ -20,7 +21,8 @@ public partial class RegistrationModel : ObservableModel
 {
     public partial RegistrationModel(
         IPrfAuthenticator authenticator,
-        StatusModel statusModel);
+        StatusModel statusModel,
+        IStringLocalizer<RegistrationModel> localizer);
 
     public partial bool? IsPrfSupported { get; set; }
     public partial string? DisplayName { get; set; }
@@ -51,10 +53,10 @@ public partial class RegistrationModel : ObservableModel
         PublicKey = result.PublicKeyBase64;
         DisplayName = null;
         StatusModel.AddSuccess(
-            "Passkey registered.",
+            Localizer["Status_Registered"],
             nameof(Register));
     }
 
     private string FormatRegisterError(Exception ex) =>
-        $"Registration failed: {ex.Message}";
+        Localizer["Error_Register", ex.Message];
 }

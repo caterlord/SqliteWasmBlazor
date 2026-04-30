@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Localization;
 using RxBlazorV2.Interface;
 using RxBlazorV2.Model;
 using RxBlazorV2.MudBlazor.Components;
@@ -17,7 +18,8 @@ public partial class SessionExpiredPopoverModel : ObservableModel
 {
     public partial SessionExpiredPopoverModel(
         ISessionAuthenticator authenticator,
-        StatusModel statusModel);
+        StatusModel statusModel,
+        IStringLocalizer<SessionExpiredPopoverModel> localizer);
 
     public partial bool Visible { get; set; }
 
@@ -40,8 +42,8 @@ public partial class SessionExpiredPopoverModel : ObservableModel
     }
 
     private string FormatReAuthenticateError(Exception ex) =>
-        $"Re-authentication failed: {ex.Message}";
+        Localizer["Error_ReAuth", ex.Message];
 
     private string FormatDismissError(Exception ex) =>
-        $"Session dismiss failed: {ex.Message}";
+        Localizer["Error_Dismiss", ex.Message];
 }

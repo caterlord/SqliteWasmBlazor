@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Components;
+using Microsoft.Extensions.Localization;
 
 namespace SqliteWasmBlazor.CryptoSync.UI.Components.Push;
 
@@ -20,4 +21,7 @@ public partial class PushPanel : ComponentBase
 {
     [Inject]
     public required IPushNotifier PushNotifier { get; init; }
+
+    [Inject]
+    public required IStringLocalizer<PushPanel> Localizer { get; init; }
 }

@@ -38,11 +38,11 @@ public partial class ContactsPanel
         try
         {
             await JS.InvokeVoidAsync("navigator.clipboard.writeText", cancellationToken, request.PublicKey);
-            Snackbar.Add($"Copied {request.Label}'s public key", Severity.Success);
+            Snackbar.Add(Model.Localizer["Status_CopiedFor", request.Label], Severity.Success);
         }
         catch (Exception ex)
         {
-            Snackbar.Add($"Copy failed: {ex.Message}", Severity.Error);
+            Snackbar.Add(Model.Localizer["Error_ClipboardCopy", ex.Message], Severity.Error);
         }
         finally
         {

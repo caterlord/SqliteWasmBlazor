@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e108</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e108</value></resheader>
+  <data name="Header_Title" xml:space="preserve"><value>Derive Keys</value></data>
+  <data name="Header_Subtitle" xml:space="preserve"><value>Authenticate with your passkey to derive encryption keys</value></data>
+  <data name="Field_CredentialIdLabel" xml:space="preserve"><value>Credential ID (optional)</value></data>
+  <data name="Field_CredentialIdHelper" xml:space="preserve"><value>Leave empty to use the platform credential picker</value></data>
+  <data name="Field_PublicKeyCaption" xml:space="preserve"><value>Public Key (share this with others)</value></data>
+  <data name="Tooltip_EditMetadata" xml:space="preserve"><value>Edit metadata</value></data>
+  <data name="Tooltip_CopyKey" xml:space="preserve"><value>Copy public key to clipboard</value></data>
+  <data name="Btn_DeriveKeys" xml:space="preserve"><value>Derive Keys</value></data>
+  <data name="Btn_ClearKeys" xml:space="preserve"><value>Clear Keys</value></data>
+  <data name="Dialog_MetadataTitle" xml:space="preserve"><value>Key Metadata</value></data>
+  <data name="Dialog_MetadataDescription" xml:space="preserve"><value>Add optional information to help identify this key.</value></data>
+  <data name="Field_NameLabel" xml:space="preserve"><value>Name</value></data>
+  <data name="Field_EmailLabel" xml:space="preserve"><value>Email</value></data>
+  <data name="Field_CommentLabel" xml:space="preserve"><value>Comment</value></data>
+  <data name="Btn_Cancel" xml:space="preserve"><value>Cancel</value></data>
+  <data name="Btn_Save" xml:space="preserve"><value>Save</value></data>
+  <data name="Status_AuthenticationCancelled" xml:space="preserve"><value>Authentication was cancelled.</value></data>
+  <data name="Status_KeysDerived" xml:space="preserve"><value>Keys derived from passkey.</value></data>
+  <data name="Status_PublicKeyCopied" xml:space="preserve"><value>Public key copied to clipboard!</value></data>
+  <data name="Error_DeriveKeys" xml:space="preserve"><value>Key derivation failed: {0}</value></data>
+  <data name="Error_ClipboardCopy" xml:space="preserve"><value>Failed to copy to clipboard: {0}</value></data>
+</root>

@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Localization;
 using RxBlazorV2.Interface;
 using RxBlazorV2.Model;
 using RxBlazorV2.MudBlazor.Components;
@@ -28,7 +29,8 @@ public partial class InvitationModel : ObservableModel
 {
     public partial InvitationModel(
         ContactInvitationService invitationService,
-        StatusModel statusModel);
+        StatusModel statusModel,
+        IStringLocalizer<InvitationModel> localizer);
 
     public partial string? FormUsername { get; set; }
     public partial string? FormEmail { get; set; }
@@ -59,7 +61,11 @@ public partial class InvitationModel : ObservableModel
             FormComment);
 
         StatusModel.AddSuccess(
-            $"Invitation created for {FormUsername}. Group {bundle.GroupId:N}, expires {bundle.ExpiresAt:yyyy-MM-dd HH:mm} UTC.",
+            Localizer[
+                "Status_InvitationCreated",
+                FormUsername!,
+                bundle.GroupId.ToString("N"),
+                bundle.ExpiresAt.ToString("yyyy-MM-dd HH:mm")],
             nameof(CreateInvitation));
     }
 
@@ -71,14 +77,14 @@ public partial class InvitationModel : ObservableModel
         if (IngestedCount > 0)
         {
             StatusModel.AddInfo(
-                $"Ingested {IngestedCount} invitation response(s).",
+                Localizer["Status_ResponsesIngested", IngestedCount],
                 nameof(IngestResponses));
         }
     }
 
     private string FormatCreateError(Exception ex) =>
-        $"Failed to create invitation: {ex.Message}";
+        Localizer["Error_Create", ex.Message];
 
     private string FormatIngestError(Exception ex) =>
-        $"Failed to ingest responses: {ex.Message}";
+        Localizer["Error_Ingest", ex.Message];
 }

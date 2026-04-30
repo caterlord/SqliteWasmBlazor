@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Localization;
 using RxBlazorV2.Interface;
 using RxBlazorV2.Model;
 using RxBlazorV2.MudBlazor.Components;
@@ -30,7 +31,8 @@ public partial class AuthenticationModel : ObservableModel
 {
     public partial AuthenticationModel(
         IPrfAuthenticator authenticator,
-        StatusModel statusModel);
+        StatusModel statusModel,
+        IStringLocalizer<AuthenticationModel> localizer);
 
     public partial string? CredentialId { get; set; }
     public partial string? PublicKey { get; set; }
@@ -91,14 +93,14 @@ public partial class AuthenticationModel : ObservableModel
         if (result is null)
         {
             StatusModel.AddWarning(
-                "Authentication was cancelled.",
+                Localizer["Status_AuthenticationCancelled"],
                 nameof(DeriveKeys));
             return;
         }
         CredentialId = result.CredentialId;
         PublicKey = result.PublicKeyBase64;
         StatusModel.AddSuccess(
-            "Keys derived from passkey.",
+            Localizer["Status_KeysDerived"],
             nameof(DeriveKeys));
     }
 
@@ -146,5 +148,5 @@ public partial class AuthenticationModel : ObservableModel
     }
 
     private string FormatDeriveKeysError(Exception ex) =>
-        $"Key derivation failed: {ex.Message}";
+        Localizer["Error_DeriveKeys", ex.Message];
 }

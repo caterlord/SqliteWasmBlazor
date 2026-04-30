@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Localization;
 using RxBlazorV2.Interface;
 using RxBlazorV2.Model;
 using RxBlazorV2.MudBlazor.Components;
@@ -27,7 +28,8 @@ public partial class UserProfileModel : ObservableModel
 {
     public partial UserProfileModel(
         DeviceIdentityService deviceIdentity,
-        StatusModel statusModel);
+        StatusModel statusModel,
+        IStringLocalizer<UserProfileModel> localizer);
 
     public partial string? DeviceName { get; set; }
     public partial string? ClientGuid { get; set; }
@@ -68,5 +70,5 @@ public partial class UserProfileModel : ObservableModel
     }
 
     private string FormatLoadError(Exception ex) =>
-        $"Failed to load device profile: {ex.Message}";
+        Localizer["Error_Load", ex.Message];
 }

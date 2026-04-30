@@ -52,11 +52,11 @@ public partial class AuthenticationPanel
         try
         {
             await JS.InvokeVoidAsync("navigator.clipboard.writeText", cancellationToken, payload);
-            Snackbar.Add("Public key copied to clipboard!", Severity.Success);
+            Snackbar.Add(Model.Localizer["Status_PublicKeyCopied"], Severity.Success);
         }
         catch (Exception ex)
         {
-            Snackbar.Add($"Failed to copy to clipboard: {ex.Message}", Severity.Error);
+            Snackbar.Add(Model.Localizer["Error_ClipboardCopy", ex.Message], Severity.Error);
         }
         finally
         {

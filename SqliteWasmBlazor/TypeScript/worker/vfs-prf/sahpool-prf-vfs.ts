@@ -582,8 +582,9 @@ class OpfsSAHPool {
         cipherPlusTag.set(ciphertext, 0);
         cipherPlusTag.set(tag, PAGE_PLAINTEXT_LEN);
         const aad = buildPageAad(path, 0);
+        let slot0pt: Uint8Array | undefined;
         try {
-            decryptChaCha20Poly1305(
+            slot0pt = decryptChaCha20Poly1305(
                 { ciphertext: cipherPlusTag, nonce },
                 key,
                 aad
@@ -591,6 +592,10 @@ class OpfsSAHPool {
             return 'match';
         } catch {
             return 'wrongKey';
+        } finally {
+            if (slot0pt) { clearBytes(slot0pt); }
+            clearBytes(cipherPlusTag);
+            clearBytes(slot);
         }
     }
 
@@ -961,18 +966,24 @@ class OpfsSAHPool {
             cipherPlusTag.set(tag, PAGE_PLAINTEXT_LEN);
 
             const aad = buildPageAad(file.path, slotIndex);
-            const plaintext = decryptChaCha20Poly1305(
-                { ciphertext: cipherPlusTag, nonce },
-                file.key!,
-                aad
-            );
+            let plaintext: Uint8Array | undefined;
+            try {
+                plaintext = decryptChaCha20Poly1305(
+                    { ciphertext: cipherPlusTag, nonce },
+                    file.key!,
+                    aad
+                );
 
-            heap.set(
-                plaintext.subarray(startInSlot, startInSlot + bytesFromSlot),
-                destPtr
-            );
-            destPtr += bytesFromSlot;
-            cursor = thisSliceEnd;
+                heap.set(
+                    plaintext.subarray(startInSlot, startInSlot + bytesFromSlot),
+                    destPtr
+                );
+                destPtr += bytesFromSlot;
+                cursor = thisSliceEnd;
+            } finally {
+                if (plaintext) { clearBytes(plaintext); }
+                clearBytes(cipherPlusTag);
+            }
         }
 
         // Defense-in-depth: the plaintext scratch buffer used by the
@@ -1070,13 +1081,19 @@ class OpfsSAHPool {
         cipherPlusTag.set(ciphertext, 0);
         cipherPlusTag.set(tag, PAGE_PLAINTEXT_LEN);
         const aad = buildPageAad(file.path, slotIndex);
-        const pt = decryptChaCha20Poly1305(
-            { ciphertext: cipherPlusTag, nonce },
-            file.key!,
-            aad
-        );
-        this.plaintextScratch.set(pt, 0);
-        return this.plaintextScratch;
+        let pt: Uint8Array | undefined;
+        try {
+            pt = decryptChaCha20Poly1305(
+                { ciphertext: cipherPlusTag, nonce },
+                file.key!,
+                aad
+            );
+            this.plaintextScratch.set(pt, 0);
+            return this.plaintextScratch;
+        } finally {
+            if (pt) { clearBytes(pt); }
+            clearBytes(cipherPlusTag);
+        }
     }
 
     private pool_storeErr(e: any, code: number): number {
@@ -1328,6 +1345,3 @@ function setPoolForPFile(pFile: number, pool: OpfsSAHPool | null) {
 // Silences the unused-reference lint without exposing internals.
 // getPoolForVfs / getPoolForPFile are reserved for future VFS introspection.
 export const __internal = { mapVfsToPool, mapSqlite3FileToPool };
-
-// Suppress unused-var warnings while keeping the symbol around for future use.
-void clearBytes;

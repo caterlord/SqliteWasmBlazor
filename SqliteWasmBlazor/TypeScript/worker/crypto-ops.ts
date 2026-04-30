@@ -127,6 +127,17 @@ function parseV2CryptoHeader(bytes: Uint8Array): V2CryptoHeader {
     };
 }
 
+// Zero the secret-bearing fields of a parsed V2CryptoHeader. Public keys and
+// metadata fields are not cleared. Pair with clearBytes(headerBytes) on the
+// MessagePack input — msgpack-decoded Uint8Arrays alias the input buffer, so
+// either call also wipes the matching range in headerBytes; clearing both is
+// defense-in-depth.
+function clearV2CryptoHeader(h: V2CryptoHeader): void {
+    clearBytes(h.clientX25519PrivateKey);
+    clearBytes(h.clientEd25519PrivateKey);
+    clearBytes(h.wrappedCek);
+}
+
 // ============================================================================
 // Crypto helpers
 // ============================================================================
@@ -833,6 +844,8 @@ export async function deltaExportEncrypted(dbName: string, headerBytes: Uint8Arr
         return { rawBinary: true, data: envelope };
     } finally {
         if (cek) { clearBytes(cek); }
+        clearV2CryptoHeader(cryptoHeader);
+        clearBytes(headerBytes);
     }
 }
 
@@ -1295,6 +1308,8 @@ export async function deltaImportEncrypted(
         return packReport(totalImported, totalSkipped, totalDeleted);
     } finally {
         if (cek) { clearBytes(cek); }
+        clearV2CryptoHeader(header);
+        clearBytes(headerBytes);
     }
 }
 
@@ -1459,5 +1474,9 @@ export async function bulkRotateKeyV2(
     } finally {
         if (oldCek) { clearBytes(oldCek); }
         if (newCek) { clearBytes(newCek); }
+        clearV2CryptoHeader(oldHeader);
+        clearV2CryptoHeader(newHeader);
+        clearBytes(oldHeaderBytes);
+        clearBytes(newHeaderBytes);
     }
 }

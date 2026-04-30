@@ -69,9 +69,14 @@ public sealed class AsymmetricEncryptionService : IAsymmetricEncryption
             return PrfResult<string>.Fail(PrfErrorCode.KEY_DERIVATION_FAILED);
         }
 
-        var result = await _cryptoProvider.DecryptAsymmetricAsync(asymmetricEncrypted, privateKey);
-        Array.Clear(privateKey, 0, privateKey.Length);
-        return result;
+        try
+        {
+            return await _cryptoProvider.DecryptAsymmetricAsync(asymmetricEncrypted, privateKey);
+        }
+        finally
+        {
+            Array.Clear(privateKey, 0, privateKey.Length);
+        }
     }
 
        public async ValueTask<PrfResult<DecryptedData>> DecryptAndVerifyAsync(

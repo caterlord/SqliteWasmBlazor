@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Cryptography;
 using MessagePack;
 using Microsoft.EntityFrameworkCore;
 
@@ -56,6 +57,7 @@ public class SyncOrchestrator(
         }
         finally
         {
+            CryptographicOperations.ZeroMemory(headerBytes);
             header.Clear();
         }
     }
@@ -82,6 +84,7 @@ public class SyncOrchestrator(
         }
         finally
         {
+            CryptographicOperations.ZeroMemory(headerBytes);
             header.Clear();
         }
     }

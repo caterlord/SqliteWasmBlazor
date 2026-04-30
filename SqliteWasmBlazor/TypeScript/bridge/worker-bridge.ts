@@ -112,9 +112,12 @@ export function sendBinaryToWorker(memoryView: IMemoryView, metadataJson: string
 
     if (headerView) {
         const header = headerView.slice();
+        // Transfer both buffers — header carries V2CryptoHeader private-key
+        // material; transferring synchronously detaches the JS-side copy on
+        // the main thread so no readable reference survives postMessage.
         worker.postMessage(
             { ...metadata, binaryHeader: header.buffer, binaryPayload: data.buffer },
-            [data.buffer]
+            [data.buffer, header.buffer]
         );
     } else {
         worker.postMessage(

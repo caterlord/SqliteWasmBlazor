@@ -37,9 +37,14 @@ public sealed class SigningService : ISigningService
             return PrfResult<string>.Fail(PrfErrorCode.KEY_DERIVATION_FAILED);
         }
 
-        var result = await _cryptoProvider.SignAsync(message, privateKey);
-        Array.Clear(privateKey, 0, privateKey.Length);
-        return result;
+        try
+        {
+            return await _cryptoProvider.SignAsync(message, privateKey);
+        }
+        finally
+        {
+            Array.Clear(privateKey, 0, privateKey.Length);
+        }
     }
 
        public async ValueTask<bool> VerifyAsync(string message, string signature, string publicKey)
@@ -73,8 +78,15 @@ public sealed class SigningService : ISigningService
         var timestampUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var dataToSign = $"{timestampUnix}:{message}";
 
-        var signResult = await _cryptoProvider.SignAsync(dataToSign, privateKey);
-        Array.Clear(privateKey, 0, privateKey.Length);
+        PrfResult<string> signResult;
+        try
+        {
+            signResult = await _cryptoProvider.SignAsync(dataToSign, privateKey);
+        }
+        finally
+        {
+            Array.Clear(privateKey, 0, privateKey.Length);
+        }
 
         if (!signResult.Success || signResult.Value is null)
         {

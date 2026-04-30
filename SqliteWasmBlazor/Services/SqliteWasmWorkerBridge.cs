@@ -3,6 +3,7 @@
 
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices.JavaScript;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using MessagePack;
@@ -200,7 +201,7 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
                 // worker's key registry.
                 if (headerBytes is not null)
                 {
-                    System.Security.Cryptography.CryptographicOperations.ZeroMemory(headerBytes);
+                    CryptographicOperations.ZeroMemory(headerBytes);
                 }
             }
         }
@@ -315,7 +316,7 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
         }
         finally
         {
-            System.Security.Cryptography.CryptographicOperations.ZeroMemory(envelope);
+            CryptographicOperations.ZeroMemory(envelope);
             header.Clear();
             _pendingRequests.TryRemove(requestId, out _);
         }
@@ -606,7 +607,7 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
         }
         finally
         {
-            System.Security.Cryptography.CryptographicOperations.ZeroMemory(envelope);
+            CryptographicOperations.ZeroMemory(envelope);
             header.Clear();
             _pendingBinaryRequests.TryRemove(requestId, out _);
         }
@@ -795,6 +796,10 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
         }
         finally
         {
+            // headerBytes carries V2CryptoHeader private-key material; the JS
+            // bridge sliced it into a transferred ArrayBuffer, but the C# copy
+            // is still in the managed heap — zero it before GC.
+            CryptographicOperations.ZeroMemory(headerBytes);
             _pendingBinaryRequests.TryRemove(requestId, out _);
         }
     }
@@ -854,6 +859,11 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
         }
         finally
         {
+            // Both buffers contain V2CryptoHeader private-key material. The JS
+            // bridge transfers slice copies to the worker; the C# originals
+            // remain in the managed heap until zeroed here.
+            CryptographicOperations.ZeroMemory(oldHeaderBytes);
+            CryptographicOperations.ZeroMemory(newHeaderBytes);
             _pendingRequests.TryRemove(requestId, out _);
         }
     }

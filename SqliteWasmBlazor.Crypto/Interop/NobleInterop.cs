@@ -98,8 +98,14 @@ internal static partial class NobleInterop
     [JSImport("deriveEd25519KeyPairB64", ModuleName)]
     public static partial string DeriveEd25519KeyPair(string seedBase64);
 
+    /// <summary>
+    /// Sign with Ed25519. The private key crosses as a binary <c>MemoryView</c> so no
+    /// immutable Base64 string holds the secret on the JS heap.
+    /// </summary>
     [JSImport("ed25519SignB64", ModuleName)]
-    public static partial string Ed25519Sign(string messageBase64, string privateKeyBase64);
+    public static partial string Ed25519Sign(
+        string messageBase64,
+        [JSMarshalAs<JSType.MemoryView>] Span<byte> privateKey);
 
     [JSImport("ed25519VerifyB64", ModuleName)]
     public static partial bool Ed25519Verify(string signatureBase64, string messageBase64, string publicKeyBase64);
@@ -128,9 +134,18 @@ internal static partial class NobleInterop
     [JSImport("encryptAsymmetricB64", ModuleName)]
     public static partial Task<string> EncryptAsymmetricAesGcmAsync(string plaintextBase64, string recipientPublicKeyBase64);
 
+    /// <summary>
+    /// Decrypt ECIES envelope. The private key crosses as a binary <c>MemoryView</c> so
+    /// no immutable Base64 string holds the secret on the JS heap. Uses
+    /// <see cref="ArraySegment{T}"/> because <c>Span&lt;byte&gt;</c> is not supported on
+    /// Task-returning JSImport methods (SYSLIB1072).
+    /// </summary>
     [JSImport("decryptAsymmetricB64", ModuleName)]
     public static partial Task<string> DecryptAsymmetricAesGcmAsync(
-        string ephemeralPublicKeyBase64, string ciphertextBase64, string nonceBase64, string privateKeyBase64);
+        string ephemeralPublicKeyBase64,
+        string ciphertextBase64,
+        string nonceBase64,
+        [JSMarshalAs<JSType.MemoryView>] ArraySegment<byte> privateKey);
 
     // ============================================================
     // KEY DERIVATION — Returns Base64 of key bytes

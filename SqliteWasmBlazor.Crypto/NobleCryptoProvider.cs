@@ -1,4 +1,5 @@
 using System.Runtime.Versioning;
+using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Options;
 using SqliteWasmBlazor.Crypto.Abstractions;
@@ -113,14 +114,17 @@ public sealed class NobleCryptoProvider : ICryptoProvider
     {
         await NobleInterop.EnsureInitializedAsync();
 
+        // Cross to JS as a binary MemoryView — no immutable Base64 string ever
+        // holds the private-key bytes on the JS heap. Local copy is zeroed in
+        // finally; the original ReadOnlyMemory is owned (and zeroed) by caller.
+        var privateKeyCopy = privateKey.ToArray();
         try
         {
-            var privateKeyBase64 = Convert.ToBase64String(privateKey.Span);
             var packedBase64 = await NobleInterop.DecryptAsymmetricAesGcmAsync(
                 asymmetricEncrypted.EphemeralPublicKey,
                 asymmetricEncrypted.Ciphertext,
                 asymmetricEncrypted.Nonce,
-                privateKeyBase64);
+                new ArraySegment<byte>(privateKeyCopy));
             var plaintext = Convert.FromBase64String(packedBase64);
 
             if (plaintext.Length == 0)
@@ -134,6 +138,10 @@ public sealed class NobleCryptoProvider : ICryptoProvider
         {
             return PrfResult<string>.Fail(PrfErrorCode.DECRYPTION_FAILED);
         }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(privateKeyCopy);
+        }
     }
 
     // ============================================================
@@ -145,11 +153,22 @@ public sealed class NobleCryptoProvider : ICryptoProvider
         await NobleInterop.EnsureInitializedAsync();
 
         var messageBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(message));
-        var privateKeyBase64 = Convert.ToBase64String(privateKey.Span);
 
-        var signatureBase64 = NobleInterop.Ed25519Sign(messageBase64, privateKeyBase64);
+        // Cross to JS as a binary MemoryView — no immutable Base64 string ever
+        // holds the private-key bytes on the JS heap. Local copy is zeroed in
+        // finally; the original ReadOnlyMemory is owned (and zeroed) by caller.
+        var privateKeyCopy = privateKey.ToArray();
+        string signatureBase64;
+        try
+        {
+            signatureBase64 = NobleInterop.Ed25519Sign(messageBase64, privateKeyCopy.AsSpan());
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(privateKeyCopy);
+        }
+
         var signature = Convert.FromBase64String(signatureBase64);
-
         if (signature.Length != SignatureLength)
         {
             return PrfResult<string>.Fail(PrfErrorCode.SIGNING_FAILED);

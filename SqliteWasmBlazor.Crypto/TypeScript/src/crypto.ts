@@ -398,9 +398,9 @@ export function generateEd25519KeyPairB64(): string { return bytesToBase64(gener
 export function getEd25519PublicKeyB64(privB64: string): string { return bytesToBase64(getEd25519PublicKey(base64ToBytes(privB64))); }
 export function deriveEd25519KeyPairB64(seedB64: string): string { return bytesToBase64(deriveEd25519KeyPair(base64ToBytes(seedB64))); }
 
-/** Base64(signature(64)) */
-export function ed25519SignB64(msgB64: string, privB64: string): string {
-    return bytesToBase64(ed25519Sign(base64ToBytes(msgB64), base64ToBytes(privB64)));
+/** Base64(signature(64)). privKey is a binary view (no Base64 string holds the secret). */
+export function ed25519SignB64(msgB64: string, privKey: Uint8Array): string {
+    return bytesToBase64(ed25519Sign(base64ToBytes(msgB64), privKey));
 }
 
 export function ed25519VerifyB64(sigB64: string, msgB64: string, pubB64: string): boolean {
@@ -425,9 +425,9 @@ export async function encryptAsymmetricB64(ptB64: string, recipPubB64: string): 
     return bytesToBase64(await encryptAsymmetricAesGcm(base64ToBytes(ptB64), base64ToBytes(recipPubB64)));
 }
 
-/** Base64(plaintext) */
-export async function decryptAsymmetricB64(ephPubB64: string, ctB64: string, nonceB64: string, privB64: string): Promise<string> {
-    return bytesToBase64(await decryptAsymmetricAesGcm(base64ToBytes(ephPubB64), base64ToBytes(ctB64), base64ToBytes(nonceB64), base64ToBytes(privB64)));
+/** Base64(plaintext). privKey is a binary view (no Base64 string holds the secret). */
+export async function decryptAsymmetricB64(ephPubB64: string, ctB64: string, nonceB64: string, privKey: Uint8Array): Promise<string> {
+    return bytesToBase64(await decryptAsymmetricAesGcm(base64ToBytes(ephPubB64), base64ToBytes(ctB64), base64ToBytes(nonceB64), privKey));
 }
 
 export function deriveHkdfKeyB64(seedB64: string, domain: string): string { return bytesToBase64(deriveHkdfKey(base64ToBytes(seedB64), domain)); }

@@ -170,8 +170,16 @@ internal static partial class NobleInterop
     [JSImport("deriveHkdfKeyB64", ModuleName)]
     public static partial string DeriveHkdfKey(string seedBase64, string domain);
 
+    /// <summary>
+    /// Derive an HKDF wrapping key from an X25519 private key + recipient public key.
+    /// The own private key crosses as a binary <c>MemoryView</c> so no immutable Base64
+    /// string holds the secret on the JS heap.
+    /// </summary>
     [JSImport("deriveWrappingKeyB64", ModuleName)]
-    public static partial string DeriveWrappingKey(string ownPrivateKeyBase64, string recipientPublicKeyBase64, string context);
+    public static partial string DeriveWrappingKey(
+        [JSMarshalAs<JSType.MemoryView>] Span<byte> ownPrivateKey,
+        string recipientPublicKeyBase64,
+        string context);
 
     // ============================================================
     // UTILITY

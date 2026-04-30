@@ -431,8 +431,9 @@ export async function decryptAsymmetricB64(ephPubB64: string, ctB64: string, non
 }
 
 export function deriveHkdfKeyB64(seedB64: string, domain: string): string { return bytesToBase64(deriveHkdfKey(base64ToBytes(seedB64), domain)); }
-export function deriveWrappingKeyB64(privB64: string, recipPubB64: string, ctx: string): string {
-    return bytesToBase64(deriveWrappingKey(base64ToBytes(privB64), base64ToBytes(recipPubB64), ctx));
+/** ownPrivateKey crosses as a binary view (no Base64 string holds the secret). */
+export function deriveWrappingKeyB64(ownPrivateKey: Uint8Array, recipPubB64: string, ctx: string): string {
+    return bytesToBase64(deriveWrappingKey(ownPrivateKey, base64ToBytes(recipPubB64), ctx));
 }
 export function generateRandomBytesB64(length: number): string { return bytesToBase64(generateRandomBytes(length)); }
 

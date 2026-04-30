@@ -1,6 +1,6 @@
 # SqliteWasmBlazor Roadmap
 
-_Single source of truth for "where are we." Last updated 2026-04-29 against branch `crypto-sync` HEAD `0d3f746`. Stage A (whitelist-broadcast rewrite) is fully complete — every pre-UI / pre-WebAuthn wire piece is wired and 229/229 xUnit green. **Stage 2 (UI absorption) is now the active workstream**; once UI panels land, the WebAuthn-bound demo / TestApp / admin-seeding work follows. Stage B (production PRF/WebAuthn signer wiring) is folded into that sequence — it's no longer a standalone item._
+_Single source of truth for "where are we." Last updated 2026-05-01 against branch `crypto-sync` HEAD `5541a14`. Stage A (whitelist-broadcast rewrite) is fully complete and the Codex memory-hygiene audit close-out (zeroization + binary boundary + non-extractable JS keys) just landed. **Stage 2 (UI absorption) remains the active workstream**; once UI panels land, the WebAuthn-bound demo / TestApp / admin-seeding work follows. Stage B (production PRF/WebAuthn signer wiring) is folded into that sequence — it's no longer a standalone item._
 
 This document supersedes the multiple parallel numbering systems (Stage / Phase A / Phase B / Audit Phase 1-3) that were used while individual workstreams were in flight. Going forward, work is grouped only as **Active**, **Postponed**, **Done**, **Deferred**.
 
@@ -147,6 +147,25 @@ Replaced the per-recipient pubkey-bound delivery model (Stage 3b code) with an a
 - **Phase 3** — property tests for P1 / P3 / P11 (`94d0766`); 200-iteration plaintext-leak scan in C# + 4 IND-CPA + 4 nonce-uniqueness in TS.
 - **Relay audit + design** — `relay-audit.md` + `relay-whitelist-design.md` (`1416ac5`); ratifies the whitelist-broadcast direction.
 - **Catalog state:** 17 covered / 1 partial (P14 deferred) / 0 missing / 0 out-of-scope.
+
+### Crypto memory hygiene — Codex audit close-out (2026-04-30 → 2026-05-01)
+
+- **Driver:** Codex memory-hygiene audit found four classes of leak (VFS plaintext lifetime, C# `headerBytes` not zeroed, worker parsed-header private-key fields not zeroed, JS `binaryHeader` not transferred) plus a deeper architectural finding (private keys cross C#↔JS as immutable Base64 strings — non-zeroable on the JS heap).
+- **Memory pattern:** `feedback_crypto_memory_hygiene.md` (post-fix invariants).
+- **Architectural follow-up:** `project_base64_boundary_followup.md` (now CLOSED — keyId routing landed).
+
+| commit | scope |
+|---|---|
+| `5841638` | VFS plaintext finally-clear (`encryptedRead` / `verifyEncryptionKey` / `readSlotPlaintextOrZero`) + C# `headerBytes` `CryptographicOperations.ZeroMemory` + worker parsed-header `clearV2CryptoHeader` helper + `binaryHeader` in postMessage transferable list + C# exception-path `try/finally` for `_keyCache.TryGet` consumers. |
+| `f8daa19` | `Ed25519Sign` / `DecryptAsymmetricAesGcm` private key flipped from Base64 string to `[JSMarshalAs<JSType.MemoryView>]` `Span` / `ArraySegment<byte>`. |
+| `13a8957` | AES key + content-key plaintext flipped to MemoryView. Refactored to `MemoryMarshal.TryGetArray` so no managed copy of the secret is allocated at the boundary. |
+| `3d9de94` | `DeriveWrappingKey` ownPrivateKey flipped to MemoryView. |
+| `8305f83` | **keyId architectural migration.** `PrfService.StoreSeedAndDeriveKeysAsync` populates the JS-side `keyCache` via `ICryptoProvider.StoreKeysAsync`; derived keys live in JS as **non-extractable** `SubtleCrypto.CryptoKey` objects (Ed25519 + AES) and a JS-only `Uint8Array` (X25519 priv). C# `SecureKeyCache` retains only the PRF seed for HKDF domain-key derivation. `SigningService` and `AsymmetricEncryptionService` route via `SignWithKeyIdAsync` / `DecryptAsymmetricWithKeyIdAsync` — private keys never re-cross the boundary per operation. |
+| `53e18bb` | `.slice()` MemoryView → real `Uint8Array` in TS bridge (noble's `isBytes` requires `instanceof Uint8Array`; the runtime `Span` view fails that). Also fixes the `Task.WhenAny(Expect.ToBeVisibleAsync, …)` failure-swallow bug in `SqliteWasmTestBase` — switched to `Locator.Or`. |
+| `a1a14c6` | Regenerate stale `AdminSeed.g.cs` — committed PermissionTableSignature hash diverged from current generator output. |
+| `5541a14` | Map `PERMISSION_SENDER_UNAUTHORIZED` → wire int 14 in `importErrorCodeToInt` (commit `42bc26a` added the C# enum value but missed the TS mapping; tests silently failed via `default: return 99`). Revert over-bumped Playwright timeout to 60s now that the wrapper actually surfaces failures. |
+
+**End state:** every per-operation crypto path uses `MemoryView` for secrets; sign + ECIES decrypt route through the JS keyId cache (Ed25519 = non-extractable CryptoKey); recurring zeroization invariants codified in feedback memory; Playwright suite no longer silently passes failed crypto tests; AdminSeed-regeneration trigger captured in feedback memory.
 
 ---
 

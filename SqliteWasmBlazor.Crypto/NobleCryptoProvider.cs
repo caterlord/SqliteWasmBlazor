@@ -365,8 +365,13 @@ public sealed class NobleCryptoProvider : ICryptoProvider
     {
         await NobleInterop.EnsureInitializedAsync();
 
+        if (!MemoryMarshal.TryGetArray(ownPrivateKey, out ArraySegment<byte> ownPrivateKeySegment))
+        {
+            return PrfResult<ReadOnlyMemory<byte>>.Fail(PrfErrorCode.KEY_DERIVATION_FAILED);
+        }
+
         var wrappingKeyBase64 = NobleInterop.DeriveWrappingKey(
-            Convert.ToBase64String(ownPrivateKey.Span), recipientPublicKeyBase64, context);
+            ownPrivateKeySegment.AsSpan(), recipientPublicKeyBase64, context);
         var wrappingKey = Convert.FromBase64String(wrappingKeyBase64);
 
         if (wrappingKey.Length != KeyLength)

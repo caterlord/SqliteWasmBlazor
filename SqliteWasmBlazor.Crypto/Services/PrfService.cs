@@ -127,8 +127,10 @@ public sealed partial class PrfService : IPrfService, IEd25519PublicKeyProvider,
     {
         ArgumentException.ThrowIfNullOrEmpty(credentialId);
 
-        // Check cache first
-        if (_keyCache.Contains(X25519CacheKey) && _cachedX25519PublicKey is not null)
+        // Check cache first — JS-side cache is now the source of truth for
+        // the derived X25519/Ed25519 bundle; C# only retains the PRF seed
+        // for HKDF-based domain-key derivation.
+        if (_cryptoProvider.HasCachedKey(JsKeyId) && _cachedX25519PublicKey is not null)
         {
             return PrfResult<string>.Ok(_cachedX25519PublicKey);
         }
@@ -186,28 +188,43 @@ public sealed partial class PrfService : IPrfService, IEd25519PublicKeyProvider,
     }
 
     /// <summary>
-    /// Stores the PRF seed + derived X25519 / Ed25519 private keys in the secure cache and
-    /// caches the corresponding public keys. Shared by explicit and discoverable ceremonies.
+    /// Stores the PRF seed in the secure cache (used by
+    /// <see cref="DeriveDomainKeyAsync"/> via the <c>UseKey</c> callback) and
+    /// populates the JS-side key cache with the derived X25519/Ed25519/AES
+    /// bundle so signing, ECIES decrypt, and symmetric ops can run without
+    /// the private key bytes ever crossing the C#↔JS boundary again.
+    /// Shared by explicit and discoverable ceremonies.
     /// </summary>
     private async ValueTask StoreSeedAndDeriveKeysAsync(string prfOutputBase64)
     {
         var prfSeedBytes = Convert.FromBase64String(prfOutputBase64);
-        _keyCache.Store(PrfSeedCacheKey, prfSeedBytes);
+        try
+        {
+            _keyCache.Store(PrfSeedCacheKey, prfSeedBytes);
 
-        var dualKeys = await _cryptoProvider.DeriveDualKeyPairAsync(prfSeedBytes);
+            var ttlMs = _cacheOptions.Strategy switch
+            {
+                KeyCacheStrategy.TIMED => _cacheOptions.TtlMinutes * 60_000,
+                _ => (int?)null,
+            };
 
-        var x25519PrivateKeyBytes = Convert.FromBase64String(dualKeys.X25519PrivateKey);
-        _keyCache.Store(X25519CacheKey, x25519PrivateKeyBytes);
-        Array.Clear(x25519PrivateKeyBytes, 0, x25519PrivateKeyBytes.Length);
+            var storeResult = await _cryptoProvider.StoreKeysAsync(JsKeyId, prfSeedBytes, ttlMs);
+            if (!storeResult.Success || storeResult.Value is null)
+            {
+                throw new InvalidOperationException(
+                    $"PrfService: failed to populate JS key cache for salt '{_options.Salt}': {storeResult.ErrorCode}");
+            }
 
-        var ed25519PrivateKeyBytes = Convert.FromBase64String(dualKeys.Ed25519PrivateKey);
-        _keyCache.Store(Ed25519CacheKey, ed25519PrivateKeyBytes);
-        Array.Clear(ed25519PrivateKeyBytes, 0, ed25519PrivateKeyBytes.Length);
-
-        Array.Clear(prfSeedBytes, 0, prfSeedBytes.Length);
-
-        _cachedX25519PublicKey = dualKeys.X25519PublicKey;
-        _cachedEd25519PublicKey = dualKeys.Ed25519PublicKey;
+            _cachedX25519PublicKey = storeResult.Value.X25519PublicKey;
+            _cachedEd25519PublicKey = storeResult.Value.Ed25519PublicKey;
+        }
+        finally
+        {
+            // _keyCache.Store copies into unmanaged memory; clearing the local
+            // managed buffer in the same pass makes sure the seed never lingers
+            // on the managed heap.
+            Array.Clear(prfSeedBytes, 0, prfSeedBytes.Length);
+        }
     }
 
        public ValueTask<PrfResult<string>> DeriveDomainKeyAsync(string domainId, string context)
@@ -260,23 +277,31 @@ public sealed partial class PrfService : IPrfService, IEd25519PublicKeyProvider,
     }
 
        public string? GetCachedPublicKey()
-        => _keyCache.Contains(X25519CacheKey) ? _cachedX25519PublicKey : null;
+        => _cryptoProvider.HasCachedKey(JsKeyId) ? _cachedX25519PublicKey : null;
 
-       public bool HasCachedKeys() => _keyCache.Contains(X25519CacheKey);
+       public bool HasCachedKeys() => _cryptoProvider.HasCachedKey(JsKeyId);
 
        public void ClearKeys()
     {
+        // Drop the C# seed (HKDF source) and the JS-side derived key bundle in one go.
         _keyCache.Clear();
+        _cryptoProvider.RemoveCachedKey(JsKeyId);
         _cachedX25519PublicKey = null;
         _cachedEd25519PublicKey = null;
     }
 
        public string? GetEd25519PublicKey()
-        => _keyCache.Contains(Ed25519CacheKey) ? _cachedEd25519PublicKey : null;
+        => _cryptoProvider.HasCachedKey(JsKeyId) ? _cachedEd25519PublicKey : null;
 
-    private string X25519CacheKey => $"prf-key:{_options.Salt}";
-    private string Ed25519CacheKey => $"prf-ed25519-key:{_options.Salt}";
     private string PrfSeedCacheKey => $"prf-seed:{_options.Salt}";
+
+    /// <summary>
+    /// JS-side key cache identifier — the dual key bundle (X25519 priv as
+    /// <see cref="System.Runtime.InteropServices.JavaScript.JSType"/> Uint8Array,
+    /// Ed25519 + AES as non-extractable <c>SubtleCrypto</c> CryptoKey objects)
+    /// is stored under this id by <see cref="StoreSeedAndDeriveKeysAsync"/>.
+    /// </summary>
+    private string JsKeyId => PrfKeyConventions.GetJsKeyId(_options.Salt);
 
     /// <summary>
     /// Reserved cache-key prefix for keys derived via <see cref="DeriveDomainKeyAsync"/>.

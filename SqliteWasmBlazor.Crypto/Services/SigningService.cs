@@ -7,44 +7,29 @@ namespace SqliteWasmBlazor.Crypto.Services;
 
 /// <summary>
 /// Service for Ed25519 digital signatures using PRF-derived keys via ICryptoProvider.
+/// Routes through the JS-side keyId cache so the Ed25519 private key never crosses
+/// the C#↔JS boundary — JS holds it as a non-extractable <c>SubtleCrypto</c> CryptoKey.
 /// </summary>
 [SupportedOSPlatform("browser")]
 public sealed class SigningService : ISigningService
 {
-    private readonly ISecureKeyCache _keyCache;
     private readonly IEd25519PublicKeyProvider _publicKeyProvider;
     private readonly ICryptoProvider _cryptoProvider;
 
     public SigningService(
-        ISecureKeyCache keyCache,
         IEd25519PublicKeyProvider publicKeyProvider,
         ICryptoProvider cryptoProvider)
     {
-        _keyCache = keyCache;
         _publicKeyProvider = publicKeyProvider;
         _cryptoProvider = cryptoProvider;
     }
 
-       public async ValueTask<PrfResult<string>> SignAsync(string message, string keyIdentifier)
+       public ValueTask<PrfResult<string>> SignAsync(string message, string keyIdentifier)
     {
         ArgumentException.ThrowIfNullOrEmpty(message);
         ArgumentException.ThrowIfNullOrEmpty(keyIdentifier);
 
-        var cacheKey = GetCacheKey(keyIdentifier);
-        var privateKey = _keyCache.TryGet(cacheKey);
-        if (privateKey is null)
-        {
-            return PrfResult<string>.Fail(PrfErrorCode.KEY_DERIVATION_FAILED);
-        }
-
-        try
-        {
-            return await _cryptoProvider.SignAsync(message, privateKey);
-        }
-        finally
-        {
-            Array.Clear(privateKey, 0, privateKey.Length);
-        }
+        return _cryptoProvider.SignWithKeyIdAsync(message, PrfKeyConventions.GetJsKeyId(keyIdentifier));
     }
 
        public async ValueTask<bool> VerifyAsync(string message, string signature, string publicKey)
@@ -67,35 +52,19 @@ public sealed class SigningService : ISigningService
             return PrfResult<SignedData>.Fail(PrfErrorCode.KEY_DERIVATION_FAILED);
         }
 
-        var cacheKey = GetCacheKey(keyIdentifier);
-        var privateKey = _keyCache.TryGet(cacheKey);
-        if (privateKey is null)
-        {
-            return PrfResult<SignedData>.Fail(PrfErrorCode.KEY_DERIVATION_FAILED);
-        }
-
         // Create timestamped message (Unix timestamp in seconds)
         var timestampUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var dataToSign = $"{timestampUnix}:{message}";
 
-        PrfResult<string> signResult;
-        try
-        {
-            signResult = await _cryptoProvider.SignAsync(dataToSign, privateKey);
-        }
-        finally
-        {
-            Array.Clear(privateKey, 0, privateKey.Length);
-        }
+        var signResult = await _cryptoProvider.SignWithKeyIdAsync(
+            dataToSign, PrfKeyConventions.GetJsKeyId(keyIdentifier));
 
         if (!signResult.Success || signResult.Value is null)
         {
             return PrfResult<SignedData>.Fail(signResult.ErrorCode ?? PrfErrorCode.SIGNING_FAILED);
         }
 
-        var signedMessage = new SignedData(message, signResult.Value, publicKey, timestampUnix);
-
-        return PrfResult<SignedData>.Ok(signedMessage);
+        return PrfResult<SignedData>.Ok(new SignedData(message, signResult.Value, publicKey, timestampUnix));
     }
 
        public async ValueTask<bool> VerifySignedMessageAsync(SignedData signedData, int maxAgeSeconds = 300)
@@ -115,8 +84,6 @@ public sealed class SigningService : ISigningService
         var dataToVerify = $"{signedData.TimestampUnix}:{signedData.Message}";
         return await _cryptoProvider.VerifyAsync(dataToVerify, signedData.Signature, signedData.PublicKey);
     }
-
-    private static string GetCacheKey(string salt) => $"prf-ed25519-key:{salt}";
 }
 
 /// <summary>

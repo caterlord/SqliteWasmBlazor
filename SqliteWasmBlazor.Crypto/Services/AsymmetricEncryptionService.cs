@@ -7,18 +7,16 @@ namespace SqliteWasmBlazor.Crypto.Services;
 
 /// <summary>
 /// Service for asymmetric (ECIES) encryption using PRF-derived keys via ICryptoProvider.
+/// Decryption routes through the JS-side keyId cache so the X25519 private key never
+/// crosses the C#↔JS boundary on every call.
 /// </summary>
 [SupportedOSPlatform("browser")]
 public sealed class AsymmetricEncryptionService : IAsymmetricEncryption
 {
-    private readonly ISecureKeyCache _keyCache;
     private readonly ICryptoProvider _cryptoProvider;
 
-    public AsymmetricEncryptionService(
-        ISecureKeyCache keyCache,
-        ICryptoProvider cryptoProvider)
+    public AsymmetricEncryptionService(ICryptoProvider cryptoProvider)
     {
-        _keyCache = keyCache;
         _cryptoProvider = cryptoProvider;
     }
 
@@ -57,26 +55,13 @@ public sealed class AsymmetricEncryptionService : IAsymmetricEncryption
         return await _cryptoProvider.EncryptAsymmetricAsync(envelopeJson, recipientPublicKey);
     }
 
-       public async ValueTask<PrfResult<string>> DecryptAsync(AsymmetricEncryptedData asymmetricEncrypted, string salt)
+       public ValueTask<PrfResult<string>> DecryptAsync(AsymmetricEncryptedData asymmetricEncrypted, string salt)
     {
         ArgumentNullException.ThrowIfNull(asymmetricEncrypted);
         ArgumentException.ThrowIfNullOrEmpty(salt);
 
-        var cacheKey = GetCacheKey(salt);
-        var privateKey = _keyCache.TryGet(cacheKey);
-        if (privateKey is null)
-        {
-            return PrfResult<string>.Fail(PrfErrorCode.KEY_DERIVATION_FAILED);
-        }
-
-        try
-        {
-            return await _cryptoProvider.DecryptAsymmetricAsync(asymmetricEncrypted, privateKey);
-        }
-        finally
-        {
-            Array.Clear(privateKey, 0, privateKey.Length);
-        }
+        return _cryptoProvider.DecryptAsymmetricWithKeyIdAsync(
+            asymmetricEncrypted, PrfKeyConventions.GetJsKeyId(salt));
     }
 
        public async ValueTask<PrfResult<DecryptedData>> DecryptAndVerifyAsync(
@@ -117,6 +102,4 @@ public sealed class AsymmetricEncryptionService : IAsymmetricEncryption
             envelope.SenderEd25519PublicKey,
             signatureValid));
     }
-
-    private static string GetCacheKey(string salt) => $"prf-key:{salt}";
 }

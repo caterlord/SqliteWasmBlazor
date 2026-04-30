@@ -8,7 +8,7 @@ namespace SqliteWasmBlazor.CryptoSync.UI.Components.Contacts;
 /// <summary>
 /// Backing model for <see cref="ContactsPanel"/>. Owns the loaded
 /// <see cref="TrustedContact"/> list, the per-row soft-delete command,
-/// and a pubkey copy command.
+/// and a pubkey copy-request signal.
 ///
 /// <para>
 /// <b>Scope.</b> Stage-2 absorption is intentionally read + local-soft-delete
@@ -23,62 +23,54 @@ namespace SqliteWasmBlazor.CryptoSync.UI.Components.Contacts;
 [ObservableComponent]
 public partial class ContactsModel : ObservableModel
 {
-    public partial ContactsModel(ContactService contactService);
+    public partial ContactsModel(
+        ContactService contactService,
+        StatusModel statusModel);
 
     public partial IReadOnlyList<TrustedContact>? Contacts { get; set; }
-    public partial string? ErrorMessage { get; set; }
 
     /// <summary>
     /// Pending copy-to-clipboard signal. Set by <see cref="RequestCopyKey"/>;
     /// the component's component-trigger override does the JS interop +
     /// snackbar, then clears the signal so the next click re-fires.
-    /// Tuple shape: <c>(PublicKey, Username)</c>.
     /// </summary>
     [ObservableComponentTriggerAsync]
     public partial CopyKeyRequest? PendingCopy { get; set; }
 
-    [ObservableCommand(nameof(LoadContactsAsync))]
+    [ObservableCommand(nameof(LoadContactsAsync), null, nameof(FormatLoadError))]
     public partial IObservableCommandAsync LoadContacts { get; }
 
-    [ObservableCommand(nameof(DeleteContactAsync))]
+    [ObservableCommand(nameof(DeleteContactAsync), null, nameof(FormatDeleteError))]
     public partial IObservableCommandAsync<Guid> DeleteContact { get; }
 
     [ObservableCommand(nameof(RequestCopyKey))]
     public partial IObservableCommand<TrustedContact> RequestCopyKeyCommand { get; }
 
-    private void RequestCopyKey(TrustedContact contact) =>
-        PendingCopy = new CopyKeyRequest(contact.X25519PublicKey, contact.Username);
-
     private async Task LoadContactsAsync()
     {
-        ErrorMessage = null;
-        try
-        {
-            var list = await ContactService.GetAllAsync();
-            Contacts = list
-                .Where(c => !c.IsDeleted)
-                .OrderByDescending(c => c.IsAdmin)
-                .ThenBy(c => c.Username)
-                .ToList();
-        }
-        catch (Exception ex)
-        {
-            ErrorMessage = $"Failed to load contacts: {ex.Message}";
-            Contacts = Array.Empty<TrustedContact>();
-        }
+        // Pessimistic init — if GetAllAsync throws, Contacts stays empty
+        // and the panel renders the "no contacts" alert.
+        Contacts = Array.Empty<TrustedContact>();
+        var list = await ContactService.GetAllAsync();
+        Contacts = list
+            .Where(c => !c.IsDeleted)
+            .OrderByDescending(c => c.IsAdmin)
+            .ThenBy(c => c.Username)
+            .ToList();
     }
 
     private async Task DeleteContactAsync(Guid contactId)
     {
-        ErrorMessage = null;
-        try
-        {
-            await ContactService.DeleteAsync(contactId);
-            await LoadContactsAsync();
-        }
-        catch (Exception ex)
-        {
-            ErrorMessage = $"Failed to delete contact: {ex.Message}";
-        }
+        await ContactService.DeleteAsync(contactId);
+        await LoadContactsAsync();
     }
+
+    private void RequestCopyKey(TrustedContact contact) =>
+        PendingCopy = new CopyKeyRequest(contact.X25519PublicKey, contact.Username);
+
+    private string FormatLoadError(Exception ex) =>
+        $"Failed to load contacts: {ex.Message}";
+
+    private string FormatDeleteError(Exception ex) =>
+        $"Failed to delete contact: {ex.Message}";
 }

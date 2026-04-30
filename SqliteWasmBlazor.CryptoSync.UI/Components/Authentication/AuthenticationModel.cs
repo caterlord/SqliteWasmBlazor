@@ -11,30 +11,31 @@ namespace SqliteWasmBlazor.CryptoSync.UI.Components.Authentication;
 /// public key, optional metadata, the metadata-edit dialog state, and
 /// the copy-to-clipboard signal. RxBlazor hosts that need to react to a
 /// successful key derivation observe <see cref="CredentialId"/> +
-/// <see cref="PublicKey"/> on this model — no callback bridges.
+/// <see cref="PublicKey"/> on this model directly.
 ///
 /// <para>
-/// <b>Why everything lives on this model.</b> RXBG061 forbids same-assembly
-/// composition of two <c>*ModelComponent</c> panels (a child <c>*ModelComponent</c>
-/// rendered inside a parent <c>*ModelComponent</c> in the same assembly).
-/// The Stage-2 scaffolding folds the previously-separate <c>PublicKeyDisplay</c>
-/// surface into <see cref="AuthenticationPanel"/> directly. If a future
-/// scenario needs a public-key display outside the auth flow, it's
-/// promoted to its own downstream-consumer panel then.
+/// <b>Error / status routing.</b> The injected <see cref="StatusBaseModel"/>
+/// is the centralized sink: command exceptions are auto-routed there
+/// through the per-command formatter (third <c>[ObservableCommand]</c>
+/// argument); explicit graceful-flow status (cancellation, success) is
+/// pushed via <see cref="StatusBaseModel.AddWarning"/> /
+/// <see cref="StatusBaseModel.AddSuccess"/> with a <c>source</c> tag.
+/// The host renders a <c>&lt;StatusDisplay/&gt;</c> shell-level component
+/// that consumes that sink.
 /// </para>
 /// </summary>
 [ObservableModelScope(ModelScope.Scoped)]
 [ObservableComponent]
 public partial class AuthenticationModel : ObservableModel
 {
-    public partial AuthenticationModel(IPrfAuthenticator authenticator);
+    public partial AuthenticationModel(
+        IPrfAuthenticator authenticator,
+        StatusModel statusModel);
 
     public partial string? CredentialId { get; set; }
     public partial string? PublicKey { get; set; }
     public partial PublicKeyMetadata? Metadata { get; set; }
     public partial bool? IsPrfSupported { get; set; }
-    public partial string? ErrorMessage { get; set; }
-    public partial string? SuccessMessage { get; set; }
 
     public partial bool DialogVisible { get; set; }
     public partial string? EditName { get; set; }
@@ -55,7 +56,7 @@ public partial class AuthenticationModel : ObservableModel
     [ObservableCommand(nameof(CheckPrfSupportAsync))]
     public partial IObservableCommandAsync CheckPrfSupport { get; }
 
-    [ObservableCommand(nameof(DeriveKeysAsync))]
+    [ObservableCommand(nameof(DeriveKeysAsync), null, nameof(FormatDeriveKeysError))]
     public partial IObservableCommandAsync DeriveKeys { get; }
 
     [ObservableCommand(nameof(ClearKeys))]
@@ -77,46 +78,34 @@ public partial class AuthenticationModel : ObservableModel
 
     private async Task CheckPrfSupportAsync()
     {
-        try
-        {
-            IsPrfSupported = await Authenticator.CheckPrfSupportAsync();
-        }
-        catch (Exception ex)
-        {
-            IsPrfSupported = false;
-            ErrorMessage = $"PRF support check failed: {ex.Message}";
-        }
+        // Pessimistic init — if the probe throws, IsPrfSupported stays false
+        // and the panel renders the "PRF not supported" branch.
+        IsPrfSupported = false;
+        IsPrfSupported = await Authenticator.CheckPrfSupportAsync();
     }
 
     private async Task DeriveKeysAsync(CancellationToken cancellationToken)
     {
-        ErrorMessage = null;
-        SuccessMessage = null;
-        try
+        var hint = string.IsNullOrWhiteSpace(CredentialId) ? null : CredentialId;
+        var result = await Authenticator.AuthenticateAsync(hint, cancellationToken);
+        if (result is null)
         {
-            var hint = string.IsNullOrWhiteSpace(CredentialId) ? null : CredentialId;
-            var result = await Authenticator.AuthenticateAsync(hint, cancellationToken);
-            if (result is null)
-            {
-                ErrorMessage = "Authentication was cancelled.";
-                return;
-            }
-            CredentialId = result.CredentialId;
-            PublicKey = result.PublicKeyBase64;
-            SuccessMessage = "Keys derived from passkey.";
+            StatusModel.AddWarning(
+                "Authentication was cancelled.",
+                nameof(DeriveKeys));
+            return;
         }
-        catch (Exception ex)
-        {
-            ErrorMessage = $"Key derivation failed: {ex.Message}";
-        }
+        CredentialId = result.CredentialId;
+        PublicKey = result.PublicKeyBase64;
+        StatusModel.AddSuccess(
+            "Keys derived from passkey.",
+            nameof(DeriveKeys));
     }
 
     private void ClearKeys()
     {
         PublicKey = null;
         Metadata = null;
-        ErrorMessage = null;
-        SuccessMessage = null;
     }
 
     private void OpenMetadataDialog()
@@ -155,4 +144,7 @@ public partial class AuthenticationModel : ObservableModel
     {
         PendingCopy = PublicKey;
     }
+
+    private string FormatDeriveKeysError(Exception ex) =>
+        $"Key derivation failed: {ex.Message}";
 }

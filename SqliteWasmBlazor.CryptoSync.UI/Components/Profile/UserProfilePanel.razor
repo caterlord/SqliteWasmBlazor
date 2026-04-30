@@ -19,12 +19,6 @@
                 <MudText>Loading profile...</MudText>
             </MudStack>
         }
-        else if (Model.ErrorMessage is not null)
-        {
-            <MudAlert Severity="Severity.Error" Class="mb-4" Variant="Variant.Outlined">
-                @Model.ErrorMessage
-            </MudAlert>
-        }
         else if (!Model.IsProvisioned)
         {
             <MudAlert Severity="Severity.Warning" Class="mb-4" Variant="Variant.Outlined">

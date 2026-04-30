@@ -17,7 +17,9 @@ namespace SqliteWasmBlazor.CryptoSync.UI.Components.Shared;
 [ObservableComponent]
 public partial class DatabaseErrorAlertModel : ObservableModel
 {
-    public partial DatabaseErrorAlertModel(IDatabaseResetService resetService);
+    public partial DatabaseErrorAlertModel(
+        IDatabaseResetService resetService,
+        StatusModel statusModel);
 
     public partial IDbInitFailure? Failure { get; set; }
 
@@ -28,7 +30,7 @@ public partial class DatabaseErrorAlertModel : ObservableModel
     /// </summary>
     public bool CanReset => ResetService.IsAvailable;
 
-    [ObservableCommand(nameof(RequestResetAsync), nameof(CanRequestReset))]
+    [ObservableCommand(nameof(RequestResetAsync), nameof(CanRequestReset), nameof(FormatResetError))]
     public partial IObservableCommandAsync RequestReset { get; }
 
     private bool CanRequestReset() => CanReset;
@@ -37,4 +39,7 @@ public partial class DatabaseErrorAlertModel : ObservableModel
     {
         await ResetService.ResetAsync(cancellationToken);
     }
+
+    private string FormatResetError(Exception ex) =>
+        $"Database reset failed: {ex.Message}";
 }

@@ -19,19 +19,8 @@
                       Class="mb-4"
                       Disabled="@Model.IsExecuting" />
 
-        @if (Model.ErrorMessage is not null)
-        {
-            <MudAlert Severity="Severity.Error" Class="mb-4" Variant="Variant.Outlined">
-                @Model.ErrorMessage
-            </MudAlert>
-        }
-
         @if (Model is { HasKeys: true, PublicKey: not null })
         {
-            <MudAlert Severity="Severity.Success" Class="mb-4" Variant="Variant.Outlined">
-                @Model.SuccessMessage
-            </MudAlert>
-
             <MudPaper Class="pa-4 mt-4" Elevation="0" Outlined="true">
                 <MudStack Row="true" AlignItems="AlignItems.Start" Justify="Justify.SpaceBetween">
                     <div Style="flex: 1; overflow: hidden;">

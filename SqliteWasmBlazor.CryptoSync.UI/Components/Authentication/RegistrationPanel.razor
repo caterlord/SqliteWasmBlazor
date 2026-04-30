@@ -33,20 +33,6 @@
                           HelperText="A friendly name for this passkey"
                           Class="mb-4"
                           Disabled="@Model.Register.Executing" />
-
-            @if (Model.ErrorMessage is not null)
-            {
-                <MudAlert Severity="Severity.Error" Class="mb-4" Variant="Variant.Outlined">
-                    @Model.ErrorMessage
-                </MudAlert>
-            }
-
-            @if (Model.SuccessMessage is not null)
-            {
-                <MudAlert Severity="Severity.Success" Class="mb-4" Variant="Variant.Outlined">
-                    @Model.SuccessMessage
-                </MudAlert>
-            }
         }
     </MudCardContent>
 

@@ -21,29 +21,22 @@
         }
         else
         {
-            @if (Model.ErrorMessage is not null)
-            {
-                <MudAlert Severity="Severity.Error" Class="mb-4" Variant="Variant.Outlined">
-                    @Model.ErrorMessage
-                </MudAlert>
-            }
-
             <MudText Typo="Typo.subtitle2" Class="mb-2">Create Invitation</MudText>
 
-            <MudTextField @bind-Value="Model.FormUsername"
+            <MudTextField @bind-Value="@Model.FormUsername"
                           Label="Username"
                           Variant="Variant.Outlined"
                           Required="true"
                           Class="mb-3"
                           Disabled="@Model.CreateInvitation.Executing" />
 
-            <MudTextField @bind-Value="Model.FormEmail"
+            <MudTextField @bind-Value="@Model.FormEmail"
                           Label="Email (optional)"
                           Variant="Variant.Outlined"
                           Class="mb-3"
                           Disabled="@Model.CreateInvitation.Executing" />
 
-            <MudTextField @bind-Value="Model.FormComment"
+            <MudTextField @bind-Value="@Model.FormComment"
                           Label="Comment (optional)"
                           Variant="Variant.Outlined"
                           Lines="2"
@@ -59,13 +52,6 @@
                 Issue Invitation
             </MudButtonAsyncRxOf>
 
-            @if (Model.CreatedBundleSummary is not null)
-            {
-                <MudAlert Severity="Severity.Success" Variant="Variant.Outlined" Class="mt-3">
-                    @Model.CreatedBundleSummary
-                </MudAlert>
-            }
-
             <MudDivider Class="my-4" />
 
             <MudText Typo="Typo.subtitle2" Class="mb-2">Pending Responses</MudText>
@@ -78,13 +64,6 @@
                                 StartIcon="@Icons.Material.Filled.Inbox">
                 Check Responses
             </MudButtonAsyncRxOf>
-
-            @if (Model.IngestedCount > 0)
-            {
-                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Class="mt-3">
-                    Ingested @Model.IngestedCount response(s).
-                </MudAlert>
-            }
         }
     </MudCardContent>
 </MudCard>

@@ -26,65 +26,59 @@ namespace SqliteWasmBlazor.CryptoSync.UI.Components.Invitation;
 [ObservableComponent]
 public partial class InvitationModel : ObservableModel
 {
-    public partial InvitationModel(ContactInvitationService invitationService);
+    public partial InvitationModel(
+        ContactInvitationService invitationService,
+        StatusModel statusModel);
 
     public partial string? FormUsername { get; set; }
     public partial string? FormEmail { get; set; }
     public partial string? FormComment { get; set; }
-    public partial string? CreatedBundleSummary { get; set; }
     public partial int IngestedCount { get; set; }
-    public partial string? ErrorMessage { get; set; }
 
-    [ObservableCommand(nameof(CreateInvitationAsync))]
+    [ObservableCommand(
+        nameof(CreateInvitationAsync),
+        nameof(CanCreateInvitation),
+        nameof(FormatCreateError))]
     public partial IObservableCommandAsync<IAdminInvitationContext> CreateInvitation { get; }
 
-    [ObservableCommand(nameof(IngestResponsesAsync))]
+    [ObservableCommand(nameof(IngestResponsesAsync), null, nameof(FormatIngestError))]
     public partial IObservableCommandAsync<IAdminInvitationContext> IngestResponses { get; }
+
+    private bool CanCreateInvitation() => !string.IsNullOrWhiteSpace(FormUsername);
 
     private async Task CreateInvitationAsync(IAdminInvitationContext adminContext)
     {
-        ErrorMessage = null;
-        CreatedBundleSummary = null;
-        try
-        {
-            var adminKeys = await adminContext.GetAdminKeysAsync();
-            var salt = await adminContext.GetDeploymentSaltBase64Async();
+        var adminKeys = await adminContext.GetAdminKeysAsync();
+        var salt = await adminContext.GetDeploymentSaltBase64Async();
 
-            if (string.IsNullOrWhiteSpace(FormUsername))
-            {
-                ErrorMessage = "Username is required.";
-                return;
-            }
+        var bundle = await InvitationService.CreateInvitationAsync(
+            adminKeys,
+            salt,
+            FormUsername!,
+            string.IsNullOrWhiteSpace(FormEmail) ? null : FormEmail,
+            FormComment);
 
-            var bundle = await InvitationService.CreateInvitationAsync(
-                adminKeys,
-                salt,
-                FormUsername,
-                string.IsNullOrWhiteSpace(FormEmail) ? null : FormEmail,
-                FormComment);
-
-            CreatedBundleSummary =
-                $"Invitation created for {FormUsername}. Group {bundle.GroupId:N}, "
-                + $"expires {bundle.ExpiresAt:yyyy-MM-dd HH:mm} UTC.";
-        }
-        catch (Exception ex)
-        {
-            ErrorMessage = $"Failed to create invitation: {ex.Message}";
-        }
+        StatusModel.AddSuccess(
+            $"Invitation created for {FormUsername}. Group {bundle.GroupId:N}, expires {bundle.ExpiresAt:yyyy-MM-dd HH:mm} UTC.",
+            nameof(CreateInvitation));
     }
 
     private async Task IngestResponsesAsync(IAdminInvitationContext adminContext)
     {
-        ErrorMessage = null;
-        try
+        var adminKeys = await adminContext.GetAdminKeysAsync();
+        var transport = await adminContext.GetSyncTransportAsync();
+        IngestedCount = await InvitationService.IngestInvitationResponsesAsync(adminKeys, transport);
+        if (IngestedCount > 0)
         {
-            var adminKeys = await adminContext.GetAdminKeysAsync();
-            var transport = await adminContext.GetSyncTransportAsync();
-            IngestedCount = await InvitationService.IngestInvitationResponsesAsync(adminKeys, transport);
-        }
-        catch (Exception ex)
-        {
-            ErrorMessage = $"Failed to ingest responses: {ex.Message}";
+            StatusModel.AddInfo(
+                $"Ingested {IngestedCount} invitation response(s).",
+                nameof(IngestResponses));
         }
     }
+
+    private string FormatCreateError(Exception ex) =>
+        $"Failed to create invitation: {ex.Message}";
+
+    private string FormatIngestError(Exception ex) =>
+        $"Failed to ingest responses: {ex.Message}";
 }

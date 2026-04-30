@@ -19,12 +19,6 @@
                 <MudText>Loading contacts...</MudText>
             </MudStack>
         }
-        else if (Model.ErrorMessage is not null)
-        {
-            <MudAlert Severity="Severity.Warning" Class="mb-4" Variant="Variant.Outlined">
-                @Model.ErrorMessage
-            </MudAlert>
-        }
         else if (Model.Contacts is null or { Count: 0 })
         {
             <MudAlert Severity="Severity.Info" Class="mb-4" Variant="Variant.Outlined">

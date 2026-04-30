@@ -15,14 +15,16 @@ namespace SqliteWasmBlazor.CryptoSync.UI.Components.Shared;
 [ObservableComponent]
 public partial class SessionExpiredPopoverModel : ObservableModel
 {
-    public partial SessionExpiredPopoverModel(ISessionAuthenticator authenticator);
+    public partial SessionExpiredPopoverModel(
+        ISessionAuthenticator authenticator,
+        StatusModel statusModel);
 
     public partial bool Visible { get; set; }
 
-    [ObservableCommand(nameof(ReAuthenticateAsync))]
+    [ObservableCommand(nameof(ReAuthenticateAsync), null, nameof(FormatReAuthenticateError))]
     public partial IObservableCommandAsync ReAuthenticate { get; }
 
-    [ObservableCommand(nameof(DismissAsync))]
+    [ObservableCommand(nameof(DismissAsync), null, nameof(FormatDismissError))]
     public partial IObservableCommandAsync Dismiss { get; }
 
     private async Task ReAuthenticateAsync(CancellationToken cancellationToken)
@@ -36,4 +38,10 @@ public partial class SessionExpiredPopoverModel : ObservableModel
         await Authenticator.DismissAsync(cancellationToken);
         Visible = false;
     }
+
+    private string FormatReAuthenticateError(Exception ex) =>
+        $"Re-authentication failed: {ex.Message}";
+
+    private string FormatDismissError(Exception ex) =>
+        $"Session dismiss failed: {ex.Message}";
 }

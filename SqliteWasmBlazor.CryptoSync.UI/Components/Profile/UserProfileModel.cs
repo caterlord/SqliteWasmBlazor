@@ -1,4 +1,3 @@
-using Microsoft.EntityFrameworkCore;
 using RxBlazorV2.Interface;
 using RxBlazorV2.Model;
 using RxBlazorV2.MudBlazor.Components;
@@ -16,14 +15,19 @@ namespace SqliteWasmBlazor.CryptoSync.UI.Components.Profile;
 /// <para>
 /// The model fetches a fresh <see cref="DeviceSettings"/> snapshot on
 /// <see cref="LoadProfile"/> via <see cref="DeviceIdentityService.GetAsync"/>
-/// and projects the fields onto observable properties for binding.
+/// and projects the fields onto observable properties for binding. State is
+/// reset to the unprovisioned defaults at the top of the command (pessimistic
+/// init) so an unhandled exception leaves the panel rendering its
+/// "not provisioned" branch automatically — no try/catch needed.
 /// </para>
 /// </summary>
 [ObservableModelScope(ModelScope.Scoped)]
 [ObservableComponent]
 public partial class UserProfileModel : ObservableModel
 {
-    public partial UserProfileModel(DeviceIdentityService deviceIdentity);
+    public partial UserProfileModel(
+        DeviceIdentityService deviceIdentity,
+        StatusModel statusModel);
 
     public partial string? DeviceName { get; set; }
     public partial string? ClientGuid { get; set; }
@@ -32,35 +36,37 @@ public partial class UserProfileModel : ObservableModel
     public partial Guid? AdminContactId { get; set; }
     public partial Guid? OwnContactId { get; set; }
     public partial bool IsProvisioned { get; set; }
-    public partial string? ErrorMessage { get; set; }
 
-    [ObservableCommand(nameof(LoadProfileAsync))]
+    [ObservableCommand(nameof(LoadProfileAsync), null, nameof(FormatLoadError))]
     public partial IObservableCommandAsync LoadProfile { get; }
 
     private async Task LoadProfileAsync()
     {
-        ErrorMessage = null;
-        try
-        {
-            var settings = await DeviceIdentity.GetAsync();
-            if (settings is null)
-            {
-                IsProvisioned = false;
-                return;
-            }
+        // Pessimistic init — if the read throws, IsProvisioned stays false
+        // and the panel renders the "not provisioned" alert.
+        IsProvisioned = false;
+        DeviceName = null;
+        ClientGuid = null;
+        CredentialId = null;
+        IsAdmin = false;
+        AdminContactId = null;
+        OwnContactId = null;
 
-            DeviceName = settings.DeviceName;
-            ClientGuid = settings.ClientGuid;
-            CredentialId = settings.CredentialId;
-            IsAdmin = settings.IsAdmin;
-            AdminContactId = settings.AdminContactId;
-            OwnContactId = settings.OwnContactId;
-            IsProvisioned = true;
-        }
-        catch (Exception ex)
+        var settings = await DeviceIdentity.GetAsync();
+        if (settings is null)
         {
-            ErrorMessage = $"Failed to load device profile: {ex.Message}";
-            IsProvisioned = false;
+            return;
         }
+
+        DeviceName = settings.DeviceName;
+        ClientGuid = settings.ClientGuid;
+        CredentialId = settings.CredentialId;
+        IsAdmin = settings.IsAdmin;
+        AdminContactId = settings.AdminContactId;
+        OwnContactId = settings.OwnContactId;
+        IsProvisioned = true;
     }
+
+    private string FormatLoadError(Exception ex) =>
+        $"Failed to load device profile: {ex.Message}";
 }

@@ -70,6 +70,7 @@ SqliteWasmBlazor/wwwroot
 SqliteWasmBlazor/native/lib/sqlite3_stub.o
 SqliteWasmBlazor.Crypto/wwwroot
 SqliteWasmBlazor.Crypto/TypeScript/packages/*/dist/
+src/Base/SqliteWasmBlazor/TypeScript-Crypto/packages/*/dist/
 
 # Internal documentation
 docs/internal/

@@ -70,6 +70,14 @@ internal class TestFactory
                         prfFactory, databaseService, provider);
                     _entries.Add(new TestEntry(
                         "VFS Encryption", syntheticSeed.Name, () => syntheticSeed.RunAsync()));
+
+                    // R3.2 — exercises the rekey ceremony against two
+                    // synthetic-seed-derived Ks; complements R3.1 by adding
+                    // rotation correctness on top of single-key round-trip.
+                    var syntheticRotation = new SyntheticPrfSeedKeyRotationTest(
+                        prfFactory, databaseService, provider);
+                    _entries.Add(new TestEntry(
+                        "VFS Encryption", syntheticRotation.Name, () => syntheticRotation.RunAsync()));
                 }
             }
         }

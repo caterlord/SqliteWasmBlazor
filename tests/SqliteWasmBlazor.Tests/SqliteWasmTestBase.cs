@@ -78,6 +78,8 @@ public abstract class SqliteWasmTestBase(IWaFixture fixture, ITestOutputHelper o
     [InlineData("CryptoSync_MultiTableRoundTrip")]
     // R3.1 — synthetic-PRF-seed → encrypted VFS composition test
     [InlineData("Synthetic_PrfSeed_DrivesEncryptedVfsRoundTrip")]
+    // R3.2 — synthetic-PRF-seed-driven rekey ceremony correctness
+    [InlineData("Synthetic_PrfSeed_KeyRotationPreservesRowsUnderNewKey")]
     // Raw Database Import/Export Tests
     [InlineData("ExportImport_RawDatabase")]
     [InlineData("ImportRawDatabase_InvalidFile")]

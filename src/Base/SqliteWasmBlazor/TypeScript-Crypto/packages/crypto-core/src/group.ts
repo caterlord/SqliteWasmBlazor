@@ -293,8 +293,11 @@ async function unwrapMemberCek(
  * Build canonical envelope string for signing/verification.
  * Format: "{groupContext}|{keyVersion}|{senderPublicKeyBase64}|{sha256(ciphertext)Base64}"
  * Matches C# GroupEncryptionService.BuildCanonicalEnvelope.
+ *
+ * Re-exported under `__test_buildCanonicalEnvelope` for the cross-language
+ * byte-equality test; the symbol stays module-private otherwise.
  */
-function buildCanonicalEnvelope(
+export function buildCanonicalEnvelope(
     groupContext: string,
     keyVersion: number,
     senderPublicKey: Uint8Array,

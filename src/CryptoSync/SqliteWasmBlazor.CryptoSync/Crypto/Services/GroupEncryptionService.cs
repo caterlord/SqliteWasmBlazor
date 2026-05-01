@@ -365,16 +365,28 @@ public sealed class GroupEncryptionService(ICryptoProvider cryptoProvider) : IGr
 
     /// <summary>
     /// Builds the canonical envelope string for signing/verification.
-    /// Includes a SHA-256 hash of the ciphertext to bind the signature to the encrypted content.
+    /// Includes a SHA-256 hash of the raw ciphertext bytes to bind the
+    /// signature to the encrypted content.
     /// </summary>
-    private static string BuildCanonicalEnvelope(
+    /// <remarks>
+    /// The hash is taken over the decoded ciphertext bytes (not the UTF-8
+    /// bytes of the base64 string they happen to be carried in) so the
+    /// envelope agrees byte-for-byte with the TS `buildCanonicalEnvelope`
+    /// in `crypto-core/src/group.ts`, which hashes its `Uint8Array`
+    /// ciphertext directly. Cross-language sign/verify round-trips depend
+    /// on this agreement.
+    ///
+    /// Internal (not private) so the cross-language vector test in
+    /// SqliteWasmBlazor.CryptoSync.Tests can pin the agreement.
+    /// </remarks>
+    internal static string BuildCanonicalEnvelope(
         string groupContext,
         int keyVersion,
         string senderPublicKey,
         SymmetricEncryptedData encrypted)
     {
         var ciphertextHash = Convert.ToBase64String(
-            SHA256.HashData(Encoding.UTF8.GetBytes(encrypted.Ciphertext)));
+            SHA256.HashData(Convert.FromBase64String(encrypted.Ciphertext)));
 
         return $"{groupContext}|{keyVersion}|{senderPublicKey}|{ciphertextHash}";
     }

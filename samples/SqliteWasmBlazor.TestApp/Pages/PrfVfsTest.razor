@@ -323,7 +323,10 @@
             SetStatus("This browser/authenticator doesn't support the WebAuthn PRF extension.", Severity.Error);
             return false;
         }
-        var ceremony = await PrfService.DeriveKeysDiscoverableAsync();
+        // Hint-aware ceremony: targets the most-recently-registered passkey
+        // via WebAuthn allowCredentials when a hint is stored, falling back
+        // to discoverable when the hint is missing or stale.
+        var ceremony = await PrfService.DeriveKeysWithHintAsync();
         if (!ceremony.Success)
         {
             var msg = ceremony.Cancelled

@@ -1,5 +1,6 @@
 using R3;
 using SqliteWasmBlazor.Crypto.Abstractions.Models;
+using SqliteWasmBlazor.Crypto.Abstractions.Services;
 using SqliteWasmBlazor.Crypto.Configuration;
 
 namespace SqliteWasmBlazor.Crypto.Services;
@@ -59,6 +60,16 @@ public interface IPrfService
     /// </summary>
     /// <returns>The credential ID and public key</returns>
     ValueTask<PrfResult<(string CredentialId, string PublicKey)>> DeriveKeysDiscoverableAsync();
+
+    /// <summary>
+    /// Hint-aware derivation: read the cached credentialId from
+    /// <see cref="IPasskeyHintProvider"/> and target it via WebAuthn
+    /// <c>allowCredentials</c> so the platform skips the picker. Falls back to
+    /// <see cref="DeriveKeysDiscoverableAsync"/> when no hint is stored or when
+    /// the hint is stale (clears the hint on <see cref="PrfErrorCode.CREDENTIAL_NOT_FOUND"/>).
+    /// </summary>
+    /// <returns>The credential ID and public key</returns>
+    ValueTask<PrfResult<(string CredentialId, string PublicKey)>> DeriveKeysWithHintAsync();
 
     /// <summary>
     /// Get the cached X25519 public key, if available.

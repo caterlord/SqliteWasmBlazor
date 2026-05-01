@@ -216,6 +216,47 @@ public class PrfVirtualAuthenticatorTests(PrfWaFixture fixture, ITestOutputHelpe
             new() { Timeout = StatusTimeoutMs });
     }
 
+    [Fact]
+    [Trait("Browser", "Chromium")]
+    public async Task HintTargetsLastRegisteredCredential_NoPickerWorkaroundNeeded()
+    {
+        await using var scenario = await fixture.CreateScenarioAsync(output);
+
+        await scenario.NavigateAsync(PrfTestPath);
+
+        // Register A → hint persists "A" → AuthAndOpen targets A → DB sealed
+        // under A's pubkey-bytes.
+        await ClickAsync(scenario, "Register passkey", FirstButtonVisibleTimeoutMs);
+        await ExpectStatusContainsAsync(scenario, "Passkey registered");
+
+        await ClickAsync(scenario, "Authenticate and open");
+        await ExpectStatusContainsAsync(scenario, "No DB exists yet");
+        await ClickAsync(scenario, "Insert + read 25 rows");
+        await ExpectStatusContainsAsync(scenario, "Round trip OK — total rows: 25");
+        await ClickAsync(scenario, "Lock (close DB + drop PRF session)");
+        await ExpectStatusContainsAsync(scenario, "DB closed");
+
+        // Register B on the same authenticator → hint overwrites to B.
+        // Crucially, A is still present on the authenticator — this scenario
+        // diverges from CredentialMismatch_SurfacesWrongKey by NOT calling
+        // WebAuthn.removeCredential(A). The hint targets B directly via
+        // allowCredentials, so the discoverable-picker non-determinism that
+        // forced the workaround in scenario 3 is bypassed entirely.
+        await ClickAsync(scenario, "Register passkey");
+        await ExpectStatusContainsAsync(scenario, "Passkey registered");
+
+        var bothCreds = await GetCredentialsAsync(scenario, scenario.PrimaryAuthenticatorId);
+        Assert.True(bothCreds.GetArrayLength() == 2,
+            $"Expected 2 credentials (A + B both present), found {bothCreds.GetArrayLength()}.");
+
+        // AuthAndOpen targets B via hint → B's pubkey-bytes don't match the
+        // slot-0 seal under A → WRONG_KEY. The deterministic outcome here
+        // (no flaky picker behavior, no removeCredential workaround) IS the
+        // assertion that the hint path is being exercised.
+        await ClickAsync(scenario, "Authenticate and open");
+        await ExpectStatusContainsAsync(scenario, "Wrong passkey for this DB");
+    }
+
     private static async Task ClickAsync(PrfScenario scenario, string buttonName, float? timeoutMs = null)
     {
         var button = scenario.Page.GetByRole(AriaRole.Button, new() { Name = buttonName, Exact = true });

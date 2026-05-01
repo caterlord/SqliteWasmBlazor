@@ -70,6 +70,11 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IAsymmetricEncryption, AsymmetricEncryptionService>();
         services.AddSingleton<ISigningService, SigningService>();
 
+        // Default passkey-hint provider: browser localStorage keyed by salt.
+        // Hosts can replace with a synced backend (CryptoSync table, etc.)
+        // via the standard DI replacement pattern.
+        services.AddSingleton<IPasskeyHintProvider, LocalStoragePasskeyHintProvider>();
+
         return services;
     }
 
@@ -112,6 +117,9 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ISymmetricEncryption, SymmetricEncryptionService>();
         services.AddScoped<IAsymmetricEncryption, AsymmetricEncryptionService>();
         services.AddScoped<ISigningService, SigningService>();
+
+        // Default passkey-hint provider: browser localStorage keyed by salt.
+        services.AddScoped<IPasskeyHintProvider, LocalStoragePasskeyHintProvider>();
 
         return services;
     }

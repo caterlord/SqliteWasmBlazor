@@ -71,6 +71,39 @@ export async function evaluatePrfDiscoverableOutput(
 }
 
 // ============================================================================
+// Passkey-hint storage (browser localStorage). Used by IPasskeyHintProvider
+// to remember the most-recently-registered credentialId so the next sign-in
+// can target it via WebAuthn allowCredentials and skip the picker UI.
+// Hint is advisory only — wrong/stale hints fall back to discoverable.
+// ============================================================================
+
+export function getPasskeyHint(key: string): string | null {
+    try {
+        return globalThis.localStorage.getItem(key);
+    } catch {
+        // localStorage may be unavailable (private browsing, sandbox) — treat
+        // as "no hint" so the caller falls back to discoverable.
+        return null;
+    }
+}
+
+export function setPasskeyHint(key: string, value: string): void {
+    try {
+        globalThis.localStorage.setItem(key, value);
+    } catch {
+        // Quota or unavailable — silently no-op. Hint is advisory.
+    }
+}
+
+export function clearPasskeyHint(key: string): void {
+    try {
+        globalThis.localStorage.removeItem(key);
+    } catch {
+        // Unavailable — silently no-op.
+    }
+}
+
+// ============================================================================
 // B64 Bridge functions (packed binary as Base64 strings for C# JSImport)
 // ============================================================================
 

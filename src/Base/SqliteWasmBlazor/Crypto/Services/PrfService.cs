@@ -7,6 +7,7 @@ using Microsoft.Extensions.Options;
 using R3;
 using SqliteWasmBlazor.Crypto.Abstractions;
 using SqliteWasmBlazor.Crypto.Abstractions.Models;
+using SqliteWasmBlazor.Crypto.Abstractions.Services;
 using SqliteWasmBlazor.Crypto.Configuration;
 using SqliteWasmBlazor.Crypto.Interop;
 using SqliteWasmBlazor.Crypto.Json;
@@ -25,6 +26,7 @@ public sealed partial class PrfService : IPrfService, IEd25519PublicKeyProvider,
     private readonly SqliteWasmBlazorCryptoOptions _sqliteWasmBlazorCryptoOptions;
     private readonly ISecureKeyCache _keyCache;
     private readonly ICryptoProvider _cryptoProvider;
+    private readonly IPasskeyHintProvider _hintProvider;
     private readonly SemaphoreSlim _initLock = new(1, 1);
     private bool _initialized;
 
@@ -43,13 +45,15 @@ public sealed partial class PrfService : IPrfService, IEd25519PublicKeyProvider,
         IOptions<KeyCacheOptions> cacheOptions,
         IOptions<SqliteWasmBlazorCryptoOptions> cryptoOptions,
         ISecureKeyCache keyCache,
-        ICryptoProvider cryptoProvider)
+        ICryptoProvider cryptoProvider,
+        IPasskeyHintProvider hintProvider)
     {
         _options = options.Value;
         _cacheOptions = cacheOptions.Value;
         _sqliteWasmBlazorCryptoOptions = cryptoOptions.Value;
         _keyCache = keyCache;
         _cryptoProvider = cryptoProvider;
+        _hintProvider = hintProvider;
 
         // Configure-once for the static interop. Idempotent — see NobleInterop.Configure.
         NobleInterop.Configure(_sqliteWasmBlazorCryptoOptions.BaseHref, _sqliteWasmBlazorCryptoOptions.AssetRoot);
@@ -120,7 +124,24 @@ public sealed partial class PrfService : IPrfService, IEd25519PublicKeyProvider,
         var resultJson = await JsInterop.Register(displayName, GetJsOptions());
         var result = JsonSerializer.Deserialize(resultJson, PrfJsonContext.Default.PrfResultPrfCredential);
 
-        return result ?? PrfResult<PrfCredential>.Fail(PrfErrorCode.REGISTRATION_FAILED);
+        if (result is null)
+        {
+            return PrfResult<PrfCredential>.Fail(PrfErrorCode.REGISTRATION_FAILED);
+        }
+
+        // Persist the new credentialId as the next-sign-in hint so the next
+        // ceremony can target it via allowCredentials and skip the picker.
+        // RawId (standard Base64) — not Id (URL-safe Base64) — because the
+        // TS-side base64ToBytes uses atob which only accepts standard Base64;
+        // DeriveKeysAsync(credentialId) feeds straight into that path.
+        // Hint is advisory — overwrites any previous value, no-ops on storage
+        // unavailability.
+        if (result.Success && result.Value is not null)
+        {
+            await _hintProvider.SetCredentialIdAsync(result.Value.RawId);
+        }
+
+        return result;
     }
 
        public async ValueTask<PrfResult<string>> DeriveKeysAsync(string credentialId)
@@ -158,6 +179,37 @@ public sealed partial class PrfService : IPrfService, IEd25519PublicKeyProvider,
 
         await StoreSeedAndDeriveKeysAsync(result.Value);
         return PrfResult<string>.Ok(_cachedX25519PublicKey!);
+    }
+
+       public async ValueTask<PrfResult<(string CredentialId, string PublicKey)>> DeriveKeysWithHintAsync()
+    {
+        var hintedId = await _hintProvider.GetCredentialIdAsync();
+        if (string.IsNullOrEmpty(hintedId))
+        {
+            // No hint stored (first sign-in, cleared, or storage unavailable)
+            // — fall through to the discoverable picker.
+            return await DeriveKeysDiscoverableAsync();
+        }
+
+        // Targeted ceremony: WebAuthn allowCredentials skips the picker when
+        // the platform recognises the credentialId.
+        var byHint = await DeriveKeysAsync(hintedId);
+        if (byHint.Success && byHint.Value is not null)
+        {
+            return PrfResult<(string, string)>.Ok((hintedId, byHint.Value));
+        }
+
+        // Stale hint — drop it and either propagate cancellation or retry
+        // discoverable. CREDENTIAL_NOT_FOUND is the canonical "this device no
+        // longer has that passkey" signal; treat any non-cancel failure the
+        // same way so a corrupted hint can't lock the user out.
+        if (!byHint.Cancelled)
+        {
+            await _hintProvider.ClearAsync();
+            return await DeriveKeysDiscoverableAsync();
+        }
+
+        return PrfResult<(string, string)>.UserCancelled();
     }
 
        public async ValueTask<PrfResult<(string CredentialId, string PublicKey)>> DeriveKeysDiscoverableAsync()

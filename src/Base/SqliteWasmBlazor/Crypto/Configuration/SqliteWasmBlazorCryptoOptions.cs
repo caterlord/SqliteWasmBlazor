@@ -11,6 +11,6 @@ public sealed class SqliteWasmBlazorCryptoOptions : SqliteWasmAssetOptions
 {
     public SqliteWasmBlazorCryptoOptions()
     {
-        AssetRoot = "_content/SqliteWasmBlazor.Crypto/";
+        AssetRoot = "_content/SqliteWasmBlazor/";
     }
 }

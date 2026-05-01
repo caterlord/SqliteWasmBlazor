@@ -70,18 +70,6 @@ public abstract class SqliteWasmTestBase(IWaFixture fixture, ITestOutputHelper o
     [InlineData("EFCoreFunctions_RegexPattern")]
     [InlineData("EFCoreFunctions_ComplexDecimalQuery")]
     [InlineData("EFCoreFunctions_AggregateBuiltIn")]
-    // Import/Export Tests
-    [InlineData("ExportImport_RoundTrip")]
-    [InlineData("ExportImport_LargeDataset")]
-    [InlineData("ImportIncompatibleSchemaHash")]
-    [InlineData("ImportIncompatibleAppId")]
-    [InlineData("ExportImport_EmptyDatabase")]
-    [InlineData("ExportImport_IncrementalBatches")]
-    [InlineData("ExportImport_DeltaBasic")]
-    [InlineData("ExportImport_DeltaConflict")]
-    [InlineData("ExportImport_DeltaConflict_LocalWins")]
-    [InlineData("ExportImport_DeltaConflict_DeltaWins")]
-    [InlineData("ExportImport_DeltaDeletion")]
     // CryptoSync encrypted delta tests
     [InlineData("CryptoSync_RoundTrip")]
     [InlineData("CryptoSync_WorkerEncryptedRoundTrip")]

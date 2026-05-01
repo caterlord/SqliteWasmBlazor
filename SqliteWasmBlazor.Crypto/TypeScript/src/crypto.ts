@@ -21,7 +21,6 @@ import {
     decryptAsymmetric as coreDecryptAsymmetric,
     // Key derivation
     deriveX25519KeyPairFromSeed,
-    deriveEd25519KeyPairFromSeed,
     deriveDualKeyPair as coreDeriveDualKeyPair,
     deriveHkdfKey as coreHkdfKey,
     deriveWrappingKey as coreDeriveWrappingKey,
@@ -98,40 +97,62 @@ function getCachedKeys(keyId: string): CachedKeySet | null {
 /**
  * Store and derive all keys from PRF seed.
  * Returns: [x25519Pub(32) | ed25519Pub(32)] = 64 bytes
+ *
+ * Failure-path hygiene: every derived secret temporary (Ed25519 seed, PKCS8
+ * wrapper, raw symmetric key) is wrapped in a scoped finally so a throw from
+ * crypto.subtle.importKey/exportKey cannot leave secret bytes on the JS heap.
+ * The X25519 private key is the only secret retained past the try block, and
+ * only once it has been successfully installed in keyCache; otherwise the
+ * outer finally zeroizes it.
  */
 export async function storeKeys(keyId: string, seed: Uint8Array, ttlMs: number | null): Promise<Uint8Array> {
+    let x25519Private: Uint8Array | null = null;
+    let x25519Public: Uint8Array | null = null;
+    let ed25519Public: Uint8Array | null = null;
+    let installed = false;
     try {
         // Derive X25519 keypair via crypto-core
         const x25519Kp = deriveX25519KeyPairFromSeed(seed);
-        const x25519Private = x25519Kp.privateKey;
-        const x25519Public = x25519Kp.publicKey;
+        x25519Private = x25519Kp.privateKey;
+        x25519Public = x25519Kp.publicKey;
 
         // Derive Ed25519 seed and import as non-extractable CryptoKey
         const ed25519Seed = coreHkdfKey(seed, 'ed25519-key', 32);
-        const pkcs8Key = wrapSeedInPkcs8(ed25519Seed);
-        const ed25519SigningKey = await crypto.subtle.importKey(
-            "pkcs8", toBuffer(pkcs8Key), { name: "Ed25519" }, false, ["sign"]
-        );
+        let ed25519SigningKey: CryptoKey;
+        try {
+            const pkcs8Key = wrapSeedInPkcs8(ed25519Seed);
+            try {
+                ed25519SigningKey = await crypto.subtle.importKey(
+                    "pkcs8", toBuffer(pkcs8Key), { name: "Ed25519" }, false, ["sign"]
+                );
 
-        // Get public key via temporary extractable import
-        const tempKey = await crypto.subtle.importKey(
-            "pkcs8", toBuffer(pkcs8Key), { name: "Ed25519" }, true, ["sign"]
-        );
-        const jwk = await crypto.subtle.exportKey("jwk", tempKey);
-        const ed25519Public = base64ToBytes(base64UrlToBase64(jwk.x!));
-
-        clearBytes(ed25519Seed);
-        clearBytes(pkcs8Key);
+                // Get public key via temporary extractable import
+                const tempKey = await crypto.subtle.importKey(
+                    "pkcs8", toBuffer(pkcs8Key), { name: "Ed25519" }, true, ["sign"]
+                );
+                const jwk = await crypto.subtle.exportKey("jwk", tempKey);
+                ed25519Public = base64ToBytes(base64UrlToBase64(jwk.x!));
+            } finally {
+                clearBytes(pkcs8Key);
+            }
+        } finally {
+            clearBytes(ed25519Seed);
+        }
 
         // Derive symmetric key as non-extractable AES CryptoKey
         const symmetricKey = coreHkdfKey(seed, 'symmetric-key', 32);
-        const aesEncryptKey = await crypto.subtle.importKey(
-            'raw', toBuffer(symmetricKey), { name: 'AES-GCM' }, false, ['encrypt']
-        );
-        const aesDecryptKey = await crypto.subtle.importKey(
-            'raw', toBuffer(symmetricKey), { name: 'AES-GCM' }, false, ['decrypt']
-        );
-        clearBytes(symmetricKey);
+        let aesEncryptKey: CryptoKey;
+        let aesDecryptKey: CryptoKey;
+        try {
+            aesEncryptKey = await crypto.subtle.importKey(
+                'raw', toBuffer(symmetricKey), { name: 'AES-GCM' }, false, ['encrypt']
+            );
+            aesDecryptKey = await crypto.subtle.importKey(
+                'raw', toBuffer(symmetricKey), { name: 'AES-GCM' }, false, ['decrypt']
+            );
+        } finally {
+            clearBytes(symmetricKey);
+        }
 
         // Remove existing entry
         removeKeys(keyId);
@@ -146,10 +167,25 @@ export async function storeKeys(keyId: string, seed: Uint8Array, ttlMs: number |
             x25519Private, x25519Public, ed25519SigningKey, ed25519Public,
             aesEncryptKey, aesDecryptKey, expiresAt, expirationTimer
         });
+        installed = true;
 
         return concatBytes(x25519Public, ed25519Public);
     } catch {
         return new Uint8Array(0);
+    } finally {
+        if (!installed) {
+            // Cache install failed — clear any retained buffers so secret
+            // material doesn't linger until GC.
+            if (x25519Private !== null) {
+                clearBytes(x25519Private);
+            }
+            if (x25519Public !== null) {
+                clearBytes(x25519Public);
+            }
+            if (ed25519Public !== null) {
+                clearBytes(ed25519Public);
+            }
+        }
     }
 }
 
@@ -297,14 +333,6 @@ export function getX25519PublicKey(privateKey: Uint8Array): Uint8Array {
 }
 
 /** Returns: [privKey(32) | pubKey(32)] */
-export function deriveX25519KeyPair(seed: Uint8Array): Uint8Array {
-    const kp = deriveX25519KeyPairFromSeed(seed);
-    const result = concatBytes(kp.privateKey, kp.publicKey);
-    clearBytes(kp.privateKey);
-    return result;
-}
-
-/** Returns: [privKey(32) | pubKey(32)] */
 export function generateEd25519KeyPair(): Uint8Array {
     const kp = coreGenerateEd25519KeyPair();
     const result = concatBytes(kp.privateKey, kp.publicKey);
@@ -315,14 +343,6 @@ export function generateEd25519KeyPair(): Uint8Array {
 /** Returns: pubKey(32) */
 export function getEd25519PublicKey(privateKey: Uint8Array): Uint8Array {
     return coreGetEd25519PublicKey(privateKey);
-}
-
-/** Returns: [privKey(32) | pubKey(32)] */
-export function deriveEd25519KeyPair(seed: Uint8Array): Uint8Array {
-    const kp = deriveEd25519KeyPairFromSeed(seed);
-    const result = concatBytes(kp.privateKey, kp.publicKey);
-    clearBytes(kp.privateKey);
-    return result;
 }
 
 /** Returns: signature(64) */
@@ -405,11 +425,9 @@ export function isSupported(): boolean {
 /** Base64([privKey(32)|pubKey(32)]) */
 export function generateX25519KeyPairB64(): string { return bytesToBase64(generateX25519KeyPair()); }
 export function getX25519PublicKeyB64(privB64: string): string { return bytesToBase64(getX25519PublicKey(base64ToBytes(privB64))); }
-export function deriveX25519KeyPairB64(seedB64: string): string { return bytesToBase64(deriveX25519KeyPair(base64ToBytes(seedB64))); }
 
 export function generateEd25519KeyPairB64(): string { return bytesToBase64(generateEd25519KeyPair()); }
 export function getEd25519PublicKeyB64(privB64: string): string { return bytesToBase64(getEd25519PublicKey(base64ToBytes(privB64))); }
-export function deriveEd25519KeyPairB64(seedB64: string): string { return bytesToBase64(deriveEd25519KeyPair(base64ToBytes(seedB64))); }
 
 /**
  * Base64(signature(64)). privKey crosses as a .NET MemoryView — a Span runtime
@@ -433,11 +451,18 @@ export function ed25519VerifyB64(sigB64: string, msgB64: string, pubB64: string)
  * Base64([x25519Priv(32)|x25519Pub(32)|ed25519Priv(32)|ed25519Pub(32)]).
  * The seed crosses as a .NET MemoryView; slice into a real Uint8Array and
  * zeroize that copy in finally so the seed never lingers on the JS heap.
+ * The packed dual-key result also contains private-key material — clear it
+ * after Base64 encoding so it doesn't survive until GC.
  */
 export function deriveDualKeyPairB64(seed: IMemoryView): string {
     const seedCopy = seed.slice();
     try {
-        return bytesToBase64(deriveDualKeyPair(seedCopy));
+        const result = deriveDualKeyPair(seedCopy);
+        try {
+            return bytesToBase64(result);
+        } finally {
+            clearBytes(result);
+        }
     } finally {
         clearBytes(seedCopy);
     }
@@ -460,11 +485,20 @@ export async function encryptAesGcmB64(plaintext: IMemoryView, key: IMemoryView,
     }
 }
 
-/** Base64(plaintext). key crosses as a .NET MemoryView; slice + zeroize. */
+/**
+ * Base64(plaintext). key crosses as a .NET MemoryView; slice + zeroize.
+ * UnwrapContentKey routes a wrapped CEK through this path, so the plaintext
+ * result is sensitive — clear it after Base64 encoding.
+ */
 export async function decryptAesGcmB64(ctB64: string, nonceB64: string, key: IMemoryView, aad: string | null = null): Promise<string> {
     const keyCopy = key.slice();
     try {
-        return bytesToBase64(await decryptAesGcm(base64ToBytes(ctB64), base64ToBytes(nonceB64), keyCopy, aad));
+        const result = await decryptAesGcm(base64ToBytes(ctB64), base64ToBytes(nonceB64), keyCopy, aad);
+        try {
+            return bytesToBase64(result);
+        } finally {
+            clearBytes(result);
+        }
     } finally {
         clearBytes(keyCopy);
     }
@@ -486,11 +520,19 @@ export async function decryptAsymmetricB64(ephPubB64: string, ctB64: string, non
 }
 
 export function deriveHkdfKeyB64(seedB64: string, domain: string): string { return bytesToBase64(deriveHkdfKey(base64ToBytes(seedB64), domain)); }
-/** ownPrivateKey crosses as a .NET MemoryView; slice + zeroize. */
+/**
+ * ownPrivateKey crosses as a .NET MemoryView; slice + zeroize. The derived
+ * wrapping key is itself a secret — clear after Base64 encoding.
+ */
 export function deriveWrappingKeyB64(ownPrivateKey: IMemoryView, recipPubB64: string, ctx: string): string {
     const priv = ownPrivateKey.slice();
     try {
-        return bytesToBase64(deriveWrappingKey(priv, base64ToBytes(recipPubB64), ctx));
+        const result = deriveWrappingKey(priv, base64ToBytes(recipPubB64), ctx);
+        try {
+            return bytesToBase64(result);
+        } finally {
+            clearBytes(result);
+        }
     } finally {
         clearBytes(priv);
     }

@@ -198,18 +198,6 @@ public sealed class NobleCryptoProvider : ICryptoProvider
     // KEY GENERATION
     // ============================================================
 
-    public async ValueTask<KeyPair> DeriveX25519KeyPairAsync(ReadOnlyMemory<byte> prfSeed)
-    {
-        await NobleInterop.EnsureInitializedAsync();
-        return UnpackKeyPair(NobleInterop.DeriveX25519KeyPair(Convert.ToBase64String(prfSeed.Span)));
-    }
-
-    public async ValueTask<KeyPair> DeriveEd25519KeyPairAsync(ReadOnlyMemory<byte> prfSeed)
-    {
-        await NobleInterop.EnsureInitializedAsync();
-        return UnpackKeyPair(NobleInterop.DeriveEd25519KeyPair(Convert.ToBase64String(prfSeed.Span)));
-    }
-
     public async ValueTask<DualKeyPairFull> DeriveDualKeyPairAsync(ReadOnlyMemory<byte> prfSeed)
     {
         await NobleInterop.EnsureInitializedAsync();

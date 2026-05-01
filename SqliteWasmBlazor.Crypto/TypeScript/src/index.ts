@@ -77,12 +77,10 @@ export async function evaluatePrfDiscoverableOutput(
 // X25519
 export const generateX25519KeyPairB64 = crypto.generateX25519KeyPairB64;
 export const getX25519PublicKeyB64 = crypto.getX25519PublicKeyB64;
-export const deriveX25519KeyPairB64 = crypto.deriveX25519KeyPairB64;
 
 // Ed25519
 export const generateEd25519KeyPairB64 = crypto.generateEd25519KeyPairB64;
 export const getEd25519PublicKeyB64 = crypto.getEd25519PublicKeyB64;
-export const deriveEd25519KeyPairB64 = crypto.deriveEd25519KeyPairB64;
 export const ed25519SignB64 = crypto.ed25519SignB64;
 export const ed25519VerifyB64 = crypto.ed25519VerifyB64;
 

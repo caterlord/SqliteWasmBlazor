@@ -231,18 +231,6 @@ public sealed class BouncyCastleCryptoProvider : ICryptoProvider
     // KEY GENERATION & DERIVATION
     // ============================================================
 
-    public ValueTask<KeyPair> DeriveX25519KeyPairAsync(ReadOnlyMemory<byte> prfSeed)
-    {
-        var keyPair = KeyGenerator.DeriveKeypairFromPrf(prfSeed.ToArray());
-        return ValueTask.FromResult(keyPair);
-    }
-
-    public ValueTask<KeyPair> DeriveEd25519KeyPairAsync(ReadOnlyMemory<byte> prfSeed)
-    {
-        var keyPair = KeyGenerator.DeriveEd25519KeyPair(prfSeed.ToArray());
-        return ValueTask.FromResult(keyPair);
-    }
-
     public ValueTask<DualKeyPairFull> DeriveDualKeyPairAsync(ReadOnlyMemory<byte> prfSeed)
     {
         var dualKeyPair = KeyGenerator.DeriveDualKeyPair(prfSeed.ToArray());

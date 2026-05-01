@@ -82,9 +82,6 @@ internal static partial class NobleInterop
     [JSImport("getX25519PublicKeyB64", ModuleName)]
     public static partial string GetX25519PublicKey(string privateKeyBase64);
 
-    [JSImport("deriveX25519KeyPairB64", ModuleName)]
-    public static partial string DeriveX25519KeyPair(string seedBase64);
-
     // ============================================================
     // ED25519 — sign returns Base64 of signature(64)
     // ============================================================
@@ -94,9 +91,6 @@ internal static partial class NobleInterop
 
     [JSImport("getEd25519PublicKeyB64", ModuleName)]
     public static partial string GetEd25519PublicKey(string privateKeyBase64);
-
-    [JSImport("deriveEd25519KeyPairB64", ModuleName)]
-    public static partial string DeriveEd25519KeyPair(string seedBase64);
 
     /// <summary>
     /// Sign with Ed25519. The private key crosses as a binary <c>MemoryView</c> so no

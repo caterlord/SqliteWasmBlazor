@@ -19,23 +19,6 @@ public static class KeyGenerator
     /// Derives an X25519 keypair from a 32-byte PRF output.
     /// The PRF output is used directly as the private key.
     /// </summary>
-    /// <param name="prfOutputBase64">32-byte PRF output (Base64)</param>
-    /// <returns>KeyPair with private and public keys</returns>
-    public static KeyPair DeriveKeypairFromPrf(string prfOutputBase64)
-    {
-        var prfOutput = Convert.FromBase64String(prfOutputBase64);
-        if (prfOutput.Length != 32)
-        {
-            throw new ArgumentException("PRF output must be 32 bytes", nameof(prfOutputBase64));
-        }
-
-        return DeriveKeypairFromPrf(prfOutput);
-    }
-
-    /// <summary>
-    /// Derives an X25519 keypair from a 32-byte PRF output.
-    /// The PRF output is used directly as the private key.
-    /// </summary>
     /// <param name="prfOutput">32-byte PRF output</param>
     /// <returns>KeyPair with private and public keys</returns>
     public static KeyPair DeriveKeypairFromPrf(byte[] prfOutput)
@@ -191,17 +174,6 @@ public static class KeyGenerator
         var ed25519Seed = HkdfDeriveKey(prfSeed, null, Ed25519Context, 32);
 
         return GenerateEd25519FromSeed(ed25519Seed);
-    }
-
-    /// <summary>
-    /// Derives an Ed25519 signing keypair from a Base64-encoded PRF seed.
-    /// </summary>
-    /// <param name="prfSeedBase64">Base64-encoded 32-byte PRF seed</param>
-    /// <returns>KeyPair with Ed25519 private (seed) and public keys</returns>
-    public static KeyPair DeriveEd25519KeyPair(string prfSeedBase64)
-    {
-        var prfSeed = Convert.FromBase64String(prfSeedBase64);
-        return DeriveEd25519KeyPair(prfSeed);
     }
 
     /// <summary>

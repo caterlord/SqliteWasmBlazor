@@ -96,20 +96,6 @@ public interface ICryptoProvider
     // ============================================================
 
     /// <summary>
-    /// Derives an X25519 keypair from a PRF seed.
-    /// </summary>
-    /// <param name="prfSeed">32-byte PRF seed</param>
-    /// <returns>X25519 keypair</returns>
-    ValueTask<KeyPair> DeriveX25519KeyPairAsync(ReadOnlyMemory<byte> prfSeed);
-
-    /// <summary>
-    /// Derives an Ed25519 keypair from a PRF seed.
-    /// </summary>
-    /// <param name="prfSeed">32-byte PRF seed</param>
-    /// <returns>Ed25519 keypair</returns>
-    ValueTask<KeyPair> DeriveEd25519KeyPairAsync(ReadOnlyMemory<byte> prfSeed);
-
-    /// <summary>
     /// Derives both X25519 and Ed25519 keypairs from a single PRF seed.
     /// </summary>
     /// <param name="prfSeed">32-byte PRF seed</param>

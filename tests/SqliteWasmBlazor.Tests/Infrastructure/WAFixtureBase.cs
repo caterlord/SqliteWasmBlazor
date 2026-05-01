@@ -16,7 +16,6 @@ public class WaFixtureBase : WebApplicationFactory<TestHost.Program>
     private IBrowser? _browser;
     private IBrowserContext? _browserContext;
     private bool _serverStarted;
-    private static bool _playwrightInstalled;
 
     public WaFixtureBase(int port, ITestOutputHelper? output = null)
     {
@@ -29,7 +28,7 @@ public class WaFixtureBase : WebApplicationFactory<TestHost.Program>
 
     protected async Task InitializeAsync(IWaFixture.BrowserType browserType, bool onePass, bool headless)
     {
-        InstallPlaywright();
+        PlaywrightInstaller.EnsureInstalled();
 
         // Start the Kestrel server if not already started
         if (!_serverStarted)
@@ -174,28 +173,4 @@ public class WaFixtureBase : WebApplicationFactory<TestHost.Program>
         });
     }
 
-    private static void InstallPlaywright()
-    {
-        if (_playwrightInstalled)
-        {
-            return;
-        }
-
-        var exitCode = Microsoft.Playwright.Program.Main(
-          new[] { "install-deps" });
-
-        if (exitCode != 0)
-        {
-            throw new Exception(
-              $"Playwright exited with code {exitCode} on install-deps");
-        }
-        exitCode = Microsoft.Playwright.Program.Main(new[] { "install" });
-        if (exitCode != 0)
-        {
-            throw new Exception(
-              $"Playwright exited with code {exitCode} on install");
-        }
-
-        _playwrightInstalled = true;
-    }
 }

@@ -41,9 +41,18 @@ public sealed class VapidCryptoProvider : IVapidCryptoProvider
         return await NobleInterop.ImportVapidKeyPairAsync(publicKeyBase64, pkcs8PrivateKeyBase64);
     }
 
-    public bool IsLoaded => NobleInterop.HasVapidKey();
+    // Sync paths must guard on NobleInterop.IsInitialized — the underlying
+    // [JSImport] aborts the WASM runtime if the JS module isn't loaded yet.
+    public bool IsLoaded => NobleInterop.IsInitialized && NobleInterop.HasVapidKey();
 
-    public void ClearKey() => NobleInterop.ClearVapidKey();
+    public void ClearKey()
+    {
+        if (!NobleInterop.IsInitialized)
+        {
+            return;
+        }
+        NobleInterop.ClearVapidKey();
+    }
 
     public async Task<PushSendResult> SendPushNotificationAsync(
         string endpoint, string p256dhBase64, string authBase64,

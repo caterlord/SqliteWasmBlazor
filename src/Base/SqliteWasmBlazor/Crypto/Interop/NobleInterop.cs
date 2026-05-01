@@ -38,6 +38,16 @@ internal static partial class NobleInterop
         _assetRoot = assetRoot;
     }
 
+    /// <summary>
+    /// Sync probe for the JS-module load state. Sync sites
+    /// (<see cref="HasKey"/>, <see cref="RemoveKeys"/>, <see cref="HasVapidKey"/>,
+    /// <see cref="ClearVapidKey"/>) must check this first because the underlying
+    /// <c>JSImport</c> aborts the WASM runtime on a not-imported assert,
+    /// which crashes any caller running before any async ceremony has had a
+    /// chance to load the module.
+    /// </summary>
+    public static bool IsInitialized => _initialized;
+
     public static async ValueTask EnsureInitializedAsync()
     {
         if (_initialized)

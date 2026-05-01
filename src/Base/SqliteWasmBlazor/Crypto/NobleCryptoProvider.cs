@@ -279,9 +279,21 @@ public sealed class NobleCryptoProvider : ICryptoProvider
         ));
     }
 
-    public bool HasCachedKey(string keyId) => NobleInterop.HasKey(keyId);
+    // Sync paths must guard on NobleInterop.IsInitialized: the underlying
+    // [JSImport]-bound calls assert the JS module is loaded and abort the
+    // WASM runtime if not — fatal during first-render evaluations that race
+    // the async EnsureInitializedAsync.
+    public bool HasCachedKey(string keyId) =>
+        NobleInterop.IsInitialized && NobleInterop.HasKey(keyId);
 
-    public void RemoveCachedKey(string keyId) => NobleInterop.RemoveKeys(keyId);
+    public void RemoveCachedKey(string keyId)
+    {
+        if (!NobleInterop.IsInitialized)
+        {
+            return;
+        }
+        NobleInterop.RemoveKeys(keyId);
+    }
 
     public async ValueTask<PrfResult<string>> SignWithKeyIdAsync(string message, string keyId)
     {

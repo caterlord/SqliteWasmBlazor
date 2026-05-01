@@ -21,6 +21,11 @@ public class PrfVirtualAuthenticatorTests(PrfWaFixture fixture, ITestOutputHelpe
     private const float ButtonEnabledTimeoutMs = 10000;
     private const float StatusTimeoutMs = 8000;
 
+    // Mirrors KeyCacheOptions.TtlMs configured in TestApp.Program.cs. Tests
+    // that drive session expiry must wait > this, then receive "PRF session
+    // ended" within StatusTimeoutMs.
+    private const int SessionTtlMs = 8000;
+
     [Fact]
     [Trait("Browser", "Chromium")]
     public async Task RegistrationHappyPath_StoresCredential()
@@ -168,6 +173,47 @@ public class PrfVirtualAuthenticatorTests(PrfWaFixture fixture, ITestOutputHelpe
 
         await ClickAsync(scenario, "Read row count (no writes)");
         await ExpectStatusContainsAsync(scenario, "Row count: 25");
+    }
+
+    [Fact]
+    [Trait("Browser", "Chromium")]
+    public async Task SessionExpiresOnTtl_DropsKeyAndReEnablesAuth()
+    {
+        await using var scenario = await fixture.CreateScenarioAsync(output);
+
+        await scenario.NavigateAsync(PrfTestPath);
+
+        // First click absorbs the cold WASM boot; subsequent clicks fall back
+        // to the dev-friendly ButtonEnabledTimeoutMs.
+        await ClickAsync(scenario, "Register passkey", FirstButtonVisibleTimeoutMs);
+        await ExpectStatusContainsAsync(scenario, "Passkey registered");
+
+        await ClickAsync(scenario, "Authenticate and open");
+        await ExpectStatusContainsAsync(scenario, "No DB exists yet");
+
+        // Authenticate buttons stay disabled while a PRF session is active
+        // (Disabled bindings on PrfService.HasCachedKeys()). Confirm the
+        // pre-expiry state before the timer fires.
+        var authButton = scenario.Page.GetByRole(AriaRole.Button,
+            new() { Name = "Authenticate and open", Exact = true });
+        await Assertions.Expect(authButton).ToBeDisabledAsync(
+            new() { Timeout = ButtonEnabledTimeoutMs });
+
+        // Wait past the configured TTL. SecureKeyCache + JS-side noble cache
+        // both fire after SessionTtlMs; KeyExpired observable fans out to
+        // PrfVfsTest.OnKeyExpired which clears _keyInstalled / _armoredOwnPubkey
+        // and posts the "PRF session ended" alert.
+        await ExpectStatusContainsAsync(
+            scenario,
+            "PRF session ended",
+            timeoutMs: SessionTtlMs + StatusTimeoutMs);
+
+        // After the timer fires HasCachedKeys() returns false, so the
+        // Authenticate button must re-enable — the timer/observable wire-up
+        // is the path under test (Lock + KeyExpired-fires-UI-update is
+        // already covered by scenario 3).
+        await Assertions.Expect(authButton).ToBeEnabledAsync(
+            new() { Timeout = StatusTimeoutMs });
     }
 
     private static async Task ClickAsync(PrfScenario scenario, string buttonName, float? timeoutMs = null)

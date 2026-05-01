@@ -23,9 +23,12 @@ public interface IPrfService
     string Salt { get; }
 
     /// <summary>
-    /// Observable that emits the cache key when keys expire due to TTL.
-    /// Format: <c>"prf-key:{salt}"</c> / <c>"prf-ed25519-key:{salt}"</c> / <c>"prf-seed:{salt}"</c>
-    /// / <c>"prf-domain:{domainId}"</c>.
+    /// Observable that emits the cache key when C#-side cached entries expire due to TTL.
+    /// Internal slots use the reserved <c>prf-seed:{salt}</c> prefix for the PRF seed and
+    /// <c>prf-domain:{domainId}</c> for HKDF-derived domain keys. The JS-side derived
+    /// key bundle (<c>prf-keys:{salt}</c>) maintains its own TTL in lockstep but does
+    /// not surface through this observable — subscribing to the seed key is enough to
+    /// detect session-end, since session = seed cached.
     /// </summary>
     Observable<string> KeyExpired { get; }
 
@@ -94,8 +97,8 @@ public interface IPrfService
     /// HKDF salt is empty; the PRF seed is already credential-scoped. Callers supply a short
     /// <paramref name="domainId"/> (their own identifier, e.g. <c>"sqlite-vfs:users.db"</c>)
     /// and the <paramref name="context"/> string (HKDF <c>info</c>) for domain separation.
-    /// The reserved <c>prf-domain:</c> prefix prevents collisions with internal
-    /// <c>prf-key:</c> / <c>prf-ed25519-key:</c> / <c>prf-seed:</c> slots. The returned
+    /// The reserved <c>prf-domain:</c> prefix prevents collisions with the internal
+    /// <c>prf-seed:</c> slot. The returned
     /// <see cref="PrfResult{T}.Value"/> is the fully qualified cache key — hand it to
     /// <see cref="ISecureKeyCache.UseKey(string, ReadOnlySpanAction{byte})"/> for scoped span
     /// access, and filter <see cref="KeyExpired"/> with <c>StartsWith("prf-domain:")</c> to

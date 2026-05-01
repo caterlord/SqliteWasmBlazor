@@ -202,9 +202,11 @@ public sealed partial class PrfService : IPrfService, IEd25519PublicKeyProvider,
         {
             _keyCache.Store(PrfSeedCacheKey, prfSeedBytes);
 
+            // TtlMs override takes precedence over TtlMinutes so integration
+            // tests can drive the JS-side expiry timer within an E2E budget.
             var ttlMs = _cacheOptions.Strategy switch
             {
-                KeyCacheStrategy.TIMED => _cacheOptions.TtlMinutes * 60_000,
+                KeyCacheStrategy.TIMED => _cacheOptions.TtlMs ?? _cacheOptions.TtlMinutes * 60_000,
                 _ => (int?)null,
             };
 

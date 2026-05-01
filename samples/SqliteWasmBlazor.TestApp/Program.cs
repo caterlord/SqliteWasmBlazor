@@ -90,6 +90,14 @@ builder.Services.AddSqliteWasm(o => o.BaseHref = baseHref);
 // Register SqliteWasmBlazor.Crypto services (Noble.js + SubtleCrypto)
 builder.Services.AddSqliteWasmBlazorCrypto(configure: o => o.BaseHref = baseHref);
 
+// Sub-minute TTL keeps the PRF session-expiry E2E test fast (waits ~9s for
+// expiry) while leaving the existing AuthAndOpen → Insert → Read scenarios
+// well within budget — post-auth ops typically complete inside 1-2s.
+builder.Services.Configure<SqliteWasmBlazor.Crypto.Configuration.KeyCacheOptions>(o =>
+{
+    o.TtlMs = 8000;
+});
+
 // CryptoSync-plane crypto layer (IGroupEncryption + IVapidCryptoProvider)
 // without the HTTP transport — TestApp drives group encryption directly.
 builder.Services.AddCryptoSyncCrypto();

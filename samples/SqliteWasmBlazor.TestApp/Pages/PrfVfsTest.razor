@@ -170,7 +170,12 @@
     // we don't HKDF-derive anything per-domain on this page.
     private const string DomainId = "sqlite-vfs:" + DatabaseName;
 
-    private string PrimaryCacheKey => "prf-key:" + PrfOptionsAccessor.Value.Salt;
+    // The C# SecureKeyCache stores the PRF seed under "prf-seed:{salt}" (see
+    // PrfService.PrfSeedCacheKey) and emits that exact id on TTL expiry. The
+    // JS-side derived-key bundle ("prf-keys:{salt}") expires in lockstep but
+    // doesn't fire a C# observable. Subscribing to the seed expiry is enough
+    // to drive the UI, since session = seed cached.
+    private string PrimaryCacheKey => "prf-seed:" + PrfOptionsAccessor.Value.Salt;
 
     private bool _keyInstalled;
     private bool _busy;

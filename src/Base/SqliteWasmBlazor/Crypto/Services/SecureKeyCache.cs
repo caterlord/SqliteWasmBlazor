@@ -43,7 +43,7 @@ public sealed class SecureKeyCache : ISecureKeyCache
         {
             KeyCacheStrategy.NONE => null, // No timer - removed after single use
             KeyCacheStrategy.SESSION => null, // No expiration (until page refresh)
-            KeyCacheStrategy.TIMED => TimeSpan.FromMinutes(_options.TtlMinutes),
+            KeyCacheStrategy.TIMED => TimedTtl(),
             _ => TimeSpan.FromMinutes(15) // Default
         };
 
@@ -242,6 +242,18 @@ public sealed class SecureKeyCache : ISecureKeyCache
                 RemoveExpired(keyId);
             }
         }
+    }
+
+    private TimeSpan TimedTtl()
+    {
+        // TtlMs takes precedence when set so integration tests can drive the
+        // expiry timer within an E2E budget without bumping production minutes.
+        if (_options.TtlMs is { } ms)
+        {
+            return TimeSpan.FromMilliseconds(ms);
+        }
+
+        return TimeSpan.FromMinutes(_options.TtlMinutes);
     }
 
     /// <summary>

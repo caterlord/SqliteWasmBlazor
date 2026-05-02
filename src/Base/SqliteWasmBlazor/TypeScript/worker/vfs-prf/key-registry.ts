@@ -8,7 +8,19 @@ import { clearBytes } from '@sqlitewasmblazor/crypto-core';
 
 const pathToKey = new Map<string, Uint8Array>();
 
+// Transfers ownership of `key` to the registry. If the path already has a
+// live key, the new key is wiped and rejected so a file handle cannot keep
+// using an old buffer that the registry no longer owns.
 export function registerKeyForPath(path: string, key: Uint8Array): void {
+    const existing = pathToKey.get(path);
+    if (existing !== undefined) {
+        if (existing !== key) {
+            clearBytes(key);
+        }
+        throw new Error(
+            `Encryption key is already registered for ${path}; clear it before registering a new key.`
+        );
+    }
     pathToKey.set(path, key);
 }
 

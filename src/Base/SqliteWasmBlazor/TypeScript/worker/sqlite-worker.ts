@@ -409,21 +409,29 @@ async function openDatabase(dbName: string, encryptionKey?: Uint8Array) {
 
     const dbPath = `/databases/${dbName}`;
 
+    let db = openDatabases.get(dbName);
+
     // Register the key BEFORE opening the DB. The VFS's xOpen reads the
     // registry to decide whether to stamp `file.key` on the opened file.
     // A re-open of an already-open DB with a different key is a caller
     // error; we don't support swapping keys for a live handle.
     if (encryptionKey) {
         if (encryptionKey.length !== 32) {
+            clearBytes(encryptionKey);
             throw new Error(
                 `encryptionKey must be 32 bytes, got ${encryptionKey.length}`
+            );
+        }
+        if (db) {
+            clearBytes(encryptionKey);
+            throw new Error(
+                `Cannot register encryption key for ${dbName} while the database is already open; close it first.`
             );
         }
         registerKeyForPath(dbPath, encryptionKey);
     }
 
     // Check if database needs to be opened
-    let db = openDatabases.get(dbName);
     if (!db) {
         try {
             // Use OpfsSAHPoolDb from the pool utility
@@ -529,12 +537,26 @@ async function openDatabase(dbName: string, encryptionKey?: Uint8Array) {
  */
 function registerEncryptionKey(dbName: string, key: Uint8Array) {
     if (key.length !== 32) {
+        clearBytes(key);
         throw new Error(`encryptionKey must be 32 bytes, got ${key.length}`);
+    }
+    if (openDatabases.has(dbName)) {
+        clearBytes(key);
+        throw new Error(
+            `Cannot register encryption key for ${dbName} while the database is already open; close it first.`
+        );
     }
     const dbPath = `/databases/${dbName}`;
     registerKeyForPath(dbPath, key);
 
-    const result = poolUtil.verifyEncryptionKey(dbPath);
+    let result: 'noExistingDb' | 'match' | 'wrongKey';
+    try {
+        result = poolUtil.verifyEncryptionKey(dbPath);
+    } catch (error) {
+        clearKeyForPath(dbPath);
+        throw error;
+    }
+
     if (result === 'wrongKey') {
         clearKeyForPath(dbPath);
         logger.warn(

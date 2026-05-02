@@ -82,6 +82,20 @@ describe('key-registry', () => {
         expect(getKeyForPath(path)).toBeUndefined();
     });
 
+    it('rejects duplicate register, wipes rejected key, and preserves live key', () => {
+        const path = '/t3.db';
+        const live = makeKey(11);
+        const rejected = makeKey(17);
+        registerKeyForPath(path, live);
+
+        expect(() => registerKeyForPath(path, rejected)).toThrow(/already registered/);
+        expect(getKeyForPath(path)).toBe(live);
+        expect(Array.from(live)).toEqual(Array.from(makeKey(11)));
+        expect(Array.from(rejected)).toEqual(new Array(32).fill(0));
+
+        clearKeyForPath(path);
+    });
+
     it('clearing an unregistered path is a no-op', () => {
         expect(() => clearKeyForPath('/never-registered.db')).not.toThrow();
     });
@@ -257,4 +271,3 @@ describe('physical slot layout (offset-remap)', () => {
         ).toThrow();
     });
 });
-

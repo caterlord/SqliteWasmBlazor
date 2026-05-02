@@ -49,13 +49,14 @@ public enum VfsExportMode
 
     /// <summary>
     /// Decrypt every slot under the registered source key and return plain
-    /// SQLite pages a standard SQLite implementation can open. If no key is
-    /// registered, the result is identical to <see cref="VERBATIM"/>.
+    /// SQLite pages a standard SQLite implementation can open. Source MUST
+    /// be encrypted (a key must be registered for this path); use
+    /// <see cref="VERBATIM"/> for plain DBs.
     /// </summary>
     PLAIN = 1,
 
     /// <summary>
-    /// Decrypt every slot under the registered source key (if any) and
+    /// Decrypt every slot under the registered source key and
     /// re-encrypt under a caller-supplied 32-byte ChaCha20-Poly1305 key with
     /// the same path-bound AAD. Requires the <c>newKey</c> argument to be
     /// exactly 32 bytes; AAD binds <c>dbPath</c> so the recipient must
@@ -169,7 +170,7 @@ public interface ISqliteWasmDatabaseService
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Exports a raw .db file from OPFS in one of three slot-rekey flavours.
+    /// Exports a raw .db file from OPFS in one of four slot-rekey flavours.
     /// The worker always closes the DB before exporting for a consistent
     /// snapshot — caller must re-open afterwards.
     ///
@@ -179,14 +180,18 @@ public interface ISqliteWasmDatabaseService
     /// bytes; plain pages for plain DBs, slot-format ciphertext for
     /// encrypted DBs.</description></item>
     /// <item><description><see cref="VfsExportMode.PLAIN"/> — decrypts every
-    /// slot under the registered key and returns plain SQLite pages. No-op
-    /// for plain DBs.</description></item>
+    /// slot under the registered key and returns plain SQLite pages. Source
+    /// must be encrypted.</description></item>
     /// <item><description><see cref="VfsExportMode.REKEY"/> — decrypts under
-    /// the registered source key (if any) and re-encrypts under
+    /// the registered source key and re-encrypts under
     /// <paramref name="newKey"/> with the same path-bound AAD. The resulting
     /// bytes can be handed to <see cref="ImportDatabaseAsync"/> on the
     /// recipient side, where they verify-on-write under the same key
-    /// registered via <see cref="InstallEncryptionKeyAsync"/>.</description></item>
+    /// registered via <see cref="InstallEncryptionKeyAsync"/>. Source must
+    /// be encrypted.</description></item>
+    /// <item><description><see cref="VfsExportMode.ENCRYPT"/> — encrypts a
+    /// plain source under <paramref name="newKey"/>. Source must be plain and
+    /// start with the SQLite magic header.</description></item>
     /// </list>
     ///
     /// AAD constraint (REKEY): the recipient must import to the same database
@@ -241,10 +246,9 @@ public interface ISqliteWasmDatabaseService
     /// In-place encrypted → plain transition. Reads the OPFS file under the
     /// currently registered key, decrypts every slot to plain SQLite pages,
     /// and writes the plain pages back to the same OPFS path. Bytes never
-    /// cross the C#↔JS boundary; the caller should
-    /// <see cref="ClearEncryptionKeyAsync"/> if any state remains (the
-    /// worker's registry is cleared by the implicit close inside this
-    /// method).
+    /// cross the C#↔JS boundary; the worker always clears the path registry
+    /// before returning, including install-then-decrypt flows where no DB was
+    /// open for the implicit close to clear.
     ///
     /// <para>
     /// Caller responsibility: a key must be registered for this path
@@ -335,6 +339,10 @@ public interface ISqliteWasmDatabaseService
     /// <c>OpenDatabaseAsync(database)</c> calls (without an explicit key)
     /// will pick up the registered key at xOpen time and route through the
     /// encrypted VFS path.
+    ///
+    /// The target DB must not already be open in the worker, and the path
+    /// must not already have a registered key. Close or clear first before
+    /// installing a replacement key.
     ///
     /// The span is consumed synchronously: bytes are copied into a
     /// MessagePack envelope, posted to the worker, and the envelope buffer

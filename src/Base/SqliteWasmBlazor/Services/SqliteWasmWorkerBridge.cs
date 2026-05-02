@@ -127,6 +127,15 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
     {
         await EnsureInitializedAsync(cancellationToken);
 
+        // The worker keeps DB handles open across transient DbConnection
+        // instances. If this database is already open, re-use the live handle
+        // and do not send another key envelope: xOpen has already stamped the
+        // file key, and the worker registry rejects duplicate installs.
+        if (_openDatabases.Contains(database))
+        {
+            return;
+        }
+
         if (encryptionKey is null)
         {
             // Plain DB — existing path, pure JSON request.
@@ -385,7 +394,7 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
             throw;
         }
 
-        return WaitAndZeroizeInPlaceEnvelope(tcs.Task, header, envelope, requestId, cancellationToken);
+        return WaitAndZeroizeInPlaceEnvelope(tcs.Task, header, envelope, requestId, databaseName, cancellationToken);
     }
 
     private async Task WaitAndZeroizeInPlaceEnvelope(
@@ -393,6 +402,7 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
         VfsKeyHeader header,
         byte[] envelope,
         int requestId,
+        string databaseName,
         CancellationToken cancellationToken)
     {
         try
@@ -408,6 +418,9 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
                 throw new InvalidOperationException(
                     $"Worker returned unexpected in-place rekey outcome code {result.RowsAffected}");
             }
+            // Worker closes the DB during in-place conversion for a stable
+            // OPFS snapshot; force the next DbContext open to re-enter xOpen.
+            _openDatabases.Remove(databaseName);
         }
         finally
         {
@@ -436,6 +449,9 @@ internal sealed partial class SqliteWasmWorkerBridge : ISqliteWasmDatabaseServic
             throw new InvalidOperationException(
                 $"Worker returned unexpected in-place decrypt outcome code {result.RowsAffected}");
         }
+        // Worker closes the DB during in-place conversion for a stable OPFS
+        // snapshot; force the next DbContext open to re-enter xOpen.
+        _openDatabases.Remove(databaseName);
     }
 
     /// <summary>

@@ -1,0 +1,344 @@
+theory VfsInplaceLifecycle
+begin
+
+/*
+ * Symbolic lifecycle model for the PRF-keyed VFS in-place conversion wrapper.
+ *
+ * This is deliberately separate from vfs.spthy:
+ *   - vfs.spthy models the per-slot AEAD and rekey primitive.
+ *   - this file models the operational wrapper around that primitive:
+ *     key-registry state, source-shape preconditions, in-place replacement,
+ *     rollback, and the post-state after encrypted -> plain downgrade.
+ *
+ * Implementation references:
+ *   src/Base/SqliteWasmBlazor/TypeScript/worker/sqlite-worker.ts
+ *   src/Base/SqliteWasmBlazor/TypeScript/worker/vfs-prf/key-registry.ts
+ *   src/Base/SqliteWasmBlazor/TypeScript/worker/vfs-prf/rekey.ts
+ *
+ * Concrete contract modeled:
+ *   - ENCRYPT / encryptDb require a plain source and an empty registry.
+ *     The implementation enforces this with !isPathEncrypted plus source
+ *     length and the 16-byte "SQLite format 3\0" magic header.
+ *   - PLAIN / REKEY / decryptDb require an encrypted source and a registered
+ *     source key.
+ *   - decryptDb clears the per-path registry in both success and rollback
+ *     paths, so a now-plain file never keeps K_old registered.
+ *   - in-place replacement is temp-write + backup + promote. On failure after
+ *     the original has moved aside, the original is restored.
+ *
+ * Out of scope:
+ *   - AEAD authenticity/secrecy of slots; see vfs.spthy.
+ *   - Browser same-origin script attackers and memory disclosure.
+ *   - Crash/power-loss between OPFS metadata operations. This model covers
+ *     the synchronous error/exception paths the worker can roll back from.
+ */
+
+// ---------------------------------------------------------------------------
+// State facts.
+// ---------------------------------------------------------------------------
+
+// Linear file state: a path holds either a plain SQLite file or PRF-VFS slot
+// ciphertext. The final argument is an abstract blob identity.
+//
+// Registry state is also linear: either empty, or holding a key for the path.
+
+// File(Device, Path, Shape, Blob)
+// RegEmpty(Device, Path)
+// RegKey(Device, Path, Key)
+
+// Temporary replacement state used by the atomic-ish helper.
+// Backup(Device, Path, OriginalShape, OriginalBlob)
+// Temp(Device, Path, NewShape, NewBlob)
+// PendingEncrypt(Device, Path, OriginalBlob, NewBlob, TargetKey)
+// PendingDecrypt(Device, Path, OriginalBlob, NewBlob, SourceKey)
+
+// ---------------------------------------------------------------------------
+// Initial file/registry states.
+// ---------------------------------------------------------------------------
+
+rule InitPlainFile:
+    [ Fr(~plain_blob) ]
+  --[ FileInitialized($Device, $Path, 'plain', ~plain_blob)
+    , PostState($Device, $Path, 'plain', 'empty')
+    ]->
+    [ File($Device, $Path, 'plain', ~plain_blob)
+    , RegEmpty($Device, $Path)
+    ]
+
+rule InitEncryptedFileWithoutRegistry:
+    [ Fr(~cipher_blob) ]
+  --[ FileInitialized($Device, $Path, 'encrypted', ~cipher_blob)
+    , PostState($Device, $Path, 'encrypted', 'empty')
+    ]->
+    [ File($Device, $Path, 'encrypted', ~cipher_blob)
+    , RegEmpty($Device, $Path)
+    ]
+
+rule RegisterKeyForEncryptedFile:
+    [ File($Device, $Path, 'encrypted', cipher_blob)
+    , RegEmpty($Device, $Path)
+    , Fr(~k)
+    ]
+  --[ KeyRegistered($Device, $Path, ~k)
+    , SourceState($Device, $Path, 'encrypted', 'empty')
+    , PostState($Device, $Path, 'encrypted', 'registered')
+    ]->
+    [ File($Device, $Path, 'encrypted', cipher_blob)
+    , RegKey($Device, $Path, ~k)
+    ]
+
+rule ClearRegisteredKey:
+    [ RegKey($Device, $Path, k) ]
+  --[ KeyCleared($Device, $Path, k)
+    , RegistryPostState($Device, $Path, 'empty')
+    ]->
+    [ RegEmpty($Device, $Path) ]
+
+// ---------------------------------------------------------------------------
+// Export wrapper preconditions.
+// ---------------------------------------------------------------------------
+
+rule ExportEncryptPlainSource:
+    [ File($Device, $Path, 'plain', plain_blob)
+    , RegEmpty($Device, $Path)
+    , Fr(~target_key)
+    , Fr(~cipher_blob)
+    ]
+  --[ ExportEncryptAccepted($Device, $Path, plain_blob, ~cipher_blob, ~target_key)
+    , SourceState($Device, $Path, 'plain', 'empty')
+    , PlainMagicChecked($Device, $Path, plain_blob)
+    , PostState($Device, $Path, 'plain', 'empty')
+    ]->
+    [ File($Device, $Path, 'plain', plain_blob)
+    , RegEmpty($Device, $Path)
+    ]
+
+rule ExportPlainEncryptedSource:
+    [ File($Device, $Path, 'encrypted', cipher_blob)
+    , RegKey($Device, $Path, k_old)
+    , Fr(~plain_blob)
+    ]
+  --[ ExportPlainAccepted($Device, $Path, cipher_blob, ~plain_blob, k_old)
+    , SourceState($Device, $Path, 'encrypted', 'registered')
+    , PostState($Device, $Path, 'encrypted', 'registered')
+    ]->
+    [ File($Device, $Path, 'encrypted', cipher_blob)
+    , RegKey($Device, $Path, k_old)
+    ]
+
+rule ExportRekeyEncryptedSource:
+    [ File($Device, $Path, 'encrypted', cipher_blob)
+    , RegKey($Device, $Path, k_old)
+    , Fr(~target_key)
+    , Fr(~new_cipher_blob)
+    ]
+  --[ ExportRekeyAccepted($Device, $Path, cipher_blob, ~new_cipher_blob, k_old, ~target_key)
+    , SourceState($Device, $Path, 'encrypted', 'registered')
+    , PostState($Device, $Path, 'encrypted', 'registered')
+    ]->
+    [ File($Device, $Path, 'encrypted', cipher_blob)
+    , RegKey($Device, $Path, k_old)
+    ]
+
+// ---------------------------------------------------------------------------
+// In-place plain -> encrypted.
+// ---------------------------------------------------------------------------
+
+rule BeginEncryptInPlace:
+    [ File($Device, $Path, 'plain', plain_blob)
+    , RegEmpty($Device, $Path)
+    , Fr(~target_key)
+    , Fr(~cipher_blob)
+    ]
+  --[ EncryptInPlaceStarted($Device, $Path, plain_blob, ~cipher_blob, ~target_key)
+    , SourceState($Device, $Path, 'plain', 'empty')
+    , PlainMagicChecked($Device, $Path, plain_blob)
+    ]->
+    [ Backup($Device, $Path, 'plain', plain_blob)
+    , Temp($Device, $Path, 'encrypted', ~cipher_blob)
+    , RegEmpty($Device, $Path)
+    , PendingEncrypt($Device, $Path, plain_blob, ~cipher_blob, ~target_key)
+    ]
+
+rule CommitEncryptInPlace:
+    [ Backup($Device, $Path, 'plain', plain_blob)
+    , Temp($Device, $Path, 'encrypted', cipher_blob)
+    , RegEmpty($Device, $Path)
+    , PendingEncrypt($Device, $Path, plain_blob, cipher_blob, target_key)
+    ]
+  --[ ReplaceCommitted($Device, $Path, 'plain', 'encrypted')
+    , EncryptInPlaceAccepted($Device, $Path, plain_blob, cipher_blob, target_key)
+    , SourceState($Device, $Path, 'plain', 'empty')
+    , PlainMagicChecked($Device, $Path, plain_blob)
+    , PostState($Device, $Path, 'encrypted', 'empty')
+    ]->
+    [ File($Device, $Path, 'encrypted', cipher_blob)
+    , RegEmpty($Device, $Path)
+    ]
+
+rule RollbackEncryptInPlace:
+    [ Backup($Device, $Path, 'plain', plain_blob)
+    , Temp($Device, $Path, 'encrypted', cipher_blob)
+    , RegEmpty($Device, $Path)
+    , PendingEncrypt($Device, $Path, plain_blob, cipher_blob, target_key)
+    ]
+  --[ ReplaceFailed($Device, $Path, 'plain', 'encrypted', plain_blob)
+    , OriginalRestored($Device, $Path, 'plain', plain_blob)
+    , EncryptInPlaceFailed($Device, $Path, plain_blob, cipher_blob, target_key)
+    , PostState($Device, $Path, 'plain', 'empty')
+    ]->
+    [ File($Device, $Path, 'plain', plain_blob)
+    , RegEmpty($Device, $Path)
+    ]
+
+// ---------------------------------------------------------------------------
+// In-place encrypted -> plain.
+// ---------------------------------------------------------------------------
+
+rule BeginDecryptInPlace:
+    [ File($Device, $Path, 'encrypted', cipher_blob)
+    , RegKey($Device, $Path, k_old)
+    , Fr(~plain_blob)
+    ]
+  --[ DecryptInPlaceStarted($Device, $Path, cipher_blob, ~plain_blob, k_old)
+    , SourceState($Device, $Path, 'encrypted', 'registered')
+    ]->
+    [ Backup($Device, $Path, 'encrypted', cipher_blob)
+    , Temp($Device, $Path, 'plain', ~plain_blob)
+    , RegKey($Device, $Path, k_old)
+    , PendingDecrypt($Device, $Path, cipher_blob, ~plain_blob, k_old)
+    ]
+
+rule CommitDecryptInPlace:
+    [ Backup($Device, $Path, 'encrypted', cipher_blob)
+    , Temp($Device, $Path, 'plain', plain_blob)
+    , RegKey($Device, $Path, k_old)
+    , PendingDecrypt($Device, $Path, cipher_blob, plain_blob, k_old)
+    ]
+  --[ ReplaceCommitted($Device, $Path, 'encrypted', 'plain')
+    , DecryptInPlaceAccepted($Device, $Path, cipher_blob, plain_blob, k_old)
+    , SourceState($Device, $Path, 'encrypted', 'registered')
+    , KeyCleared($Device, $Path, k_old)
+    , PostState($Device, $Path, 'plain', 'empty')
+    ]->
+    [ File($Device, $Path, 'plain', plain_blob)
+    , RegEmpty($Device, $Path)
+    ]
+
+rule RollbackDecryptInPlace:
+    [ Backup($Device, $Path, 'encrypted', cipher_blob)
+    , Temp($Device, $Path, 'plain', plain_blob)
+    , RegKey($Device, $Path, k_old)
+    , PendingDecrypt($Device, $Path, cipher_blob, plain_blob, k_old)
+    ]
+  --[ ReplaceFailed($Device, $Path, 'encrypted', 'plain', cipher_blob)
+    , OriginalRestored($Device, $Path, 'encrypted', cipher_blob)
+    , DecryptInPlaceFailed($Device, $Path, cipher_blob, plain_blob, k_old)
+    , KeyCleared($Device, $Path, k_old)
+    , PostState($Device, $Path, 'encrypted', 'empty')
+    ]->
+    [ File($Device, $Path, 'encrypted', cipher_blob)
+    , RegEmpty($Device, $Path)
+    ]
+
+// ---------------------------------------------------------------------------
+// Lemmas.
+// ---------------------------------------------------------------------------
+
+/*
+ * L0 - key registration is only modeled from an encrypted source with an
+ * empty registry. Implementation counterpart: registerKeyForPath rejects an
+ * already-registered path instead of overwriting the live key.
+ */
+lemma key_registration_requires_empty_registry:
+    "All Device path k #t.
+        KeyRegistered(Device, path, k) @ #t
+        ==> SourceState(Device, path, 'encrypted', 'empty') @ #t"
+
+/*
+ * L1 - ENCRYPT / encryptDb accept only plain sources with empty registry.
+ */
+lemma export_encrypt_requires_plain_unregistered:
+    "All Device path plain_blob cipher_blob target_key #t.
+        ExportEncryptAccepted(Device, path, plain_blob, cipher_blob, target_key) @ #t
+        ==> SourceState(Device, path, 'plain', 'empty') @ #t
+          & PlainMagicChecked(Device, path, plain_blob) @ #t"
+
+lemma encrypt_in_place_requires_plain_unregistered:
+    "All Device path plain_blob cipher_blob target_key #t.
+        EncryptInPlaceAccepted(Device, path, plain_blob, cipher_blob, target_key) @ #t
+        ==> SourceState(Device, path, 'plain', 'empty') @ #t
+          & PlainMagicChecked(Device, path, plain_blob) @ #t"
+
+/*
+ * L2 - PLAIN / REKEY / decryptDb accept only encrypted sources with a
+ * registered source key.
+ */
+lemma export_plain_requires_encrypted_registered:
+    "All Device path cipher_blob plain_blob k_old #t.
+        ExportPlainAccepted(Device, path, cipher_blob, plain_blob, k_old) @ #t
+        ==> SourceState(Device, path, 'encrypted', 'registered') @ #t"
+
+lemma export_rekey_requires_encrypted_registered:
+    "All Device path cipher_blob new_cipher_blob k_old target_key #t.
+        ExportRekeyAccepted(Device, path, cipher_blob, new_cipher_blob, k_old, target_key) @ #t
+        ==> SourceState(Device, path, 'encrypted', 'registered') @ #t"
+
+lemma decrypt_in_place_requires_encrypted_registered:
+    "All Device path cipher_blob plain_blob k_old #t.
+        DecryptInPlaceAccepted(Device, path, cipher_blob, plain_blob, k_old) @ #t
+        ==> SourceState(Device, path, 'encrypted', 'registered') @ #t"
+
+/*
+ * L3 - decryptDb clears K_old and ends with an empty registry, both on
+ * success and on rollback. This captures the audit fix for Install-then-
+ * Decrypt sequences where closeDatabase alone would not clear the registry.
+ */
+lemma decrypt_success_clears_registered_key:
+    "All Device path cipher_blob plain_blob k_old #t.
+        DecryptInPlaceAccepted(Device, path, cipher_blob, plain_blob, k_old) @ #t
+        ==> KeyCleared(Device, path, k_old) @ #t
+          & PostState(Device, path, 'plain', 'empty') @ #t"
+
+lemma decrypt_failure_clears_registered_key:
+    "All Device path cipher_blob plain_blob k_old #t.
+        DecryptInPlaceFailed(Device, path, cipher_blob, plain_blob, k_old) @ #t
+        ==> KeyCleared(Device, path, k_old) @ #t
+          & PostState(Device, path, 'encrypted', 'empty') @ #t"
+
+/*
+ * L4 - rollback preserves the original file shape/blob for both directions.
+ */
+lemma replacement_failure_restores_original:
+    "All Device path from_shape to_shape original_blob #t.
+        ReplaceFailed(Device, path, from_shape, to_shape, original_blob) @ #t
+        ==> OriginalRestored(Device, path, from_shape, original_blob) @ #t"
+
+lemma encrypt_failure_restores_plain_original:
+    "All Device path plain_blob cipher_blob target_key #t.
+        EncryptInPlaceFailed(Device, path, plain_blob, cipher_blob, target_key) @ #t
+        ==> OriginalRestored(Device, path, 'plain', plain_blob) @ #t
+          & PostState(Device, path, 'plain', 'empty') @ #t"
+
+lemma decrypt_failure_restores_encrypted_original:
+    "All Device path cipher_blob plain_blob k_old #t.
+        DecryptInPlaceFailed(Device, path, cipher_blob, plain_blob, k_old) @ #t
+        ==> OriginalRestored(Device, path, 'encrypted', cipher_blob) @ #t
+          & PostState(Device, path, 'encrypted', 'empty') @ #t"
+
+/*
+ * L5 - successful in-place operations have the intended post-state.
+ */
+lemma encrypt_success_poststate:
+    "All Device path plain_blob cipher_blob target_key #t.
+        EncryptInPlaceAccepted(Device, path, plain_blob, cipher_blob, target_key) @ #t
+        ==> ReplaceCommitted(Device, path, 'plain', 'encrypted') @ #t
+          & PostState(Device, path, 'encrypted', 'empty') @ #t"
+
+lemma decrypt_success_poststate:
+    "All Device path cipher_blob plain_blob k_old #t.
+        DecryptInPlaceAccepted(Device, path, cipher_blob, plain_blob, k_old) @ #t
+        ==> ReplaceCommitted(Device, path, 'encrypted', 'plain') @ #t
+          & PostState(Device, path, 'plain', 'empty') @ #t"
+
+end

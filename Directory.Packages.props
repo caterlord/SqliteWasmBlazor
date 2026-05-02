@@ -6,6 +6,7 @@
 
   <!-- ASP.NET Core / Blazor WebAssembly (.NET 10) -->
   <ItemGroup>
+    <PackageVersion Include="Microsoft.AspNetCore.Components.Authorization" Version="10.0.7" />
     <PackageVersion Include="Microsoft.AspNetCore.Components.Web" Version="10.0.7" />
     <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.7" />
     <PackageVersion Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.7" />

@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Components.Authorization;
 using Microsoft.Extensions.DependencyInjection;
 using SqliteWasmBlazor.Crypto.UI.Services;
 
@@ -69,6 +70,18 @@ public static class CryptoUiServiceCollectionExtensions
     {
         ObservableModels.Initialize(services);
         RxBlazorV2.MudBlazor.ObservableModels.Initialize(services);
+
+        // PrfAuthenticationStateProvider is the single source of truth for
+        // "is a PRF session active?" — registered both as itself (so the
+        // panel-backing AuthenticationModel can inject it via partial
+        // ctor) and as Blazor's standard AuthenticationStateProvider seam
+        // (so consumer hosts get <AuthorizeView> + [CascadingParameter]
+        // Task<AuthenticationState> for free, no hand-rolled R3
+        // subscriptions in page partials).
+        services.AddScoped<PrfAuthenticationStateProvider>();
+        services.AddScoped<AuthenticationStateProvider>(
+            sp => sp.GetRequiredService<PrfAuthenticationStateProvider>());
+
         return services;
     }
 

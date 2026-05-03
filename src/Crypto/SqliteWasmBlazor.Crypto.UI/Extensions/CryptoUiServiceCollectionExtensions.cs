@@ -111,4 +111,58 @@ public static class CryptoUiServiceCollectionExtensions
         services.AddSingleton<IPrfAuthenticator, PrfAuthenticator>();
         return services;
     }
+
+    /// <summary>
+    /// Register a database name with the
+    /// <see cref="EncryptedDatabaseLifecycle"/> auto-unlock service. The
+    /// lifecycle service closes the worker DB on auth-state-cleared (TTL /
+    /// Lock) and installs the freshly-derived X25519 pubkey on
+    /// auth-state-set, promoting any boot-time
+    /// <see cref="DbInitState.ENCRYPTED_LOCKED"/> back to
+    /// <see cref="DbInitState.READY"/> on
+    /// <see cref="VfsKeyInstallResult.MATCH"/>.
+    ///
+    /// <para>
+    /// Idempotent on the database name; safe to call multiple times for
+    /// the same name. The service registration itself is also idempotent
+    /// — first call wires the singleton, subsequent calls reuse it.
+    /// </para>
+    ///
+    /// <para>
+    /// <b>Eager activation.</b> The lifecycle subscribes to the
+    /// <see cref="AuthenticationStateProvider.AuthenticationStateChanged"/>
+    /// event in its constructor; the host MUST resolve the service after
+    /// <c>builder.Build()</c> for the subscription to be live before any
+    /// page renders. Typical:
+    /// <code>
+    /// var host = builder.Build();
+    /// host.Services.GetRequiredService&lt;EncryptedDatabaseLifecycle&gt;();
+    /// </code>
+    /// </para>
+    /// </summary>
+    public static IServiceCollection AddCryptoUIEncryptedDatabase(
+        this IServiceCollection services,
+        string databaseName)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(databaseName);
+
+        // First-call registration of the singleton; later calls reuse it.
+        services.AddSingleton<EncryptedDatabaseLifecycle>();
+
+        // Defer the per-database register call until the singleton is
+        // resolved. Decorating the singleton via ImplementationFactory
+        // would complicate test substitution; instead use a startup-style
+        // configurator service that runs once on first lifecycle activation.
+        services.AddSingleton(new EncryptedDatabaseRegistration(databaseName));
+
+        return services;
+    }
 }
+
+/// <summary>
+/// Marker registration consumed by <see cref="EncryptedDatabaseLifecycle"/>
+/// during eager activation: each instance corresponds to one database name
+/// the host wants auto-managed. Multiple registrations resolve to a list
+/// the lifecycle drains into <see cref="EncryptedDatabaseLifecycle.RegisterDatabase"/>.
+/// </summary>
+public sealed record EncryptedDatabaseRegistration(string DatabaseName);

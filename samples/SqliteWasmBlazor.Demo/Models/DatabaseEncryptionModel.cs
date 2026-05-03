@@ -58,8 +58,6 @@ public partial class DatabaseEncryptionModel : ObservableModel
         IDbContextFactory<TodoDbContext> contextFactory,
         IPrfService prfService,
         IOptions<PrfOptions> prfOptions,
-        IDbInitializationStatus dbInitStatus,
-        IDbInitializationReporter dbInitReporter,
         AuthenticationModel auth,
         StatusModel statusModel,
         IStringLocalizer<DatabaseEncryptionModel> localizer);
@@ -123,85 +121,18 @@ public partial class DatabaseEncryptionModel : ObservableModel
 
     /// <summary>
     /// Auto-detected internal observer (RxBlazorV2 §7) keyed on
-    /// <see cref="AuthenticationModel.PublicKey"/>. Owns the worker-side
-    /// encryption-key lifecycle for <see cref="DatabaseName"/> in lockstep
-    /// with the C# auth state:
-    /// <list type="bullet">
-    ///   <item><b>Auth cleared (TTL expiry / Lock).</b> Close the DB at
-    ///         the worker — <c>closeDatabase</c> drops the registry entry
-    ///         as a side effect. The next operation that touches the DB
-    ///         must wait for re-install. Locked invariant: TTL means
-    ///         "lock the keys"; the worker registry surviving a TTL would
-    ///         allow encryption / decryption past the auth window the
-    ///         cache promises.</item>
-    ///   <item><b>Auth set (sign-in / cache hydration).</b> If the DB is
-    ///         encrypted, push the freshly-derived X25519 pubkey into the
-    ///         worker registry so the next EF Core open can decrypt
-    ///         pages. Close-then-install because
-    ///         <c>registerEncryptionKey</c> rejects when the DB is
-    ///         already open at the worker. EF Core re-opens lazily on
-    ///         the next <c>CreateDbContextAsync</c>.</item>
-    /// </list>
+    /// <see cref="AuthenticationModel.PublicKey"/>. Page-level concern only
+    /// — refreshes the state pill (Exists / IsEncrypted / ItemCount /
+    /// SizeBytes) when the user signs in or out. The worker-side
+    /// encryption-key lifecycle (close on TTL, install on sign-in,
+    /// promote DbInitState back to READY) is owned by the
+    /// <c>EncryptedDatabaseLifecycle</c> singleton in Crypto.UI; this
+    /// model just observes the resulting Auth.PublicKey transition.
     /// </summary>
     private async Task OnAuthPublicKeyChangedAsync(CancellationToken cancellationToken)
     {
-        if (string.IsNullOrEmpty(Auth.PublicKey))
-        {
-            // Auth gone — drop any open worker DB so the registry releases K.
-            // Idempotent at the worker; safe even if the DB was never opened
-            // by this scope.
-            try
-            {
-                await DatabaseService.CloseDatabaseAsync(DatabaseName, cancellationToken);
-            }
-            catch
-            {
-                // Worker may already be closed; non-fatal.
-            }
-            await RefreshAsync(cancellationToken);
-            return;
-        }
-
-        // Authenticated. Probe shape (no key needed for VERBATIM read).
+        _ = Auth.PublicKey;
         await RefreshAsync(cancellationToken);
-
-        if (!Exists || IsEncrypted != true)
-        {
-            return;
-        }
-
-        var ck = TryGetCachedPubkeyBytes();
-        if (ck is null)
-        {
-            return;
-        }
-
-        // Close-then-install: registerEncryptionKey throws if the DB handle
-        // is live (worker open-state guard, audit-fix `257e155`). Closing
-        // also wipes any stale registry entry so the install is the sole
-        // source of K for the next open.
-        try
-        {
-            await DatabaseService.CloseDatabaseAsync(DatabaseName, cancellationToken);
-        }
-        catch
-        {
-            // Already closed — proceed.
-        }
-        await DatabaseService.InstallEncryptionKeyAsync(DatabaseName, ck, cancellationToken);
-
-        // Re-probe so ItemCount populates via EF Core, which now opens the DB
-        // with the just-registered K on the first read.
-        await RefreshAsync(cancellationToken);
-
-        // If boot-time init reported ENCRYPTED_LOCKED, this successful
-        // post-install probe confirms the DB is now readable — promote
-        // back to READY so the suppressed alert remains hidden and any
-        // other consumer probing IDbInitializationStatus sees green.
-        if (DbInitStatus.State == DbInitState.ENCRYPTED_LOCKED && ItemCount is not null)
-        {
-            DbInitReporter.Report(DbInitState.READY);
-        }
     }
 
     /// <summary>

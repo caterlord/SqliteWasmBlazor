@@ -1,19 +1,29 @@
+@implements IDisposable
+@inject IDbInitializationStatus DbInitializationStatus
+
 <MudNavMenu>
     <MudNavLink Href="" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.Home">Home</MudNavLink>
-    @if (DbInitializationStatus.State == DbInitState.READY)
-    {
-        <MudNavLink Href="todos" Icon="@Icons.Material.Filled.CheckBox">Todo List</MudNavLink>
-        <MudHidden Breakpoint="Breakpoint.SmAndDown">
-            <MudNavLink Href="multiview" Icon="@Icons.Material.Filled.ViewQuilt">Multi View</MudNavLink>
-        </MudHidden>
-        <MudNavLink Href="multidatabase" Icon="@Icons.Material.Filled.Storage">Multi-Database</MudNavLink>
-        <MudNavLink Href="database-encryption" Icon="@Icons.Material.Filled.EnhancedEncryption">Encryption</MudNavLink>
-        <MudNavLink Href="administration" Icon="@Icons.Material.Filled.Settings">Administration</MudNavLink>
-    }
+    <MudNavLink Href="todos" Icon="@Icons.Material.Filled.CheckBox">Todo List</MudNavLink>
+    <MudHidden Breakpoint="Breakpoint.SmAndDown">
+        <MudNavLink Href="multiview" Icon="@Icons.Material.Filled.ViewQuilt">Multi View</MudNavLink>
+    </MudHidden>
+    <MudNavLink Href="multidatabase" Icon="@Icons.Material.Filled.Storage">Multi-Database</MudNavLink>
+    <MudNavLink Href="database-encryption" Icon="@Icons.Material.Filled.EnhancedEncryption">Encryption</MudNavLink>
+    <MudNavLink Href="administration" Icon="@Icons.Material.Filled.Settings">Administration</MudNavLink>
 </MudNavMenu>
 
-@code
-{
-    [Inject]
-    public required IDbInitializationStatus DbInitializationStatus { get; init; }
+@code {
+    @* Links are always visible so the user can navigate to the encryption
+       page (or anywhere else) when the DB is locked. Each page gates its
+       own content via <AuthorizeView Policy="DatabaseOpen">. We still
+       subscribe to Changed so future per-link state-styling can react. *@
+
+    protected override void OnInitialized()
+    {
+        DbInitializationStatus.Changed += HandleChanged;
+    }
+
+    private void HandleChanged() => InvokeAsync(StateHasChanged);
+
+    public void Dispose() => DbInitializationStatus.Changed -= HandleChanged;
 }

@@ -1,4 +1,4 @@
-﻿@page "/"
+@page "/"
 
 <PageTitle>SqliteWasmBlazor</PageTitle>
 
@@ -9,6 +9,16 @@
     </MudText>
 
     <DatabaseErrorAlert />
+
+    @* Home itself doesn't touch the DB, but if the DB is encrypted-locked
+       there's nothing the user can do from the nav menu without unlocking
+       first — surface the panel here so the default route is a useful
+       entry point on cold reload of an encrypted DB. *@
+    <AuthorizeView Policy="DatabaseOpen">
+        <NotAuthorized>
+            <AuthenticationPanel />
+        </NotAuthorized>
+    </AuthorizeView>
 
     <MudText Typo="Typo.caption" Color="Color.Secondary">
         Build: @_buildTime

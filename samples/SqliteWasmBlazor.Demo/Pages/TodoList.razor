@@ -15,6 +15,12 @@
 
     <DatabaseErrorAlert />
 
+    <AuthorizeView Policy="DatabaseOpen" Context="_">
+        <NotAuthorized>
+            <AuthenticationPanel />
+        </NotAuthorized>
+        <Authorized>
+
     @* Add new todo. *@
     <MudPaper Elevation="2" Class="pa-4 mb-6">
         <MudText Typo="Typo.h6" Class="mb-3">
@@ -211,6 +217,9 @@
             </MudItem>
         </MudGrid>
     </MudPaper>
+
+        </Authorized>
+    </AuthorizeView>
 </MudContainer>
 
 @code {

@@ -77,7 +77,19 @@ public static class CryptoUiServiceCollectionExtensions
         // (so consumer hosts get <AuthorizeView> + [CascadingParameter]
         // Task<AuthenticationState> for free, no hand-rolled R3
         // subscriptions in page partials).
-        services.AddAuthorizationCore();
+        services.AddAuthorizationCore(options =>
+        {
+            // DatabaseOpen policy — gates pages that touch the DB. Satisfied
+            // when the boot DB state is READY (plain DB OR encrypted DB with
+            // worker K installed). NotAuthorized branch typically renders
+            // <AuthenticationPanel/> so the user can sign in to unlock an
+            // encrypted DB; once EncryptedDatabaseLifecycle promotes state
+            // back to READY, the AuthorizeView flips automatically.
+            options.AddPolicy("DatabaseOpen", policy =>
+                policy.RequireClaim(
+                    PrfAuthenticationStateProvider.DatabaseStateClaim,
+                    PrfAuthenticationStateProvider.DatabaseStateOpen));
+        });
         services.AddSingleton<PrfAuthenticationStateProvider>();
         services.AddSingleton<AuthenticationStateProvider>(
             sp => sp.GetRequiredService<PrfAuthenticationStateProvider>());

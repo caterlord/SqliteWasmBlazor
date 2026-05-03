@@ -15,6 +15,12 @@
 
     <DatabaseErrorAlert />
 
+    <AuthorizeView Policy="DatabaseOpen">
+        <NotAuthorized>
+            <AuthenticationPanel />
+        </NotAuthorized>
+        <Authorized>
+
     <MudPaper Elevation="2" Class="pa-4 mb-6">
         <MudText Typo="Typo.h6" Class="mb-3">
             <MudIcon Icon="@Icons.Material.Filled.OpenInNew" Size="Size.Small" Class="mr-1" />
@@ -84,6 +90,9 @@
             </MudStack>
         </MudStack>
     </MudPaper>
+
+        </Authorized>
+    </AuthorizeView>
 </MudContainer>
 
 @* Floating Windows *@

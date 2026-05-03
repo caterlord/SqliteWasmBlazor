@@ -41,6 +41,14 @@
         Database administration and performance testing tools
     </MudText>
 
+    <DatabaseErrorAlert />
+
+    <AuthorizeView Policy="DatabaseOpen">
+        <NotAuthorized>
+            <AuthenticationPanel />
+        </NotAuthorized>
+        <Authorized>
+
     <!-- Performance Testing Card -->
     <MudPaper Elevation="2" Class="pa-4 mb-6">
         <MudText Typo="Typo.h6" Class="mb-3">
@@ -160,6 +168,9 @@
             }
         </MudStack>
     </MudPaper>
+
+        </Authorized>
+    </AuthorizeView>
 </MudContainer>
 
 @code {

@@ -13,6 +13,14 @@
     Notes can reference todos across databases via a loose Guid reference (no FK constraint).
 </MudText>
 
+<DatabaseErrorAlert />
+
+<AuthorizeView Policy="DatabaseOpen">
+    <NotAuthorized>
+        <AuthenticationPanel />
+    </NotAuthorized>
+    <Authorized>
+
 <MudGrid>
     <MudItem xs="12" md="6">
         <MudPaper Class="pa-4" Elevation="2">
@@ -146,6 +154,9 @@
         </MudPaper>
     </MudItem>
 </MudGrid>
+
+    </Authorized>
+</AuthorizeView>
 
 @code {
     private List<Todo> _todos = new();

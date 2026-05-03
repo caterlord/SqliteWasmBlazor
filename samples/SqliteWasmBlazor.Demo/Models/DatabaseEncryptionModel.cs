@@ -120,18 +120,76 @@ public partial class DatabaseEncryptionModel : ObservableModel
     private bool CanWipe() => Exists;
 
     /// <summary>
-    /// Auto-detected internal observer (RxBlazorV2): private async method
-    /// that reads <see cref="AuthenticationModel.PublicKey"/>; the SG wires
-    /// a subscription so this runs every time auth state flips. Without it,
-    /// an encrypted DB's <see cref="ItemCount"/> stays null after auth
-    /// because the initial pre-auth <see cref="RefreshAsync"/> call ran
-    /// without a registered key. Page-side gating via
-    /// <c>&lt;AuthorizeView&gt;</c> hides the controls when anonymous, but
-    /// the model still owns the data refresh contract.
+    /// Auto-detected internal observer (RxBlazorV2 §7) keyed on
+    /// <see cref="AuthenticationModel.PublicKey"/>. Owns the worker-side
+    /// encryption-key lifecycle for <see cref="DatabaseName"/> in lockstep
+    /// with the C# auth state:
+    /// <list type="bullet">
+    ///   <item><b>Auth cleared (TTL expiry / Lock).</b> Close the DB at
+    ///         the worker — <c>closeDatabase</c> drops the registry entry
+    ///         as a side effect. The next operation that touches the DB
+    ///         must wait for re-install. Locked invariant: TTL means
+    ///         "lock the keys"; the worker registry surviving a TTL would
+    ///         allow encryption / decryption past the auth window the
+    ///         cache promises.</item>
+    ///   <item><b>Auth set (sign-in / cache hydration).</b> If the DB is
+    ///         encrypted, push the freshly-derived X25519 pubkey into the
+    ///         worker registry so the next EF Core open can decrypt
+    ///         pages. Close-then-install because
+    ///         <c>registerEncryptionKey</c> rejects when the DB is
+    ///         already open at the worker. EF Core re-opens lazily on
+    ///         the next <c>CreateDbContextAsync</c>.</item>
+    /// </list>
     /// </summary>
     private async Task OnAuthPublicKeyChangedAsync(CancellationToken cancellationToken)
     {
-        _ = Auth.PublicKey;
+        if (string.IsNullOrEmpty(Auth.PublicKey))
+        {
+            // Auth gone — drop any open worker DB so the registry releases K.
+            // Idempotent at the worker; safe even if the DB was never opened
+            // by this scope.
+            try
+            {
+                await DatabaseService.CloseDatabaseAsync(DatabaseName, cancellationToken);
+            }
+            catch
+            {
+                // Worker may already be closed; non-fatal.
+            }
+            await RefreshAsync(cancellationToken);
+            return;
+        }
+
+        // Authenticated. Probe shape (no key needed for VERBATIM read).
+        await RefreshAsync(cancellationToken);
+
+        if (!Exists || IsEncrypted != true)
+        {
+            return;
+        }
+
+        var ck = TryGetCachedPubkeyBytes();
+        if (ck is null)
+        {
+            return;
+        }
+
+        // Close-then-install: registerEncryptionKey throws if the DB handle
+        // is live (worker open-state guard, audit-fix `257e155`). Closing
+        // also wipes any stale registry entry so the install is the sole
+        // source of K for the next open.
+        try
+        {
+            await DatabaseService.CloseDatabaseAsync(DatabaseName, cancellationToken);
+        }
+        catch
+        {
+            // Already closed — proceed.
+        }
+        await DatabaseService.InstallEncryptionKeyAsync(DatabaseName, ck, cancellationToken);
+
+        // Re-probe so ItemCount populates via EF Core, which now opens the DB
+        // with the just-registered K on the first read.
         await RefreshAsync(cancellationToken);
     }
 

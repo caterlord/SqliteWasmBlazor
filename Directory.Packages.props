@@ -74,5 +74,7 @@
     <PackageVersion Include="SqliteWasmBlazor" Version="0.9.1-pre" />
     <PackageVersion Include="SqliteWasmBlazor.Crypto" Version="0.9.1-pre" />
     <PackageVersion Include="SqliteWasmBlazor.Crypto.UI" Version="0.9.1-pre" />
+    <PackageVersion Include="SqliteWasmBlazor.CryptoSync" Version="0.9.1-pre" />
+    <PackageVersion Include="SqliteWasmBlazor.CryptoSync.UI" Version="0.9.1-pre" />
   </ItemGroup>
 </Project>

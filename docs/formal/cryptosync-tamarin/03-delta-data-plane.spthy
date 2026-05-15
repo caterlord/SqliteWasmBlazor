@@ -1,0 +1,299 @@
+theory CryptoSyncDeltaDataPlane
+begin
+
+/*
+ * Symbolic model of the worker delta envelope data plane.
+ *
+ * Implementation references:
+ *   src/Crypto/SqliteWasmBlazor.Crypto/TypeScript/worker/crypto-delta.ts (export/import/rotate)
+ *   src/Crypto/SqliteWasmBlazor.Crypto/TypeScript/worker/crypto-permissions.ts (sender/role resolution)
+ *   src/Crypto/SqliteWasmBlazor.Crypto/TypeScript/worker/crypto-header.ts (CryptoHeader + CEK unwrap)
+ *   src/CryptoSync/SqliteWasmBlazor.CryptoSync/Models/DeltaEnvelope.cs
+ *
+ * Modeled flow:
+ *   - A sender with a trusted Ed25519 key exports one encrypted row.
+ *   - Row AEAD uses AAD = groupContext:keyVersion.
+ *   - A per-group batch signature covers ciphertext + nonce.
+ *   - An outer signature covers the packed groups body.
+ *   - Receiver accepts only if the sender is authorized by the receiver's
+ *     local table classification and active principal state, and the CEK for
+ *     the group/keyVersion is available.
+ *
+ * This is a symbolic one-row/one-group model. SQL apply behavior, schema-hash
+ * checks, DeltaWins, and column permissions are implementation properties
+ * tested elsewhere.
+ */
+
+builtins: signing, symmetric-encryption
+
+functions:
+    aad/2,
+    batch_canon/2,
+    groups_canon/4,
+    delta_envelope/8,
+    wrong_aad/2
+
+rule SetupSender:
+    [ Fr(~sender_sig_sk) ]
+  --[ SenderCreated($Sender, ~sender_sig_sk) ]->
+    [ !SenderSigKey($Sender, ~sender_sig_sk)
+    , !SenderSigPub($Sender, pk(~sender_sig_sk))
+    , Out(pk(~sender_sig_sk))
+    ]
+
+rule InstallGroupCek:
+    [ Fr(~cek) ]
+  --[ GroupCekInstalled($Receiver, $Group, $Version, ~cek) ]->
+    [ !GroupCek($Receiver, $Group, $Version, ~cek) ]
+
+rule InstallLocalSystemTable:
+    [ ]
+  --[ LocalSystemTableInstalled($Receiver, $Table) ]->
+    [ !LocalSystemTable($Receiver, $Table) ]
+
+rule InstallDomainTable:
+    [ ]
+  --[ DomainTableInstalled($Receiver, $Table) ]->
+    [ !DomainTable($Receiver, $Table) ]
+
+rule InstallActiveAdminContact:
+    [ !SenderSigPub($Admin, admin_sig_pub) ]
+  --[ ContactActivated($Receiver, $Admin)
+    , AdminContactActivated($Receiver, $Admin)
+    ]->
+    [ ContactState($Receiver, $Admin, 'active')
+    , !AdminIdentity($Receiver, $Admin)
+    ]
+
+rule InstallActiveDomainPrincipal:
+    [ !SenderSigPub($Sender, sender_sig_pub) ]
+  --[ ContactActivated($Receiver, $Sender)
+    , ShareTargetActivated($Receiver, $Sender, $Group, $Role)
+    , ShareGroupActivated($Receiver, $Group)
+    ]->
+    [ ContactState($Receiver, $Sender, 'active')
+    , ShareTargetState($Receiver, $Sender, $Group, $Role, 'active')
+    , ShareGroupState($Receiver, $Group, 'active')
+    ]
+
+rule SoftDeleteContact:
+    [ ContactState($Receiver, $Sender, 'active') ]
+  --[ ContactDeleted($Receiver, $Sender) ]->
+    [ ContactState($Receiver, $Sender, 'deleted') ]
+
+rule SoftDeleteShareTarget:
+    [ ShareTargetState($Receiver, $Sender, $Group, $Role, 'active') ]
+  --[ ShareTargetDeleted($Receiver, $Sender, $Group, $Role) ]->
+    [ ShareTargetState($Receiver, $Sender, $Group, $Role, 'deleted') ]
+
+rule SoftDeleteShareGroup:
+    [ ShareGroupState($Receiver, $Group, 'active') ]
+  --[ ShareGroupDeleted($Receiver, $Group) ]->
+    [ ShareGroupState($Receiver, $Group, 'deleted') ]
+
+rule AuthorizeSystemTableMutation:
+    [ ContactState($Receiver, $Sender, 'active')
+    , !AdminIdentity($Receiver, $Sender)
+    , !LocalSystemTable($Receiver, $Table)
+    ]
+  --[ SenderAuthorized($Receiver, $Sender, $Group, 'admin')
+    , SystemMutationAuthorized($Receiver, $Sender, $Group, $Table)
+    ]->
+    [ AuthorizedSystemMutation($Receiver, $Sender, $Group, $Table) ]
+
+rule AuthorizeDomainTableMutation:
+    [ ContactState($Receiver, $Sender, 'active')
+    , ShareTargetState($Receiver, $Sender, $Group, $Role, 'active')
+    , ShareGroupState($Receiver, $Group, 'active')
+    , !DomainTable($Receiver, $Table)
+    ]
+  --[ SenderAuthorized($Receiver, $Sender, $Group, $Role)
+    , DomainMutationAuthorized($Receiver, $Sender, $Group, $Table, $Role)
+    ]->
+    [ AuthorizedDomainMutation($Receiver, $Sender, $Group, $Table, $Role) ]
+
+rule ExportDeltaRow:
+    [ !SenderSigKey($Sender, sender_sig_sk)
+    , !GroupCek($Sender, $Group, $Version, cek)
+    , Fr(~row)
+    , Fr(~nonce)
+    ]
+  --[ DeltaRowProduced($Sender, $Table, $Group, $Version, ~row, ~nonce) ]->
+    [ !ValidDeltaEnvelope(
+        $Sender,
+        $Table,
+        $Group,
+        $Version,
+        ~row,
+        ~nonce,
+        senc(<aad($Group, $Version), <~nonce, ~row>>, cek),
+        sign(batch_canon(senc(<aad($Group, $Version), <~nonce, ~row>>, cek), ~nonce), sender_sig_sk),
+        sign(groups_canon($Group, $Version, senc(<aad($Group, $Version), <~nonce, ~row>>, cek), ~nonce), sender_sig_sk))
+    , Out(delta_envelope(
+        pk(sender_sig_sk),
+        $Table,
+        $Group,
+        $Version,
+        ~nonce,
+        senc(<aad($Group, $Version), <~nonce, ~row>>, cek),
+        sign(batch_canon(senc(<aad($Group, $Version), <~nonce, ~row>>, cek), ~nonce), sender_sig_sk),
+        sign(groups_canon($Group, $Version, senc(<aad($Group, $Version), <~nonce, ~row>>, cek), ~nonce), sender_sig_sk)))
+    ]
+
+// Counterexample bait: a syntactically envelope-shaped row encrypted under the
+// wrong AAD must never be accepted by the receiver's v1 data path.
+rule ExportWrongAadRow:
+    [ !SenderSigKey($Sender, sender_sig_sk)
+    , !GroupCek($Sender, $Group, $Version, cek)
+    , Fr(~row)
+    , Fr(~nonce)
+    ]
+  --[ WrongAadDeltaProduced($Sender, $Table, $Group, $Version, ~row, ~nonce) ]->
+    [ Out(delta_envelope(
+        pk(sender_sig_sk),
+        $Table,
+        $Group,
+        $Version,
+        ~nonce,
+        senc(<wrong_aad($Group, $Version), <~nonce, ~row>>, cek),
+        sign(batch_canon(senc(<wrong_aad($Group, $Version), <~nonce, ~row>>, cek), ~nonce), sender_sig_sk),
+        sign(groups_canon($Group, $Version, senc(<wrong_aad($Group, $Version), <~nonce, ~row>>, cek), ~nonce), sender_sig_sk)))
+    ]
+
+rule AcceptSystemDeltaRow:
+    [ !GroupCek($Receiver, $Group, $Version, cek)
+    , AuthorizedSystemMutation($Receiver, $Sender, $Group, $Table)
+    , !SenderSigPub($Sender, sender_sig_pub)
+    , !ValidDeltaEnvelope($Sender, $Table, $Group, $Version, row, nonce, ciphertext, batch_sig, outer_sig)
+    , In(delta_envelope(sender_sig_pub, $Table, $Group, $Version, nonce, ciphertext, batch_sig, outer_sig))
+    ]
+  --[ DeltaRowAccepted($Receiver, $Sender, $Table, $Group, $Version, row, nonce)
+    , SystemDeltaAccepted($Receiver, $Sender, $Table, $Group, $Version, row, nonce)
+    ]->
+    [ ]
+
+rule AcceptDomainDeltaRow:
+    [ !GroupCek($Receiver, $Group, $Version, cek)
+    , AuthorizedDomainMutation($Receiver, $Sender, $Group, $Table, $Role)
+    , !SenderSigPub($Sender, sender_sig_pub)
+    , !ValidDeltaEnvelope($Sender, $Table, $Group, $Version, row, nonce, ciphertext, batch_sig, outer_sig)
+    , In(delta_envelope(sender_sig_pub, $Table, $Group, $Version, nonce, ciphertext, batch_sig, outer_sig))
+    ]
+  --[ DeltaRowAccepted($Receiver, $Sender, $Table, $Group, $Version, row, nonce)
+    , DomainDeltaAccepted($Receiver, $Sender, $Table, $Group, $Version, row, nonce)
+    ]->
+    [ ]
+
+restriction table_classification_disjoint:
+    "All Receiver Table #s #d.
+        LocalSystemTableInstalled(Receiver, Table) @ #s
+      & DomainTableInstalled(Receiver, Table) @ #d
+        ==> F"
+
+restriction unique_contact_activation:
+    "All Receiver Sender #i #j.
+        ContactActivated(Receiver, Sender) @ #i
+      & ContactActivated(Receiver, Sender) @ #j
+        ==> #i = #j"
+
+restriction unique_sharetarget_activation:
+    "All Receiver Sender Group Role #i #j.
+        ShareTargetActivated(Receiver, Sender, Group, Role) @ #i
+      & ShareTargetActivated(Receiver, Sender, Group, Role) @ #j
+        ==> #i = #j"
+
+restriction unique_sharegroup_activation:
+    "All Receiver Group #i #j.
+        ShareGroupActivated(Receiver, Group) @ #i
+      & ShareGroupActivated(Receiver, Group) @ #j
+        ==> #i = #j"
+
+restriction contact_not_reactivated_after_delete:
+    "All Receiver Sender #a #d.
+        ContactActivated(Receiver, Sender) @ #a
+      & ContactDeleted(Receiver, Sender) @ #d
+        ==> #a < #d"
+
+restriction sharetarget_not_reactivated_after_delete:
+    "All Receiver Sender Group Role #a #d.
+        ShareTargetActivated(Receiver, Sender, Group, Role) @ #a
+      & ShareTargetDeleted(Receiver, Sender, Group, Role) @ #d
+        ==> #a < #d"
+
+restriction sharegroup_not_reactivated_after_delete:
+    "All Receiver Group #a #d.
+        ShareGroupActivated(Receiver, Group) @ #a
+      & ShareGroupDeleted(Receiver, Group) @ #d
+        ==> #a < #d"
+
+lemma sender_signing_key_secret:
+    "All Sender sk #t1.
+        SenderCreated(Sender, sk) @ #t1
+        ==> not (Ex #t2. K(sk) @ #t2)"
+
+lemma group_cek_secret:
+    "All Receiver group version cek #t1.
+        GroupCekInstalled(Receiver, group, version, cek) @ #t1
+        ==> not (Ex #t2. K(cek) @ #t2)"
+
+lemma delta_row_secrecy:
+    "All Sender table group version row nonce #t1.
+        DeltaRowProduced(Sender, table, group, version, row, nonce) @ #t1
+        ==> not (Ex #t2. K(row) @ #t2)"
+
+lemma accepted_delta_has_sender_source:
+    "All Receiver Sender table group version row nonce #t1.
+        DeltaRowAccepted(Receiver, Sender, table, group, version, row, nonce) @ #t1
+        ==> Ex #t2.
+              DeltaRowProduced(Sender, table, group, version, row, nonce) @ #t2
+            & #t2 < #t1"
+
+lemma accepted_delta_requires_authorized_sender:
+    "All Receiver Sender table group version row nonce #t1.
+        DeltaRowAccepted(Receiver, Sender, table, group, version, row, nonce) @ #t1
+        ==> Ex role #t2.
+              SenderAuthorized(Receiver, Sender, group, role) @ #t2
+            & #t2 < #t1"
+
+lemma accepted_system_mutation_requires_admin_sender:
+    "All Receiver Sender table group version row nonce #t1.
+        SystemDeltaAccepted(Receiver, Sender, table, group, version, row, nonce) @ #t1
+        ==> Ex #tl #ta.
+              LocalSystemTableInstalled(Receiver, table) @ #tl
+            & SenderAuthorized(Receiver, Sender, group, 'admin') @ #ta
+            & #ta < #t1"
+
+lemma accepted_domain_mutation_requires_authorized_role:
+    "All Receiver Sender table group version row nonce #t1.
+        DomainDeltaAccepted(Receiver, Sender, table, group, version, row, nonce) @ #t1
+        ==> Ex role #td #ta.
+              DomainTableInstalled(Receiver, table) @ #td
+            & SenderAuthorized(Receiver, Sender, group, role) @ #ta
+            & #ta < #t1"
+
+lemma soft_deleted_contact_cannot_authorize_mutation:
+    "All Receiver Sender group role #td #ta.
+        ContactDeleted(Receiver, Sender) @ #td
+      & SenderAuthorized(Receiver, Sender, group, role) @ #ta
+        ==> #ta < #td"
+
+lemma soft_deleted_sharetarget_cannot_authorize_domain_mutation:
+    "All Receiver Sender group table role #td #ta.
+        ShareTargetDeleted(Receiver, Sender, group, role) @ #td
+      & DomainMutationAuthorized(Receiver, Sender, group, table, role) @ #ta
+        ==> #ta < #td"
+
+lemma soft_deleted_sharegroup_cannot_authorize_domain_mutation:
+    "All Receiver Sender group table role #td #ta.
+        ShareGroupDeleted(Receiver, group) @ #td
+      & DomainMutationAuthorized(Receiver, Sender, group, table, role) @ #ta
+        ==> #ta < #td"
+
+lemma wrong_aad_rows_not_accepted:
+    "All Sender table group version row nonce Receiver #tw #ta.
+        WrongAadDeltaProduced(Sender, table, group, version, row, nonce) @ #tw
+      & DeltaRowAccepted(Receiver, Sender, table, group, version, row, nonce) @ #ta
+        ==> Ex #tp.
+              DeltaRowProduced(Sender, table, group, version, row, nonce) @ #tp"
+
+end

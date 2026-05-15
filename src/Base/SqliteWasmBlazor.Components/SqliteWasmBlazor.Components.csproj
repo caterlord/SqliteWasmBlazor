@@ -1,0 +1,44 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+
+  <ItemGroup>
+    <SupportedPlatform Include="browser" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.Web" />
+    <PackageReference Include="MudBlazor" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SqliteWasmBlazor.Models\SqliteWasmBlazor.Models.csproj" />
+    <ProjectReference Include="..\SqliteWasmBlazor\SqliteWasmBlazor.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Exclude TypeScript source workspace from publish output. The
+         Razor SDK otherwise treats `TypeScript/package.json` etc. as
+         static web assets, conflicting with the sibling
+         SqliteWasmBlazor/TypeScript/ source tree at publish time
+         (NETSDK1152: same relative path). Only the bundled
+         wwwroot/*.js outputs ship to consumers. -->
+    <Content Remove="TypeScript/**" />
+    <None Remove="TypeScript/**" />
+  </ItemGroup>
+
+  <!-- TypeScript Build Integration -->
+  <Target Name="BuildTypeScript" BeforeTargets="BeforeBuild">
+    <Message Text="Building TypeScript files..." Importance="high" />
+    <Exec WorkingDirectory="TypeScript" Command="npm run build" Condition="'$(Configuration)' == 'Debug'" />
+    <Exec WorkingDirectory="TypeScript" Command="npm run build:release" Condition="'$(Configuration)' == 'Release'" />
+  </Target>
+
+</Project>

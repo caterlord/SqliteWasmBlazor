@@ -13,8 +13,4 @@
     <Project Path="samples/SqliteWasmBlazor.AdoNetSample/SqliteWasmBlazor.AdoNetSample.csproj" />
     <Project Path="samples/SqliteWasmBlazor.FloatingWindow/SqliteWasmBlazor.FloatingWindow.csproj" />
   </Folder>
-  <Folder Name="/tests/">
-    <Project Path="tests/SqliteWasmBlazor.TestHost/SqliteWasmBlazor.TestHost.csproj" />
-    <Project Path="tests/SqliteWasmBlazor.Tests/SqliteWasmBlazor.Tests.csproj" />
-  </Folder>
 </Solution>

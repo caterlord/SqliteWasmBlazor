@@ -7,7 +7,7 @@ namespace SqliteWasmBlazor.Tests;
 /// <summary>
 /// E2E test that verifies the library works when the Blazor app is deployed under
 /// a sub-path (e.g. /myapp/). This validates that:
-///   1. The response-rewriting middleware serves index.html with the correct <base href="/myapp/">.
+///   1. The response-rewriting middleware serves index.html with the correct <base href="/myapp/"/>.
 ///   2. TestApp derives baseHref from HostEnvironment.BaseAddress ("/myapp/").
 ///   3. SqliteWasmWorkerBridge loads sqlite-wasm-bridge.js from /myapp/_content/...
 ///      instead of via the now-CSP-blocked data:text/javascript scheme.

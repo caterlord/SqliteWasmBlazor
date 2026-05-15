@@ -7,11 +7,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.Server" Version="10.0.5" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.Server" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\SqliteWasmBlazor.TestApp\SqliteWasmBlazor.TestApp.csproj" />
+    <ProjectReference Include="..\..\samples\SqliteWasmBlazor.TestApp\SqliteWasmBlazor.TestApp.csproj" />
   </ItemGroup>
 
 </Project>

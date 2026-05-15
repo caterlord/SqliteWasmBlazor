@@ -16,11 +16,11 @@ SqliteWasmBlazor is part of a family of libraries for building offline-first Bla
 | Project | Description |
 |---------|-------------|
 | **[RxBlazorV2](https://github.com/b-straub/RxBlazorV2)** | Reactive programming framework for Blazor built on [R3](https://github.com/Cysharp/R3). Uses Roslyn source generators for observable models with reactive property bindings, command patterns, and automatic component generation. |
-| **[BlazorPRF](https://github.com/b-straub/BlazorPRF)** | PRF-based deterministic encryption for Blazor WebAssembly using the WebAuthn PRF extension. Enables client-side encryption with biometric authentication — keys derived from passkeys for passwordless encrypt/decrypt workflows. |
+| **[BlazorPRF](https://github.com/b-straub/BlazorPRF)** | _Superseded — see **CryptoSync** below._ PRF-based deterministic encryption for Blazor WebAssembly using the WebAuthn PRF extension. The WebAuthn-PRF key-derivation primitives now ship inside `SqliteWasmBlazor.Crypto`, and the broader multi-device story moves into CryptoSync. |
 
-Together these enable a complete offline-first stack: persistent local storage (SqliteWasmBlazor) + reactive state management (RxBlazorV2) + client-side encryption with biometric auth (BlazorPRF).
+Together these enable a complete offline-first stack: persistent local storage with optional at-rest encryption (`SqliteWasmBlazor` + `SqliteWasmBlazor.Crypto`) + reactive state management (`RxBlazorV2`).
 
-**Coming soon:** [BlazPulse](https://github.com/b-straub/BlazPulse) — a universal offline-first delta sync framework tying all of these together. Bidirectional sync between distributed SQLite databases with hash-protected incremental deltas and Ed25519 cryptographic authentication.
+**Coming soon:** **CryptoSync** — end-to-end encrypted multi-device delta sync for SqliteWasmBlazor. Builds on the encryption VFS to ship per-row delta sync with permission enforcement, per-group keys, an admin invitation flow, and a whitelist-authenticated PHP relay that never sees plaintext. Subsumes BlazorPRF's PRF-derivation primitives and extends them to cross-device data flow.
 
 ## About This Project
 

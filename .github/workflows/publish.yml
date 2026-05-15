@@ -39,43 +39,55 @@ jobs:
 
     - name: Build native stub
       if: ${{ !env.ACT }}
-      run: bash SqliteWasmBlazor/native/build_stub.sh
+      run: bash src/Base/SqliteWasmBlazor/native/build_stub.sh
 
     - name: Verify native stub was built
       if: ${{ !env.ACT }}
       run: |
-        ls -lh SqliteWasmBlazor/native/lib/e_sqlite3.a
-        file SqliteWasmBlazor/native/lib/e_sqlite3.a
+        ls -lh src/Base/SqliteWasmBlazor/native/lib/e_sqlite3.a
+        file src/Base/SqliteWasmBlazor/native/lib/e_sqlite3.a
 
-    - name: Install npm dependencies (SqliteWasmBlazor)
+    - name: Install npm dependencies (TypeScript-Common)
       run: npm install
-      working-directory: SqliteWasmBlazor/TypeScript
+      working-directory: src/Base/SqliteWasmBlazor/TypeScript-Common
+
+    - name: Install npm dependencies (TypeScript-Crypto)
+      run: npm install
+      working-directory: src/Base/SqliteWasmBlazor/TypeScript-Crypto
+
+    - name: Install npm dependencies (SqliteWasmBlazor worker)
+      run: npm install
+      working-directory: src/Base/SqliteWasmBlazor/TypeScript
 
     - name: Install npm dependencies (Components)
       run: npm install
-      working-directory: SqliteWasmBlazor.Components/TypeScript
+      working-directory: src/Base/SqliteWasmBlazor.Components/TypeScript
+
+    - name: Install npm dependencies (Crypto worker)
+      run: npm install
+      working-directory: src/Crypto/SqliteWasmBlazor.Crypto/TypeScript
 
     - name: Extract version from tag
       id: get_version
       run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
-    - name: Restore SqliteWasmBlazor dependencies
-      run: dotnet restore SqliteWasmBlazor/SqliteWasmBlazor.csproj
-
-    - name: Build SqliteWasmBlazor
-      run: dotnet build SqliteWasmBlazor/SqliteWasmBlazor.csproj --configuration Release --no-restore
-
-    - name: Pack SqliteWasmBlazor with version
-      run: dotnet pack SqliteWasmBlazor/SqliteWasmBlazor.csproj --configuration Release --no-build --output ./.nuget /p:PackageVersion=${{ steps.get_version.outputs.VERSION }}
-
     - name: Restore all dependencies
       run: dotnet restore
 
     - name: Build solution
-      run: dotnet build --configuration Release
+      run: dotnet build --configuration Release --no-restore
+
+    - name: Pack SqliteWasmBlazor with version
+      run: dotnet pack src/Base/SqliteWasmBlazor/SqliteWasmBlazor.csproj --configuration Release --no-build --output ./.nuget /p:PackageVersion=${{ steps.get_version.outputs.VERSION }}
+
+    - name: Pack SqliteWasmBlazor.Crypto with version
+      run: dotnet pack src/Crypto/SqliteWasmBlazor.Crypto/SqliteWasmBlazor.Crypto.csproj --configuration Release --no-build --output ./.nuget /p:PackageVersion=${{ steps.get_version.outputs.VERSION }}
+
+    - name: Pack SqliteWasmBlazor.Crypto.UI with version
+      run: dotnet pack src/Crypto/SqliteWasmBlazor.Crypto.UI/SqliteWasmBlazor.Crypto.UI.csproj --configuration Release --no-build --output ./.nuget /p:PackageVersion=${{ steps.get_version.outputs.VERSION }}
 
     - name: Test
-      run: dotnet test --configuration Release --verbosity normal
+      run: dotnet test --configuration Release --no-build --verbosity normal
 
     - name: Publish to NuGet
       run: dotnet nuget push ./.nuget/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate

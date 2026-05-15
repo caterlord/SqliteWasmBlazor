@@ -30,29 +30,55 @@ jobs:
       with:
         node-version: '22'
 
+    - name: Setup Emscripten
+      if: ${{ !env.ACT }}
+      uses: mymindstorm/setup-emsdk@v14
+      with:
+        version: '3.1.56'
+
+    - name: Build native stub
+      if: ${{ !env.ACT }}
+      run: bash src/Base/SqliteWasmBlazor/native/build_stub.sh
+
+    - name: Install npm dependencies (TypeScript-Common)
+      run: npm install
+      working-directory: src/Base/SqliteWasmBlazor/TypeScript-Common
+
+    - name: Install npm dependencies (TypeScript-Crypto)
+      run: npm install
+      working-directory: src/Base/SqliteWasmBlazor/TypeScript-Crypto
+
+    - name: Install npm dependencies (SqliteWasmBlazor worker)
+      run: npm install
+      working-directory: src/Base/SqliteWasmBlazor/TypeScript
+
     - name: Install npm dependencies (Components)
       run: npm install
-      working-directory: SqliteWasmBlazor.Components/TypeScript
+      working-directory: src/Base/SqliteWasmBlazor.Components/TypeScript
+
+    - name: Install npm dependencies (Crypto worker)
+      run: npm install
+      working-directory: src/Crypto/SqliteWasmBlazor.Crypto/TypeScript
 
     - name: Set rootFolder for GitHub Pages
       run: |
-        cat SqliteWasmBlazor.Demo/wwwroot/appsettings.json | python3 -c "
+        cat samples/SqliteWasmBlazor.Demo/wwwroot/appsettings.json | python3 -c "
         import sys, json
         d = json.load(sys.stdin)
         d['rootFolder'] = '/SqliteWasmBlazor/'
         json.dump(d, sys.stdout, indent=2)
-        " > /tmp/appsettings.json && mv /tmp/appsettings.json SqliteWasmBlazor.Demo/wwwroot/appsettings.json
+        " > /tmp/appsettings.json && mv /tmp/appsettings.json samples/SqliteWasmBlazor.Demo/wwwroot/appsettings.json
 
     - name: Clean previous builds
       run: |
         dotnet clean -c Release --nologo
-        rm -rf SqliteWasmBlazor.Demo/bin/Release SqliteWasmBlazor.Demo/obj/Release
+        rm -rf samples/SqliteWasmBlazor.Demo/bin/Release samples/SqliteWasmBlazor.Demo/obj/Release
 
     - name: Build Demo
-      run: dotnet build SqliteWasmBlazor.Demo/SqliteWasmBlazor.Demo.csproj -c Release --nologo
+      run: dotnet build samples/SqliteWasmBlazor.Demo/SqliteWasmBlazor.Demo.csproj -c Release --nologo
 
     - name: Publish Demo
-      run: dotnet publish SqliteWasmBlazor.Demo/SqliteWasmBlazor.Demo.csproj -c Release -o ./build --nologo /p:UseSharedCompilation=false
+      run: dotnet publish samples/SqliteWasmBlazor.Demo/SqliteWasmBlazor.Demo.csproj -c Release -o ./build --nologo /p:UseSharedCompilation=false
 
     - name: Add .nojekyll and 404.html
       run: |

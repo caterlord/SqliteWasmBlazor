@@ -1,0 +1,18 @@
+RewriteEngine On
+
+# PHP limits — bounded delta envelopes, abuse cap only
+php_value upload_max_filesize 16M
+php_value post_max_size 16M
+php_value memory_limit 64M
+php_value max_execution_time 30
+
+# Deny direct access to config, CLI scripts, and the SQLite envelope store.
+# These files must never be served over HTTP.
+RewriteRule ^relay\.db$                       - [F,L]
+RewriteRule ^relay-config(\.example)?\.php$   - [F,L]
+RewriteRule ^cryptosync-relay-init\.php$      - [F,L]
+
+# Route /api/* to delta-relay.php
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^api/(.*)$ delta-relay.php?path=$1 [QSA,L]

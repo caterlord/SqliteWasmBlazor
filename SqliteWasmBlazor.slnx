@@ -14,14 +14,25 @@
     <Project Path="src/Crypto/SqliteWasmBlazor.Crypto.BouncyCastle/SqliteWasmBlazor.Crypto.BouncyCastle.csproj" />
     <Project Path="src/Crypto/SqliteWasmBlazor.Crypto.UI/SqliteWasmBlazor.Crypto.UI.csproj" />
   </Folder>
+  <Folder Name="/src/CryptoSync/">
+    <Project Path="src/CryptoSync/SqliteWasmBlazor.CryptoSync/SqliteWasmBlazor.CryptoSync.csproj" />
+    <Project Path="src/CryptoSync/SqliteWasmBlazor.CryptoSync.Generator/SqliteWasmBlazor.CryptoSync.Generator.csproj" />
+    <Project Path="src/CryptoSync/SqliteWasmBlazor.CryptoSync.UI/SqliteWasmBlazor.CryptoSync.UI.csproj" />
+  </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/SqliteWasmBlazor.AdoNetSample/SqliteWasmBlazor.AdoNetSample.csproj" />
     <Project Path="samples/SqliteWasmBlazor.Demo/SqliteWasmBlazor.Demo.csproj" />
     <Project Path="samples/SqliteWasmBlazor.FloatingWindow/SqliteWasmBlazor.FloatingWindow.csproj" />
     <Project Path="samples/SqliteWasmBlazor.TestApp/SqliteWasmBlazor.TestApp.csproj" />
   </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/GeneratorRunner/GeneratorRunner.csproj" />
+    <Project Path="tools/SqliteWasmBlazor.AdminSeed/SqliteWasmBlazor.AdminSeed.csproj" />
+  </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/SqliteWasmBlazor.TestHost/SqliteWasmBlazor.TestHost.csproj" />
     <Project Path="tests/SqliteWasmBlazor.Tests/SqliteWasmBlazor.Tests.csproj" />
+    <Project Path="tests/SqliteWasmBlazor.CryptoSync.Tests/SqliteWasmBlazor.CryptoSync.Tests.csproj" />
+    <Project Path="tests/SqliteWasmBlazor.CryptoSync.Generator.Tests/SqliteWasmBlazor.CryptoSync.Generator.Tests.csproj" />
   </Folder>
 </Solution>

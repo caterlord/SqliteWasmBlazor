@@ -109,22 +109,20 @@ jobs:
     - name: Build tests
       run: dotnet build tests/SqliteWasmBlazor.Tests/SqliteWasmBlazor.Tests.csproj -c Release
 
-    # Repack each library with the tagged release version. The auto-pack
-    # from `dotnet build` above used the default 0.9.1-pre stamped in
-    # Directory.Packages.props; these tagged packs overwrite with the
-    # version from the git tag and become the artifacts pushed to NuGet.
-    - name: Pack SqliteWasmBlazor with version
-      run: dotnet pack src/Base/SqliteWasmBlazor/SqliteWasmBlazor.csproj -c Release --no-build --output ./.nuget /p:PackageVersion=${{ steps.get_version.outputs.VERSION }}
-
-    - name: Pack SqliteWasmBlazor.Crypto with version
-      run: dotnet pack src/Crypto/SqliteWasmBlazor.Crypto/SqliteWasmBlazor.Crypto.csproj -c Release --no-build --output ./.nuget /p:PackageVersion=${{ steps.get_version.outputs.VERSION }}
-
-    - name: Pack SqliteWasmBlazor.Crypto.UI with version
-      run: dotnet pack src/Crypto/SqliteWasmBlazor.Crypto.UI/SqliteWasmBlazor.Crypto.UI.csproj -c Release --no-build --output ./.nuget /p:PackageVersion=${{ steps.get_version.outputs.VERSION }}
-
     - name: Install Playwright browsers
       run: pwsh tests/SqliteWasmBlazor.Tests/bin/Release/net10.0/playwright.ps1 install --with-deps
 
+    # Test BEFORE the tagged Pack steps. Test order matters: build.yml's
+    # identical flow (build -> install playwright -> test) passes
+    # consistently, while moving the tagged Pack steps before Test
+    # deterministically flaked SessionExpiresOnTtl_DropsKeyAndReEnablesAuth
+    # — Pack runs MSBuild with `/p:PackageVersion=...` which evaluates the
+    # full csproj target chain (including Razor/static-web-asset targets)
+    # and can leave the bin/Release outputs in a state the test wasm runner
+    # doesn't quite like. Running Test first validates the same artifacts
+    # build.yml validates, then Pack only touches the side outputs (nupkg
+    # in .nuget/) without disturbing what's already been tested.
+    #
     # `--logger trx` writes a structured XML report naming each failed test
     # plus its exception message — critical when VSTestTask returns false
     # without logging (MSB4181), which hides the actual assertion failure.
@@ -146,6 +144,19 @@ jobs:
           TestResults/**/*
           tests/SqliteWasmBlazor.Tests/TestResults/**/*
         if-no-files-found: warn
+
+    # Repack each library with the tagged release version. The auto-pack
+    # from `dotnet build` above used the default 0.9.1-pre stamped in
+    # Directory.Packages.props; these tagged packs overwrite with the
+    # version from the git tag and become the artifacts pushed to NuGet.
+    - name: Pack SqliteWasmBlazor with version
+      run: dotnet pack src/Base/SqliteWasmBlazor/SqliteWasmBlazor.csproj -c Release --no-build --output ./.nuget /p:PackageVersion=${{ steps.get_version.outputs.VERSION }}
+
+    - name: Pack SqliteWasmBlazor.Crypto with version
+      run: dotnet pack src/Crypto/SqliteWasmBlazor.Crypto/SqliteWasmBlazor.Crypto.csproj -c Release --no-build --output ./.nuget /p:PackageVersion=${{ steps.get_version.outputs.VERSION }}
+
+    - name: Pack SqliteWasmBlazor.Crypto.UI with version
+      run: dotnet pack src/Crypto/SqliteWasmBlazor.Crypto.UI/SqliteWasmBlazor.Crypto.UI.csproj -c Release --no-build --output ./.nuget /p:PackageVersion=${{ steps.get_version.outputs.VERSION }}
 
     - name: Publish to NuGet
       run: dotnet nuget push ./.nuget/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate

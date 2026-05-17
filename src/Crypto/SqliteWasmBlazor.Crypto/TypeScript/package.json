@@ -5,12 +5,12 @@
   "type": "module",
   "scripts": {
     "build": "npm run build:worker && npm run build:bridge && npm run copy:wasm",
-    "build:worker": "esbuild worker/sqlite-worker.ts --bundle --format=esm --sourcemap=inline --outfile=../wwwroot/sqlite-wasm-worker.js",
-    "build:bridge": "esbuild bridge/worker-bridge.ts --bundle --format=esm --sourcemap=inline --outfile=../wwwroot/sqlite-wasm-bridge.js",
+    "build:worker": "esbuild worker/sqlite-worker.ts --bundle --format=esm --sourcemap=inline --outfile=../bundles/sqlite-wasm-worker.js",
+    "build:bridge": "esbuild bridge/worker-bridge.ts --bundle --format=esm --sourcemap=inline --outfile=../bundles/sqlite-wasm-bridge.js",
     "build:release": "npm run build:worker:release && npm run build:bridge:release && npm run copy:wasm",
-    "build:worker:release": "esbuild worker/sqlite-worker.ts --bundle --format=esm --minify --outfile=../wwwroot/sqlite-wasm-worker.js",
-    "build:bridge:release": "esbuild bridge/worker-bridge.ts --bundle --format=esm --minify --outfile=../wwwroot/sqlite-wasm-bridge.js",
-    "copy:wasm": "cp node_modules/@sqlite.org/sqlite-wasm/dist/sqlite3.wasm ../wwwroot/",
+    "build:worker:release": "esbuild worker/sqlite-worker.ts --bundle --format=esm --minify --outfile=../bundles/sqlite-wasm-worker.js",
+    "build:bridge:release": "esbuild bridge/worker-bridge.ts --bundle --format=esm --minify --outfile=../bundles/sqlite-wasm-bridge.js",
+    "copy:wasm": "mkdir -p ../bundles && cp node_modules/@sqlite.org/sqlite-wasm/dist/sqlite3.wasm ../bundles/",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint ."

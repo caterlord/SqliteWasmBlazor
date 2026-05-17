@@ -68,32 +68,83 @@
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
     <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
     <PackageReference Include="R3" />
+    <PackageReference Include="SqliteWasmBlazor" Condition="'$(Configuration)' == 'Release'" />
   </ItemGroup>
 
-  <ItemGroup>
+  <ItemGroup Condition="'$(Configuration)' == 'Debug'">
     <ProjectReference Include="..\..\Base\SqliteWasmBlazor\SqliteWasmBlazor.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- Exclude TypeScript/ source from both NuGet pack AND publish output —
-         only the bundled wwwroot/sqlite-wasm-worker.js ships to consumers. -->
+         the bundle is registered as a StaticWebAsset item by the
+         BuildTypeScriptBundles target below. -->
     <Content Remove="TypeScript/**" />
     <None Remove="TypeScript/**" />
+    <!-- bundles/ is the generated TS output dir. Out of every default item
+         glob so eval-time Integrity capture never sees it (see base csproj
+         for the SRI-race rationale). -->
+    <Content Remove="bundles/**" />
+    <None Remove="bundles/**" />
   </ItemGroup>
 
-  <!-- npm install for plane-2's TypeScript workspace before bundling. -->
-  <Target Name="NpmInstallCryptoWorker" BeforeTargets="BuildTypeScriptCryptoDebug;BuildTypeScriptCryptoRelease">
+  <!-- npm install for plane-2's TypeScript workspaces before bundling. Both
+       this project's own TypeScript/ and the shared crypto-core workspace
+       (base/TypeScript-Crypto/, which produces our crypto-bridge.js bundle). -->
+  <Target Name="NpmInstallTsWorkspaces" BeforeTargets="BuildTypeScriptBundles">
     <Exec WorkingDirectory="TypeScript" Command="npm audit signatures" Condition="Exists('TypeScript/package.json') And !Exists('TypeScript/node_modules')" />
     <Exec WorkingDirectory="TypeScript" Command="npm ci --ignore-scripts" Condition="Exists('TypeScript/package.json') And !Exists('TypeScript/node_modules')" />
+    <Exec WorkingDirectory="../../Base/SqliteWasmBlazor/TypeScript-Crypto" Command="npm audit signatures" Condition="Exists('../../Base/SqliteWasmBlazor/TypeScript-Crypto/package.json') And !Exists('../../Base/SqliteWasmBlazor/TypeScript-Crypto/node_modules')" />
+    <Exec WorkingDirectory="../../Base/SqliteWasmBlazor/TypeScript-Crypto" Command="npm ci --ignore-scripts" Condition="Exists('../../Base/SqliteWasmBlazor/TypeScript-Crypto/package.json') And !Exists('../../Base/SqliteWasmBlazor/TypeScript-Crypto/node_modules')" />
   </Target>
 
-  <!-- Build plane-2's worker bundle into wwwroot/ before static-web-assets discovery. -->
-  <Target Name="BuildTypeScriptCryptoDebug" BeforeTargets="BeforeCompile;ResolveStaticWebAssetsInputs" Condition="'$(Configuration)' == 'Debug'">
-    <Exec WorkingDirectory="TypeScript" Command="npm run build" Condition="Exists('TypeScript/package.json')" />
+  <!-- Compile plane-2's worker + bridge + crypto-bridge bundles into bundles/
+       (NOT wwwroot/). crypto-bridge.js is produced by base/TypeScript-Crypto/
+       but its bundle is Crypto's asset — TypeScript-Crypto's npm scripts now
+       write directly into our bundles/. See base SqliteWasmBlazor.csproj for
+       the race rationale and the build/register target split. -->
+  <Target Name="BuildTypeScriptBundles"
+          Inputs="@(_TsSrc);TypeScript/package.json;@(_CryptoCoreSrc);../../Base/SqliteWasmBlazor/TypeScript-Crypto/package.json"
+          Outputs="$(MSBuildProjectDirectory)/bundles/.build.stamp"
+          Condition="Exists('TypeScript/package.json')">
+    <Exec WorkingDirectory="../../Base/SqliteWasmBlazor/TypeScript-Crypto" Command="npm run build" Condition="'$(Configuration)' != 'Release' And Exists('../../Base/SqliteWasmBlazor/TypeScript-Crypto/package.json')" />
+    <Exec WorkingDirectory="../../Base/SqliteWasmBlazor/TypeScript-Crypto" Command="npm run build:release" Condition="'$(Configuration)' == 'Release' And Exists('../../Base/SqliteWasmBlazor/TypeScript-Crypto/package.json')" />
+    <Exec WorkingDirectory="TypeScript" Command="npm run build" Condition="'$(Configuration)' != 'Release'" />
+    <Exec WorkingDirectory="TypeScript" Command="npm run build:release" Condition="'$(Configuration)' == 'Release'" />
+    <Touch Files="$(MSBuildProjectDirectory)/bundles/.build.stamp" AlwaysCreate="true" />
   </Target>
 
-  <Target Name="BuildTypeScriptCryptoRelease" BeforeTargets="BeforeCompile;ResolveStaticWebAssetsInputs" Condition="'$(Configuration)' == 'Release'">
-    <Exec WorkingDirectory="TypeScript" Command="npm run build:release" Condition="Exists('TypeScript/package.json')" />
+  <Target Name="RegisterTypeScriptBundles"
+          BeforeTargets="ResolveStaticWebAssetsInputs"
+          DependsOnTargets="BuildTypeScriptBundles"
+          Condition="Exists('TypeScript/package.json')">
+    <ItemGroup>
+      <_GeneratedBundle Include="bundles/*.js;bundles/*.wasm" />
+    </ItemGroup>
+    <DefineStaticWebAssets Condition="@(_GeneratedBundle) != ''"
+                           CandidateAssets="@(_GeneratedBundle->'$(MSBuildProjectDirectory)/%(Identity)')"
+                           SourceId="$(PackageId)"
+                           SourceType="Computed"
+                           BasePath="$(StaticWebAssetBasePath)"
+                           ContentRoot="$(MSBuildProjectDirectory)/bundles/"
+                           AssetKind="All"
+                           AssetMode="All"
+                           AssetRole="Primary"
+                           FingerprintCandidates="$(StaticWebAssetsFingerprintContent)">
+      <Output TaskParameter="Assets" ItemName="StaticWebAsset" />
+    </DefineStaticWebAssets>
+    <DefineStaticWebAssetEndpoints Condition="@(_GeneratedBundle) != ''"
+                                   CandidateAssets="@(StaticWebAsset)"
+                                   ExistingEndpoints="@(StaticWebAssetEndpoint)"
+                                   ContentTypeMappings="@(StaticWebAssetContentTypeMapping)">
+      <Output TaskParameter="Endpoints" ItemName="StaticWebAssetEndpoint" />
+    </DefineStaticWebAssetEndpoints>
   </Target>
+
+  <ItemGroup>
+    <_TsSrc Include="TypeScript/**/*.ts;TypeScript/package.json" Exclude="TypeScript/node_modules/**" />
+    <_CryptoCoreSrc Include="../../Base/SqliteWasmBlazor/TypeScript-Crypto/**/*.ts;../../Base/SqliteWasmBlazor/TypeScript-Crypto/package.json"
+                    Exclude="../../Base/SqliteWasmBlazor/TypeScript-Crypto/node_modules/**" />
+  </ItemGroup>
 
 </Project>

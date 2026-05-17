@@ -65,11 +65,11 @@
     <PackageReference Include="Microsoft.Extensions.Localization" />
     <PackageReference Include="MudBlazor" />
     <PackageReference Include="RxBlazorV2.MudBlazor" />
+    <PackageReference Include="SqliteWasmBlazor.Crypto" Condition="'$(Configuration)' == 'Release'" />
   </ItemGroup>
 
-  <ItemGroup>
+  <ItemGroup Condition="'$(Configuration)' == 'Debug'">
     <ProjectReference Include="..\..\Base\SqliteWasmBlazor\SqliteWasmBlazor.csproj" />
     <ProjectReference Include="..\SqliteWasmBlazor.Crypto\SqliteWasmBlazor.Crypto.csproj" />
   </ItemGroup>
-
 </Project>

@@ -1,0 +1,38 @@
+<Project>
+
+  <!--
+    Wire the minimal SQLite native stub (9.8KB) that ships with this package.
+    The stub replaces the 1.1MB native lib that Microsoft.EntityFrameworkCore.Sqlite
+    would otherwise pull in transitively via SQLitePCLRaw.lib.e_sqlite3.
+
+    Lives in buildTransitive/ (not build/) so NuGet auto-imports it for *both*
+    direct PackageReference consumers and transitive consumers (e.g. an app
+    that only references SqliteWasmBlazor.Crypto.UI still gets the stub via
+    the Crypto.UI -> Crypto -> SqliteWasmBlazor chain).
+  -->
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'browser-wasm'">
+    <NativeFileReference Include="$(MSBuildThisFileDirectory)..\native\lib\e_sqlite3.a" />
+  </ItemGroup>
+
+  <!--
+    Strip the upstream SQLitePCLRaw.lib.e_sqlite3 .a from the link line.
+    NuGet's <PackageReference ExcludeAssets="native"> doesn't work for
+    transitively-pulled packages (the asset selection has already been
+    written into project.assets.json by the time this .targets loads).
+    Removing the NativeFileReference item directly is the build-time fix
+    that survives both PackageReference and ProjectReference graphs.
+
+    The matched item path looks like:
+      ~/.nuget/packages/sqlitepclraw.lib.e_sqlite3/<ver>/buildTransitive/
+        netN.0/../../runtimes/browser-wasm/nativeassets/netN.0/e_sqlite3.a
+  -->
+  <Target Name="_StripUpstreamSqlitePclRawNativeLib"
+          BeforeTargets="_WasmGenerateRuntimeConfig;WasmTriggerPublishApp;_WasmCompileNativeFiles;_WasmLinkDotNet"
+          Condition="'$(RuntimeIdentifier)' == 'browser-wasm'">
+    <ItemGroup>
+      <NativeFileReference Remove="@(NativeFileReference)"
+                           Condition="$([System.String]::new('%(NativeFileReference.Identity)').Contains('sqlitepclraw.lib.e_sqlite3'))" />
+    </ItemGroup>
+  </Target>
+
+</Project>

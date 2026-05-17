@@ -63,7 +63,13 @@
   <ItemGroup>
     <None Include="../../../README.md" Pack="true" PackagePath="/" />
     <None Include="../../../LICENSE" Pack="true" PackagePath="/" />
-    <None Include="build/SqliteWasmBlazor.targets" Pack="true" PackagePath="build" />
+    <!-- buildTransitive/ instead of build/ so the .targets propagates to
+         transitive PackageReference consumers (e.g. an app that only
+         references SqliteWasmBlazor.Crypto.UI still gets the stub-injection
+         + SQLitePCLRaw native exclusion). NuGet auto-imports buildTransitive/
+         for direct consumers too, so build/SqliteWasmBlazor.targets is no
+         longer needed. -->
+    <None Include="buildTransitive/SqliteWasmBlazor.targets" Pack="true" PackagePath="buildTransitive" />
   </ItemGroup>
 
   <ItemGroup>
@@ -71,14 +77,22 @@
          output. The Razor SDK otherwise treats `TypeScript/package.json`
          etc. as static web assets and conflicts at `dotnet publish` time
          with the sibling SqliteWasmBlazor.Components/TypeScript/ source
-         tree (NETSDK1152: same relative path). Only the bundled
-         wwwroot/sqlite-wasm-*.js outputs ship to consumers. -->
+         tree (NETSDK1152: same relative path). The TS-bundled outputs ship
+         from bundles/ and are registered as StaticWebAsset items by the
+         BuildTypeScriptBundles target, never as Content. -->
     <Content Remove="TypeScript/**" />
     <None Remove="TypeScript/**" />
     <Content Remove="TypeScript-Crypto/**" />
     <None Remove="TypeScript-Crypto/**" />
     <Content Remove="TypeScript-Common/**" />
     <None Remove="TypeScript-Common/**" />
+    <!-- bundles/ is the generated TS output dir. Keep it out of every
+         default item glob so eval-time Integrity capture never sees these
+         files (that race produced internally-inconsistent nupkgs with
+         stale Integrity vs packed bytes). The target re-adds them as
+         <StaticWebAsset> items after npm finishes writing. -->
+    <Content Remove="bundles/**" />
+    <None Remove="bundles/**" />
   </ItemGroup>
   
   <ItemGroup>
@@ -101,38 +115,70 @@
     <None Include="native/lib/e_sqlite3.a" Pack="true" PackagePath="native/lib" />
   </ItemGroup>
 
-  <!-- npm install for the absorbed crypto-core workspace before building. -->
-  <Target Name="NpmInstallCrypto" BeforeTargets="BuildTypeScriptCryptoDebug;BuildTypeScriptCryptoRelease">
+  <!-- npm install for the crypto-core + worker-common workspace deps before
+       bundling. base/TypeScript/ consumes both via file: dependencies — esbuild
+       walks into their src/ directories during bundling and needs their
+       node_modules (@awasm/noble, msgpackr, @sqlite.org/sqlite-wasm) to resolve
+       nested imports. The TypeScript-Crypto BUNDLE output (crypto-bridge.js)
+       is Crypto's responsibility and lives in SqliteWasmBlazor.Crypto.csproj. -->
+  <Target Name="NpmInstallTsWorkspaces" BeforeTargets="BuildTypeScriptBundles">
     <Exec WorkingDirectory="TypeScript-Crypto" Command="npm audit signatures" Condition="Exists('TypeScript-Crypto/package.json') And !Exists('TypeScript-Crypto/node_modules')" />
     <Exec WorkingDirectory="TypeScript-Crypto" Command="npm ci --ignore-scripts" Condition="Exists('TypeScript-Crypto/package.json') And !Exists('TypeScript-Crypto/node_modules')" />
-  </Target>
-
-  <!-- npm install for the worker-common workspace (Phase 3) before building.
-       TypeScript/ depends on it via file:../TypeScript-Common; esbuild walks
-       into TypeScript-Common/src/ during bundling and needs its node_modules
-       (msgpackr, @sqlite.org/sqlite-wasm) to resolve nested imports. -->
-  <Target Name="NpmInstallCommon" BeforeTargets="BuildTypeScriptDebug;BuildTypeScriptRelease">
     <Exec WorkingDirectory="TypeScript-Common" Command="npm audit signatures" Condition="Exists('TypeScript-Common/package.json') And !Exists('TypeScript-Common/node_modules')" />
     <Exec WorkingDirectory="TypeScript-Common" Command="npm ci --ignore-scripts" Condition="Exists('TypeScript-Common/package.json') And !Exists('TypeScript-Common/node_modules')" />
   </Target>
 
-  <!-- Build TypeScript very early, before static web assets are discovered. -->
-  <!-- TypeScript-Crypto must build first so SqliteWasmBlazor's TypeScript
-       worker can resolve the crypto-core workspace dep. -->
-  <Target Name="BuildTypeScriptCryptoDebug" BeforeTargets="BuildTypeScriptDebug" Condition="'$(Configuration)' == 'Debug'">
-    <Exec WorkingDirectory="TypeScript-Crypto" Command="npm run build" Condition="Exists('TypeScript-Crypto/package.json')" />
+  <!-- Compile worker + bridge bundles to bundles/ (NOT wwwroot/) so the SDK
+       auto-include `<Content Include="wwwroot/**" />` glob never freezes a
+       stale Integrity at item-evaluation time. Inputs/Outputs makes esbuild
+       a no-op on incremental builds; the touched .build.stamp is what the
+       up-to-date check watches.
+
+       Split deliberately: the *build* target may skip when sources are
+       unchanged, but the *register* target below MUST run every build so
+       <StaticWebAsset> items reach ResolveStaticWebAssetsInputs. Folding
+       both into one Inputs/Outputs-gated target was the bug — when the
+       target body skipped, items were never added and downstream
+       consumers (Demo publish, NuGet pack) saw an empty asset manifest. -->
+  <Target Name="BuildTypeScriptBundles"
+          Inputs="@(_TsSrc);TypeScript/package.json"
+          Outputs="$(MSBuildProjectDirectory)/bundles/.build.stamp"
+          Condition="Exists('TypeScript/package.json')">
+    <Exec WorkingDirectory="TypeScript" Command="npm run build" Condition="'$(Configuration)' != 'Release'" />
+    <Exec WorkingDirectory="TypeScript" Command="npm run build:release" Condition="'$(Configuration)' == 'Release'" />
+    <Touch Files="$(MSBuildProjectDirectory)/bundles/.build.stamp" AlwaysCreate="true" />
   </Target>
 
-  <Target Name="BuildTypeScriptCryptoRelease" BeforeTargets="BuildTypeScriptRelease" Condition="'$(Configuration)' == 'Release'">
-    <Exec WorkingDirectory="TypeScript-Crypto" Command="npm run build:release" Condition="Exists('TypeScript-Crypto/package.json')" />
+  <Target Name="RegisterTypeScriptBundles"
+          BeforeTargets="ResolveStaticWebAssetsInputs"
+          DependsOnTargets="BuildTypeScriptBundles"
+          Condition="Exists('TypeScript/package.json')">
+    <ItemGroup>
+      <_GeneratedBundle Include="bundles/*.js;bundles/*.wasm" />
+    </ItemGroup>
+    <DefineStaticWebAssets Condition="@(_GeneratedBundle) != ''"
+                           CandidateAssets="@(_GeneratedBundle->'$(MSBuildProjectDirectory)/%(Identity)')"
+                           SourceId="$(PackageId)"
+                           SourceType="Computed"
+                           BasePath="$(StaticWebAssetBasePath)"
+                           ContentRoot="$(MSBuildProjectDirectory)/bundles/"
+                           AssetKind="All"
+                           AssetMode="All"
+                           AssetRole="Primary"
+                           FingerprintCandidates="$(StaticWebAssetsFingerprintContent)">
+      <Output TaskParameter="Assets" ItemName="StaticWebAsset" />
+    </DefineStaticWebAssets>
+    <DefineStaticWebAssetEndpoints Condition="@(_GeneratedBundle) != ''"
+                                   CandidateAssets="@(StaticWebAsset)"
+                                   ExistingEndpoints="@(StaticWebAssetEndpoint)"
+                                   ContentTypeMappings="@(StaticWebAssetContentTypeMapping)">
+      <Output TaskParameter="Endpoints" ItemName="StaticWebAssetEndpoint" />
+    </DefineStaticWebAssetEndpoints>
   </Target>
 
-  <Target Name="BuildTypeScriptDebug" BeforeTargets="BeforeCompile;ResolveStaticWebAssetsInputs" Condition="'$(Configuration)' == 'Debug'">
-    <Exec WorkingDirectory="TypeScript" Command="npm run build" Condition="Exists('TypeScript/package.json')" />
-  </Target>
-
-  <Target Name="BuildTypeScriptRelease" BeforeTargets="BeforeCompile;ResolveStaticWebAssetsInputs" Condition="'$(Configuration)' == 'Release'">
-    <Exec WorkingDirectory="TypeScript" Command="npm run build:release" Condition="Exists('TypeScript/package.json')"/>
-  </Target>
+  <ItemGroup>
+    <_TsSrc Include="TypeScript/**/*.ts;TypeScript/package.json;TypeScript-Common/**/*.ts;TypeScript-Common/package.json;TypeScript-Crypto/**/*.ts;TypeScript-Crypto/package.json"
+            Exclude="TypeScript/node_modules/**;TypeScript-Common/node_modules/**;TypeScript-Crypto/node_modules/**" />
+  </ItemGroup>
 
 </Project>

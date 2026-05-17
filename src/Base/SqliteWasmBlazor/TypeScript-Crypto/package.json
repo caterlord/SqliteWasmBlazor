@@ -12,8 +12,8 @@
     }
   },
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --format=esm --sourcemap=inline --outfile=../../../Crypto/SqliteWasmBlazor.Crypto/wwwroot/crypto-bridge.js",
-    "build:release": "esbuild src/index.ts --bundle --format=esm --minify --outfile=../../../Crypto/SqliteWasmBlazor.Crypto/wwwroot/crypto-bridge.js",
+    "build": "mkdir -p ../../../Crypto/SqliteWasmBlazor.Crypto/bundles && esbuild src/index.ts --bundle --format=esm --sourcemap=inline --outfile=../../../Crypto/SqliteWasmBlazor.Crypto/bundles/crypto-bridge.js",
+    "build:release": "mkdir -p ../../../Crypto/SqliteWasmBlazor.Crypto/bundles && esbuild src/index.ts --bundle --format=esm --minify --outfile=../../../Crypto/SqliteWasmBlazor.Crypto/bundles/crypto-bridge.js",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint ."

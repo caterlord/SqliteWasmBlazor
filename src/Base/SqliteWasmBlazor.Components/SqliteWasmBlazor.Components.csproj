@@ -28,17 +28,58 @@
          Razor SDK otherwise treats `TypeScript/package.json` etc. as
          static web assets, conflicting with the sibling
          SqliteWasmBlazor/TypeScript/ source tree at publish time
-         (NETSDK1152: same relative path). Only the bundled
-         wwwroot/*.js outputs ship to consumers. -->
+         (NETSDK1152: same relative path). The bundle is registered as
+         a StaticWebAsset item by the BuildTypeScriptBundles target. -->
     <Content Remove="TypeScript/**" />
     <None Remove="TypeScript/**" />
+    <!-- bundles/ is the generated TS output dir. Out of every default item
+         glob so eval-time Integrity capture never sees it (see base csproj
+         for the SRI-race rationale). -->
+    <Content Remove="bundles/**" />
+    <None Remove="bundles/**" />
   </ItemGroup>
 
-  <!-- TypeScript Build Integration -->
-  <Target Name="BuildTypeScript" BeforeTargets="BeforeBuild">
-    <Message Text="Building TypeScript files..." Importance="high" />
-    <Exec WorkingDirectory="TypeScript" Command="npm run build" Condition="'$(Configuration)' == 'Debug'" />
+  <!-- Compile file-operations into bundles/ (NOT wwwroot/). See base
+       SqliteWasmBlazor.csproj for the race rationale and the build/register
+       target split. -->
+  <Target Name="BuildTypeScriptBundles"
+          Inputs="@(_TsSrc);TypeScript/package.json"
+          Outputs="$(MSBuildProjectDirectory)/bundles/.build.stamp"
+          Condition="Exists('TypeScript/package.json')">
+    <Exec WorkingDirectory="TypeScript" Command="npm run build" Condition="'$(Configuration)' != 'Release'" />
     <Exec WorkingDirectory="TypeScript" Command="npm run build:release" Condition="'$(Configuration)' == 'Release'" />
+    <Touch Files="$(MSBuildProjectDirectory)/bundles/.build.stamp" AlwaysCreate="true" />
   </Target>
+
+  <Target Name="RegisterTypeScriptBundles"
+          BeforeTargets="ResolveStaticWebAssetsInputs"
+          DependsOnTargets="BuildTypeScriptBundles"
+          Condition="Exists('TypeScript/package.json')">
+    <ItemGroup>
+      <_GeneratedBundle Include="bundles/*.js;bundles/*.wasm" />
+    </ItemGroup>
+    <DefineStaticWebAssets Condition="@(_GeneratedBundle) != ''"
+                           CandidateAssets="@(_GeneratedBundle->'$(MSBuildProjectDirectory)/%(Identity)')"
+                           SourceId="$(MSBuildProjectName)"
+                           SourceType="Computed"
+                           BasePath="$(StaticWebAssetBasePath)"
+                           ContentRoot="$(MSBuildProjectDirectory)/bundles/"
+                           AssetKind="All"
+                           AssetMode="All"
+                           AssetRole="Primary"
+                           FingerprintCandidates="$(StaticWebAssetsFingerprintContent)">
+      <Output TaskParameter="Assets" ItemName="StaticWebAsset" />
+    </DefineStaticWebAssets>
+    <DefineStaticWebAssetEndpoints Condition="@(_GeneratedBundle) != ''"
+                                   CandidateAssets="@(StaticWebAsset)"
+                                   ExistingEndpoints="@(StaticWebAssetEndpoint)"
+                                   ContentTypeMappings="@(StaticWebAssetContentTypeMapping)">
+      <Output TaskParameter="Endpoints" ItemName="StaticWebAssetEndpoint" />
+    </DefineStaticWebAssetEndpoints>
+  </Target>
+
+  <ItemGroup>
+    <_TsSrc Include="TypeScript/**/*.ts;TypeScript/package.json" Exclude="TypeScript/node_modules/**" />
+  </ItemGroup>
 
 </Project>

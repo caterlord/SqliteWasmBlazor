@@ -6,7 +6,12 @@
         <ImplicitUsings>enable</ImplicitUsings>
         <OverrideHtmlAssetPlaceholders>false</OverrideHtmlAssetPlaceholders>
         <ServiceWorkerAssetsManifest>service-worker-assets.js</ServiceWorkerAssetsManifest>
-        <WasmFingerprintAssets>false</WasmFingerprintAssets>
+        <!-- Fingerprint dotnet.native.wasm and framework assets with a
+             content hash in the filename. URLs change whenever the bytes
+             change, so long Cache-Control headers stay correct and we never
+             hit the "stale dotnet.native.wasm from an earlier build still
+             cached at /_framework/dotnet.native.wasm" deploy pitfall again. -->
+        <WasmFingerprintAssets>true</WasmFingerprintAssets>
         <WasmBuildNative>true</WasmBuildNative>
         <!-- Ship every satellite resource assembly so navigator.language drives
              Crypto.UI panel localization (en + de) at boot. -->

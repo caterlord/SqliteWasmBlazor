@@ -101,13 +101,13 @@ jobs:
     # and Crypto.BouncyCastle are not consumed by Tests / TestHost / TestApp
     # and not packed — building them here would just burn runner minutes.
     # The full-repo sanity build belongs in build.yml.
-    - name: Build SqliteWasmBlazor.TestApp
-      run: dotnet build samples/SqliteWasmBlazor.TestApp/SqliteWasmBlazor.TestApp.csproj -c Release
-
+    #
+    # `dotnet build Tests.csproj` transitively walks TestHost ->
+    # TestApp -> Components / Models (TestApp's unconditional ProjectReferences
+    # to base / Crypto are also walked, but those already auto-packed
+    # above and MSBuild's UpToDate check skips them).
     - name: Build tests
-      run: |
-        dotnet build tests/SqliteWasmBlazor.TestHost/SqliteWasmBlazor.TestHost.csproj -c Release
-        dotnet build tests/SqliteWasmBlazor.Tests/SqliteWasmBlazor.Tests.csproj -c Release
+      run: dotnet build tests/SqliteWasmBlazor.Tests/SqliteWasmBlazor.Tests.csproj -c Release
 
     # Repack each library with the tagged release version. The auto-pack
     # from `dotnet build` above used the default 0.9.1-pre stamped in

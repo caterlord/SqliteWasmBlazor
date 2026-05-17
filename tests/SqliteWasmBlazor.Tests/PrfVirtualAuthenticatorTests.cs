@@ -20,6 +20,12 @@ public class PrfVirtualAuthenticatorTests(PrfWaFixture fixture, ITestOutputHelpe
     private const float FirstButtonVisibleTimeoutMs = 60000;
     private const float ButtonEnabledTimeoutMs = 10000;
     private const float StatusTimeoutMs = 8000;
+    // Post-TTL button re-enable budget. After SessionTtlMs the JS-side key
+    // cache clears, KeyExpired observable fires, fans out to UI, and Blazor
+    // re-renders the AuthorizeView. That cascade is slower than a normal
+    // button-enable on a fresh page load — CI runners need ~10–15 s, give
+    // 20 s headroom.
+    private const float KeyExpiredButtonEnableTimeoutMs = 20000;
 
     // Mirrors KeyCacheOptions.TtlMs configured in TestApp.Program.cs. Tests
     // that drive session expiry must wait > this, then receive "PRF session
@@ -213,9 +219,12 @@ public class PrfVirtualAuthenticatorTests(PrfWaFixture fixture, ITestOutputHelpe
         // After the timer fires HasCachedKeys() returns false, so the
         // Authenticate button must re-enable — the timer/observable wire-up
         // is the path under test (Lock + KeyExpired-fires-UI-update is
-        // already covered by scenario 3).
+        // already covered by scenario 3). Uses the dedicated
+        // KeyExpiredButtonEnableTimeoutMs because the JS→C# observable +
+        // Blazor re-render cascade is slower than a fresh-page button-enable
+        // — CI runners hit the original 8s StatusTimeoutMs ceiling here.
         await Assertions.Expect(authButton).ToBeEnabledAsync(
-            new() { Timeout = StatusTimeoutMs });
+            new() { Timeout = KeyExpiredButtonEnableTimeoutMs });
     }
 
     private static async Task ClickAsync(PrfScenario scenario, string buttonName, float? timeoutMs = null)

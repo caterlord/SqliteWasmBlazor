@@ -15,8 +15,8 @@
     <PackageTags>blazor;wasm;sqlite;efcore;opfs;database;entityframework;webassembly;offline;persistence</PackageTags>
     <Copyright>Copyright (c) 2025 bernisoft</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/b-straub/SqliteWasmBlazor</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/b-straub/SqliteWasmBlazor</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/caterlord/SqliteWasmBlazor</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/caterlord/SqliteWasmBlazor</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageReleaseNotes>

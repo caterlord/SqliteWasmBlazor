@@ -69,23 +69,10 @@ public sealed class SqliteWasmCommand : DbCommand
         var bridge = SqliteWasmWorkerBridge.Instance;
         var sql = PreprocessSql(_commandText);
 
-        // DEBUG: Log UPDATE operations
-        if (sql.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase))
-        {
-            Console.WriteLine($"[SqliteWasmCommand] Executing UPDATE: {sql}");
-            Console.WriteLine($"[SqliteWasmCommand] Parameters: {string.Join(", ", _parameters.GetParameterValues().Select((v, i) => $"${i}={v}"))}");
-        }
-
         var (parameterDict, packedBlobs) = _parameters.GetParameterValuesWithBlobs();
         var result = packedBlobs is null
             ? await bridge.ExecuteSqlAsync(Connection.Database, sql, parameterDict, cancellationToken)
             : await bridge.ExecuteSqlWithBlobsAsync(Connection.Database, sql, parameterDict, packedBlobs, cancellationToken);
-
-        // DEBUG: Log result of UPDATE operations
-        if (sql.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase))
-        {
-            Console.WriteLine($"[SqliteWasmCommand] UPDATE result: RowsAffected={result.RowsAffected}");
-        }
 
         return result.RowsAffected;
     }

@@ -71,20 +71,16 @@ public sealed class SqliteWasmCommand : DbCommand
         var bridge = SqliteWasmWorkerBridge.Instance;
         var sql = PreprocessSql(_commandText);
 
-        if (EnableCommandSqlLogging && IsUpdateCommand(sql))
-        {
-            Console.WriteLine($"[SqliteWasmCommand] Executing UPDATE: {sql}");
-            Console.WriteLine($"[SqliteWasmCommand] Parameters: {string.Join(", ", _parameters.GetParameterValues().Select((v, i) => $"${i}={v}"))}");
-        }
+        LogCommandSql(sql);
 
         var (parameterDict, packedBlobs) = _parameters.GetParameterValuesWithBlobs();
         var result = packedBlobs is null
             ? await bridge.ExecuteSqlAsync(Connection.Database, sql, parameterDict, cancellationToken)
             : await bridge.ExecuteSqlWithBlobsAsync(Connection.Database, sql, parameterDict, packedBlobs, cancellationToken);
 
-        if (EnableCommandSqlLogging && IsUpdateCommand(sql))
+        if (EnableCommandSqlLogging)
         {
-            Console.WriteLine($"[SqliteWasmCommand] UPDATE result: RowsAffected={result.RowsAffected}");
+            Console.WriteLine($"[SqliteWasmCommand] Result: RowsAffected={result.RowsAffected}");
         }
 
         return result.RowsAffected;
@@ -103,6 +99,7 @@ public sealed class SqliteWasmCommand : DbCommand
 
         var bridge = SqliteWasmWorkerBridge.Instance;
         var sql = PreprocessSql(_commandText);
+        LogCommandSql(sql);
         var (parameterDict, packedBlobs) = _parameters.GetParameterValuesWithBlobs();
         var result = packedBlobs is null
             ? await bridge.ExecuteSqlAsync(Connection.Database, sql, parameterDict, cancellationToken)
@@ -132,6 +129,7 @@ public sealed class SqliteWasmCommand : DbCommand
 
         var bridge = SqliteWasmWorkerBridge.Instance;
         var sql = PreprocessSql(_commandText);
+        LogCommandSql(sql);
         var (parameterDict, packedBlobs) = _parameters.GetParameterValuesWithBlobs();
         var result = packedBlobs is null
             ? await bridge.ExecuteSqlAsync(Connection.Database, sql, parameterDict, cancellationToken)
@@ -186,9 +184,16 @@ public sealed class SqliteWasmCommand : DbCommand
         return sql;
     }
 
-    private static bool IsUpdateCommand(string sql)
+    private void LogCommandSql(string sql)
     {
-        return sql.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase);
+        if (!EnableCommandSqlLogging)
+        {
+            return;
+        }
+
+        Console.WriteLine($"[SqliteWasmCommand] Executing SQL: {sql}");
+        Console.WriteLine(
+            $"[SqliteWasmCommand] Parameters: {string.Join(", ", _parameters.GetParameterValues().Select((v, i) => $"${i}={v}"))}");
     }
 
     protected override void Dispose(bool disposing)

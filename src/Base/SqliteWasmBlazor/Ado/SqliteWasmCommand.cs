@@ -15,6 +15,8 @@ public sealed class SqliteWasmCommand : DbCommand
     private string _commandText = string.Empty;
     private readonly SqliteWasmParameterCollection _parameters;
 
+    internal static bool EnableCommandSqlLogging { get; set; }
+
     public SqliteWasmCommand()
     {
         _parameters = new SqliteWasmParameterCollection();
@@ -69,10 +71,21 @@ public sealed class SqliteWasmCommand : DbCommand
         var bridge = SqliteWasmWorkerBridge.Instance;
         var sql = PreprocessSql(_commandText);
 
+        if (EnableCommandSqlLogging && IsUpdateCommand(sql))
+        {
+            Console.WriteLine($"[SqliteWasmCommand] Executing UPDATE: {sql}");
+            Console.WriteLine($"[SqliteWasmCommand] Parameters: {string.Join(", ", _parameters.GetParameterValues().Select((v, i) => $"${i}={v}"))}");
+        }
+
         var (parameterDict, packedBlobs) = _parameters.GetParameterValuesWithBlobs();
         var result = packedBlobs is null
             ? await bridge.ExecuteSqlAsync(Connection.Database, sql, parameterDict, cancellationToken)
             : await bridge.ExecuteSqlWithBlobsAsync(Connection.Database, sql, parameterDict, packedBlobs, cancellationToken);
+
+        if (EnableCommandSqlLogging && IsUpdateCommand(sql))
+        {
+            Console.WriteLine($"[SqliteWasmCommand] UPDATE result: RowsAffected={result.RowsAffected}");
+        }
 
         return result.RowsAffected;
     }
@@ -171,6 +184,11 @@ public sealed class SqliteWasmCommand : DbCommand
         sql = sql.Replace("ef_min(", "min(", StringComparison.OrdinalIgnoreCase);
 
         return sql;
+    }
+
+    private static bool IsUpdateCommand(string sql)
+    {
+        return sql.TrimStart().StartsWith("UPDATE", StringComparison.OrdinalIgnoreCase);
     }
 
     protected override void Dispose(bool disposing)

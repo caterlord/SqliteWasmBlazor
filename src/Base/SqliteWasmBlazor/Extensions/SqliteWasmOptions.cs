@@ -15,4 +15,10 @@ public sealed class SqliteWasmOptions : SqliteWasmAssetOptions
     {
         AssetRoot = "_content/SqliteWasmBlazor/";
     }
+
+    /// <summary>
+    /// Enables verbose SQL command logging from the ADO.NET provider.
+    /// Disabled by default because browser console output can expose schema and data.
+    /// </summary>
+    public bool EnableCommandSqlLogging { get; set; }
 }

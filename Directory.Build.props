@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup>
     <!-- Centralized version management -->
-    <SqliteWasmBlazorVersion>0.9.1-x1.1</SqliteWasmBlazorVersion>
+    <SqliteWasmBlazorVersion>0.9.1-x1.2</SqliteWasmBlazorVersion>
 
     <!-- Suppress WASM warnings globally for all projects in the solution -->
 

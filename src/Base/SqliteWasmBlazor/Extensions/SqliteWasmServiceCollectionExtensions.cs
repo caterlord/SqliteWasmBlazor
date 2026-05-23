@@ -70,6 +70,7 @@ public static class SqliteWasmServiceCollectionExtensions
 
         try
         {
+            SqliteWasmCommand.EnableCommandSqlLogging = options.EnableCommandSqlLogging;
             await SqliteWasmWorkerBridge.Instance.InitializeAsync(options, cancellationToken);
             reporter.Report(DbInitState.READY);
         }
@@ -116,6 +117,7 @@ Please close any other tabs running this application and refresh the page.
 
         try
         {
+            SqliteWasmCommand.EnableCommandSqlLogging = options.EnableCommandSqlLogging;
             await SqliteWasmWorkerBridge.Instance.InitializeAsync(options);
         }
         catch (Exception ex)

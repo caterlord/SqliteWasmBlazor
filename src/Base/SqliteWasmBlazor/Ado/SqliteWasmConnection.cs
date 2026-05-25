@@ -295,14 +295,14 @@ public sealed class SqliteWasmConnection : DbConnection
         await pending.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    internal Task WaitForDatabaseTransactionAccessAsync(CancellationToken cancellationToken = default)
+    internal Task<IDisposable?> EnterDatabaseTransactionAccessAsync(CancellationToken cancellationToken = default)
     {
         if (_currentTransaction is not null)
         {
-            return Task.CompletedTask;
+            return Task.FromResult<IDisposable?>(null);
         }
 
-        return WaitForDatabaseTransactionAccessCoreAsync(cancellationToken);
+        return EnterDatabaseTransactionAccessCoreAsync(cancellationToken);
     }
 
     private async Task<IDisposable> EnterDatabaseTransactionAsync(CancellationToken cancellationToken)
@@ -312,11 +312,11 @@ public sealed class SqliteWasmConnection : DbConnection
         return new DatabaseTransactionScope(gate);
     }
 
-    private async Task WaitForDatabaseTransactionAccessCoreAsync(CancellationToken cancellationToken)
+    private async Task<IDisposable?> EnterDatabaseTransactionAccessCoreAsync(CancellationToken cancellationToken)
     {
         var gate = GetDatabaseTransactionGate(Database);
         await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        gate.Release();
+        return new DatabaseTransactionScope(gate);
     }
 
     private static SemaphoreSlim GetDatabaseTransactionGate(string database)

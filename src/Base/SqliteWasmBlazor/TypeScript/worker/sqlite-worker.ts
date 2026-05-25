@@ -343,6 +343,8 @@ async function handleWorkerMessage(event: MessageEvent<WorkerRequest | { type: '
             activeTransactions.set(dbName, true);
         } else if ((txKind === 'commit' || txKind === 'rollback') && dbName) {
             activeTransactions.set(dbName, false);
+        } else if (dbName) {
+            clearTransactionFlagIfAutocommit(dbName);
         }
 
         // Check if result contains raw binary data (export operations)
@@ -382,10 +384,34 @@ async function handleWorkerMessage(event: MessageEvent<WorkerRequest | { type: '
         };
 
         self.postMessage(response);
+        if (dbName) {
+            clearTransactionFlagIfAutocommit(dbName);
+        }
     } finally {
         if ((txKind === 'commit' || txKind === 'rollback') && dbName) {
             activeTransactions.set(dbName, false);
         }
+    }
+}
+
+function clearTransactionFlagIfAutocommit(dbName: string) {
+    if (activeTransactions.get(dbName) !== true || !sqlite3) {
+        return;
+    }
+
+    const db = openDatabases.get(dbName);
+    if (!db?.pointer) {
+        activeTransactions.set(dbName, false);
+        return;
+    }
+
+    try {
+        const isAutocommit = sqlite3.capi.sqlite3_get_autocommit(db.pointer) !== 0;
+        if (isAutocommit) {
+            activeTransactions.set(dbName, false);
+        }
+    } catch (error) {
+        logger.warn(MODULE_NAME, `Failed to inspect SQLite autocommit state for ${dbName}:`, error);
     }
 }
 

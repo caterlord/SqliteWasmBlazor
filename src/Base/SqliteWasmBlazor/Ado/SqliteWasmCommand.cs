@@ -69,7 +69,7 @@ public sealed class SqliteWasmCommand : DbCommand
     {
         ValidateConnection();
         await WaitForPendingTransactionCleanupAsync(cancellationToken).ConfigureAwait(false);
-        await WaitForDatabaseTransactionAccessAsync(cancellationToken).ConfigureAwait(false);
+        using IDisposable? databaseTransactionAccess = await EnterDatabaseTransactionAccessAsync(cancellationToken).ConfigureAwait(false);
 
         var bridge = SqliteWasmWorkerBridge.Instance;
         var sql = PreprocessSql(_commandText);
@@ -99,7 +99,7 @@ public sealed class SqliteWasmCommand : DbCommand
     {
         ValidateConnection();
         await WaitForPendingTransactionCleanupAsync(cancellationToken).ConfigureAwait(false);
-        await WaitForDatabaseTransactionAccessAsync(cancellationToken).ConfigureAwait(false);
+        using IDisposable? databaseTransactionAccess = await EnterDatabaseTransactionAccessAsync(cancellationToken).ConfigureAwait(false);
 
         var bridge = SqliteWasmWorkerBridge.Instance;
         var sql = PreprocessSql(_commandText);
@@ -135,7 +135,7 @@ public sealed class SqliteWasmCommand : DbCommand
     {
         ValidateConnection();
         await WaitForPendingTransactionCleanupAsync(cancellationToken).ConfigureAwait(false);
-        await WaitForDatabaseTransactionAccessAsync(cancellationToken).ConfigureAwait(false);
+        using IDisposable? databaseTransactionAccess = await EnterDatabaseTransactionAccessAsync(cancellationToken).ConfigureAwait(false);
 
         var bridge = SqliteWasmWorkerBridge.Instance;
         var sql = PreprocessSql(_commandText);
@@ -280,14 +280,14 @@ public sealed class SqliteWasmCommand : DbCommand
         return Connection.WaitForPendingTransactionCleanupAsync(cancellationToken);
     }
 
-    private Task WaitForDatabaseTransactionAccessAsync(CancellationToken cancellationToken)
+    private Task<IDisposable?> EnterDatabaseTransactionAccessAsync(CancellationToken cancellationToken)
     {
         if (SkipDatabaseTransactionGate || Connection is null)
         {
-            return Task.CompletedTask;
+            return Task.FromResult<IDisposable?>(null);
         }
 
-        return Connection.WaitForDatabaseTransactionAccessAsync(cancellationToken);
+        return Connection.EnterDatabaseTransactionAccessAsync(cancellationToken);
     }
 
     private static NotSupportedException CreateSynchronousCommandNotSupportedException(string asyncMethodName)
